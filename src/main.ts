@@ -31,9 +31,11 @@ async function bootstrap() {
   const serverPort = configService.get<number>('SERVER_PORT');
   const serverIp = configService.get<string>('SERVER_IP');
 
+  app.enableCors();
   app.useGlobalInterceptors(new ErrorInterceptor());
 
   await app.listen(serverPort, serverIp);
+
   console.log(`Application is now running on: ${await app.getUrl()}`);
 }
 

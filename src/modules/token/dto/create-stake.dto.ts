@@ -1,5 +1,4 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Transaction } from 'stellar-sdk';
 
 export class CreateStakeDto {
   @ApiProperty({ description: 'The name of the token' })
@@ -15,5 +14,8 @@ export class CreateStakeDto {
   timeline: string;
 
   @ApiProperty({ description: 'The signed transaction from user' })
-  transaction: Transaction;
+  signedTxXdr: string;
+
+  @ApiProperty({ description: 'The signed transaction from user' })
+  senderPublicKey: string;
 }

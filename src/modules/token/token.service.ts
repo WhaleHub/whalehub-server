@@ -65,6 +65,7 @@ export class TokenService {
   }
 
   async stake(createStakeDto: CreateStakeDto) {
+    console.log(createStakeDto);
     //
   }
 }
