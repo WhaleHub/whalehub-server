@@ -1,71 +1,154 @@
 import { Injectable } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
-import { UpdateTokenDto } from './dto/update-token.dto';
+import { CreateStakeDto } from './dto/create-stake.dto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConfigService } from '@nestjs/config';
-import { Server } from 'stellar-sdk/lib/rpc';
 import {
+  Address,
+  Asset,
   BASE_FEE,
+  Contract,
   Keypair,
+  nativeToScVal,
   Networks,
   Operation,
   SorobanRpc,
   TransactionBuilder,
-} from 'stellar-sdk';
-import { CreateStakeDto } from './dto/create-stake.dto';
+  xdr,
+} from '@stellar/stellar-sdk';
 
-const contractWasmPath =
-  __dirname + '/../../soroban-contracts/soroban_token_contract.wasm';
-
-const soroban_token_contract = path.join(
+const sorobanTokenContractPath = path.join(
   process.cwd(),
   'src/soroban-contracts/soroban_token_contract.wasm',
 );
 
+const tokenAddress = 'CANRKM7ICT63COUOOUOIV5UMSFS5KZY2KQQLD24JIAHJJSXT4YSUJP3P';
+
 @Injectable()
 export class TokenService {
-  sorobanClient: Server;
-  walletSecretKey: string;
-  walletKeypair: Keypair;
-  walletPublicKey: string;
-  rpcUrl: string;
+  private sorobanClient: SorobanRpc.Server;
+  private walletSecretKey: string;
+  private walletKeypair: Keypair;
+  private rpcUrl: string;
 
   constructor(private configService: ConfigService) {
-    this.walletSecretKey = configService.get<string>(
+    this.walletSecretKey = this.configService.get<string>(
       'SOROBAN_WALLET_SECRET_KEY',
     );
-    this.rpcUrl = configService.get<string>('SOROBAN_RPC_ENDPOINT');
+    this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.sorobanClient = new SorobanRpc.Server(this.rpcUrl, {
       allowHttp: true,
     });
     this.walletKeypair = Keypair.fromSecret(this.walletSecretKey);
-    this.walletPublicKey = this.walletKeypair.publicKey();
   }
 
-  async create(createTokenDto: CreateTokenDto) {
+  async create(createTokenDto: CreateTokenDto): Promise<void> {
     try {
-      const token = fs.readFileSync(soroban_token_contract);
-      const account = await this.sorobanClient.getAccount(this.walletPublicKey);
+      // const uploadResponse = await this.uploadWasm(sorobanTokenContractPath);
+      // const byteArray = uploadResponse.response.returnValue.bytes();
+      // const wasmHash = byteArray.toString('hex');
+      // console.log(`Wasm hash: ${wasmHash}`);
 
-      //create and deploy a token
-      //   const transaction = new TransactionBuilder(account, {
-      //     fee: BASE_FEE,
-      //     networkPassphrase: Networks.PUBLIC,
-      // })
-      //     .addOperation(Operation.createCustomContract({
-      //         source: this.walletPublicKey,
-      //         wasmHash: soroban_token_contract
-      //     }))
-      //     .setTimeout(180)
-      //     .build();
+      const assetCode = 'WHLAQUA';
+      const asset = new Asset(
+        assetCode,
+        'GDMFFHVJQZSDXM4SRU2W6KFLWV62BKXNNJVC4GT25NMQK2LENFUVO44I',
+      );
+
+      const sourceAccount = await this.sorobanClient.getAccount(
+        this.walletKeypair.publicKey(),
+      );
+
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.changeTrust({
+            asset: asset,
+            limit: '1',
+            source: this.walletKeypair.publicKey(),
+          }),
+        )
+        .addOperation(
+          Operation.payment({
+            destination: this.walletKeypair.publicKey(),
+            asset: asset,
+            amount: '1000000',
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      transaction.sign(this.walletKeypair);
+      const response = await this.sorobanClient.sendTransaction(transaction);
+      console.log('Transaction hash:', response.hash);
+      console.log('Transaction successful.');
     } catch (err) {
-      console.log(err);
+      console.error('Error during WASM upload:', err);
     }
   }
 
-  async stake(createStakeDto: CreateStakeDto) {
+  async stake(createStakeDto: CreateStakeDto): Promise<void> {
     console.log(createStakeDto);
-    //
+    // Implement staking logic here
+  }
+
+  private async buildAndSendTransaction(account: any, operations) {
+    try {
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(operations)
+        .setTimeout(180)
+        .build();
+
+      const tx = await this.sorobanClient.prepareTransaction(transaction);
+      tx.sign(this.walletKeypair);
+
+      console.log('Submitting transaction...');
+      const response = await this.sorobanClient.sendTransaction(tx);
+      const hash = response.hash;
+      console.log(`Transaction hash: ${hash}`);
+      console.log('Awaiting confirmation...');
+
+      let confirmationResponse = await this.sorobanClient.getTransaction(hash);
+
+      while (confirmationResponse.status === 'NOT_FOUND') {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        confirmationResponse = await this.sorobanClient.getTransaction(hash);
+      }
+
+      if (confirmationResponse.status === 'SUCCESS') {
+        console.log('Transaction successful.');
+        console.log(confirmationResponse);
+        return {
+          response: confirmationResponse,
+        };
+      } else {
+        console.error('Transaction failed:', confirmationResponse);
+        throw new Error('Transaction failed');
+      }
+    } catch (error) {
+      console.error('Error building or sending transaction:', error);
+      throw error;
+    }
+  }
+
+  private async uploadWasm(filePath: string) {
+    try {
+      const bytecode = fs.readFileSync(filePath);
+      const account = await this.sorobanClient.getAccount(
+        this.walletKeypair.publicKey(),
+      );
+
+      const operation = Operation.uploadContractWasm({ wasm: bytecode });
+      return await this.buildAndSendTransaction(account, operation);
+    } catch (error) {
+      console.error('Error uploading WASM file:', error);
+      throw error;
+    }
   }
 }
