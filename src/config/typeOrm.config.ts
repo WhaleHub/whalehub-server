@@ -6,6 +6,8 @@ import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 export const typeOrmConfig = async (
   configService: ConfigService,
 ): Promise<TypeOrmModuleOptions> => {
+  console.log(configService.get<string>('POSTGRES_HOST'), 'sam');
+
   return {
     type: 'postgres',
     host: configService.get<string>('POSTGRES_HOST'),
