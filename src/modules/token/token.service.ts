@@ -1,29 +1,22 @@
 import { Injectable } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { CreateStakeDto } from './dto/create-stake.dto';
-import * as fs from 'fs';
-import * as path from 'path';
 import { ConfigService } from '@nestjs/config';
 import {
-  Address,
   Asset,
   BASE_FEE,
-  Contract,
   Keypair,
-  nativeToScVal,
   Networks,
   Operation,
   SorobanRpc,
   TransactionBuilder,
-  xdr,
 } from '@stellar/stellar-sdk';
 
-const sorobanTokenContractPath = path.join(
-  process.cwd(),
-  'src/soroban-contracts/soroban_token_contract.wasm',
-);
-
-const tokenAddress = 'CANRKM7ICT63COUOOUOIV5UMSFS5KZY2KQQLD24JIAHJJSXT4YSUJP3P';
+// const sorobanTokenContractPath = path.join(
+//   process.cwd(),
+//   'src/soroban-contracts/soroban_token_contract.wasm',
+// );
+// const tokenAddress = 'CANRKM7ICT63COUOOUOIV5UMSFS5KZY2KQQLD24JIAHJJSXT4YSUJP3P';
 
 @Injectable()
 export class TokenService {
@@ -51,10 +44,7 @@ export class TokenService {
       // console.log(`Wasm hash: ${wasmHash}`);
 
       const assetCode = 'WHLAQUA';
-      const asset = new Asset(
-        assetCode,
-        'GDMFFHVJQZSDXM4SRU2W6KFLWV62BKXNNJVC4GT25NMQK2LENFUVO44I',
-      );
+      const asset = new Asset(assetCode, this.walletKeypair.publicKey());
 
       const sourceAccount = await this.sorobanClient.getAccount(
         this.walletKeypair.publicKey(),
@@ -137,18 +127,18 @@ export class TokenService {
     }
   }
 
-  private async uploadWasm(filePath: string) {
-    try {
-      const bytecode = fs.readFileSync(filePath);
-      const account = await this.sorobanClient.getAccount(
-        this.walletKeypair.publicKey(),
-      );
+  // private async uploadWasm(filePath: string) {
+  //   try {
+  //     const bytecode = fs.readFileSync(filePath);
+  //     const account = await this.sorobanClient.getAccount(
+  //       this.walletKeypair.publicKey(),
+  //     );
 
-      const operation = Operation.uploadContractWasm({ wasm: bytecode });
-      return await this.buildAndSendTransaction(account, operation);
-    } catch (error) {
-      console.error('Error uploading WASM file:', error);
-      throw error;
-    }
-  }
+  //     const operation = Operation.uploadContractWasm({ wasm: bytecode });
+  //     return await this.buildAndSendTransaction(account, operation);
+  //   } catch (error) {
+  //     console.error('Error uploading WASM file:', error);
+  //     throw error;
+  //   }
+  // }
 }
