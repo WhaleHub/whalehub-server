@@ -1,12 +1,12 @@
-import { Column, Entity, OneToOne } from 'typeorm';
+import { Column, Entity, ManyToOne, OneToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
 
-@Entity({ name: 'user' })
+@Entity({ name: 'stakes' })
 export class StakeEntity extends BaseEntity {
-  @OneToOne(() => UserEntity, (user) => user.account)
+  @ManyToOne(() => UserEntity, (user) => user.stakes, { onDelete: 'CASCADE' })
   account: UserEntity;
 
-  @Column({ nullable: false })
+  @Column()
   amount: number;
 }

@@ -95,8 +95,6 @@ export class TokenService {
       this.walletKeypair.publicKey(),
     );
 
-    console.log(createStakeDto);
-
     try {
       const transaction = new Transaction(
         createStakeDto.signedTxXdr,
@@ -107,6 +105,7 @@ export class TokenService {
 
       const response = await this.sorobanClient.sendTransaction(transaction);
       const hash = response.hash;
+      console.log('hash :', hash);
 
       const transactionResult = await this.checkTransactionStatus(
         this.sorobanClient,
@@ -127,12 +126,10 @@ export class TokenService {
           user = await newUserAccountRecord.save();
         }
 
-        // console.log(user);
-
-        // const stake = new StakeEntity();
-        // stake.account = user;
-        // stake.amount = createStakeDto.amount;
-        // await stake.save();
+        const stake = new StakeEntity();
+        stake.account = user;
+        stake.amount = 1;
+        await stake.save();
 
         //[x] creates trustline for user wallet to receive WHLAQUA
         //[x] create trustlines for governance tokens for server wallet
