@@ -52,5 +52,13 @@ soroban contract invoke \
     --id GCX6LOZ6ZEXBHLTPOPP2THN74K33LMT4HKSPDTWSLVCF4EWRGXOS7D3V
 ```
 
+```js
+stellar contract bindings typescript \
+  --network testnet \
+  --contract-id $(cat .stellar/contract-ids/hello_world.txt) \
+  --output-dir packages/hello_world
+
+```
+
 GCX6LOZ6ZEXBHLTPOPP2THN74K33LMT4HKSPDTWSLVCF4EWRGXOS7D3V - public key
 GDMFFHVJQZSDXM4SRU2W6KFLWV62BKXNNJVC4GT25NMQK2LENFUVO44I - second public key

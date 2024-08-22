@@ -9,8 +9,13 @@ import {
   Networks,
   Operation,
   SorobanRpc,
+  Transaction,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { UserEntity } from '@/utils/typeorm/entities/user.entity';
+import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 
 // const sorobanTokenContractPath = path.join(
 //   process.cwd(),
@@ -25,7 +30,12 @@ export class TokenService {
   private walletKeypair: Keypair;
   private rpcUrl: string;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
+  ) {
     this.walletSecretKey = this.configService.get<string>(
       'SOROBAN_WALLET_SECRET_KEY',
     );
@@ -81,8 +91,56 @@ export class TokenService {
   }
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
+    const account = await this.sorobanClient.getAccount(
+      this.walletKeypair.publicKey(),
+    );
+
     console.log(createStakeDto);
-    // Implement staking logic here
+
+    try {
+      const transaction = new Transaction(
+        createStakeDto.signedTxXdr,
+        Networks.PUBLIC,
+      );
+
+      transaction.sign(this.walletKeypair);
+
+      const response = await this.sorobanClient.sendTransaction(transaction);
+      const hash = response.hash;
+
+      const transactionResult = await this.checkTransactionStatus(
+        this.sorobanClient,
+        hash,
+      );
+
+      if (transactionResult.status === 'SUCCESS') {
+        let user: UserEntity;
+
+        user = await this.userRepository.findOneBy({
+          account: createStakeDto.senderPublicKey,
+        });
+
+        //create a new user record for public key
+        if (!user) {
+          const newUserAccountRecord = new UserEntity();
+          newUserAccountRecord.account = createStakeDto.senderPublicKey;
+          user = await newUserAccountRecord.save();
+        }
+
+        // console.log(user);
+
+        // const stake = new StakeEntity();
+        // stake.account = user;
+        // stake.amount = createStakeDto.amount;
+        // await stake.save();
+
+        //[x] creates trustline for user wallet to receive WHLAQUA
+        //[x] create trustlines for governance tokens for server wallet
+        //[x] create a cliamable aqua balance
+      }
+    } catch (err) {
+      console.log(err);
+    }
   }
 
   private async buildAndSendTransaction(account: any, operations) {
@@ -141,4 +199,29 @@ export class TokenService {
   //     throw error;
   //   }
   // }
+
+  async checkTransactionStatus(sorobanClient: SorobanRpc.Server, hash: string) {
+    while (true) {
+      try {
+        const transactionResult = await sorobanClient.getTransaction(hash);
+
+        if (transactionResult.status === 'SUCCESS') {
+          console.log(
+            'Transaction confirmed in block:',
+            transactionResult.ledger,
+          );
+          return transactionResult;
+        } else if (transactionResult.status === 'FAILED') {
+          console.error('Transaction failed. Reason:', transactionResult);
+          return null;
+        } else {
+          console.log('Transaction status:', transactionResult.status);
+        }
+      } catch (error) {
+        console.error('Error fetching transaction status:', error);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
 }
