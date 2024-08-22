@@ -113,9 +113,7 @@ export class TokenService {
       );
 
       if (transactionResult.status === 'SUCCESS') {
-        let user: UserEntity;
-
-        user = await this.userRepository.findOneBy({
+        let user: UserEntity = await this.userRepository.findOneBy({
           account: createStakeDto.senderPublicKey,
         });
 
@@ -132,8 +130,8 @@ export class TokenService {
         await stake.save();
 
         //[x] creates trustline for user wallet to receive WHLAQUA
-        //[x] create trustlines for governance tokens for server wallet
-        //[x] create a cliamable aqua balance
+        //[x] create trustlines for server wallet to receive governance tokens
+        //[x] create aqua claimable balance
       }
     } catch (err) {
       console.log(err);
