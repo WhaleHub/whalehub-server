@@ -128,7 +128,7 @@ export class TokenService {
 
         const stake = new StakeEntity();
         stake.account = user;
-        stake.amount = 1;
+        stake.amount = createStakeDto.amount;
         await stake.save();
 
         //[x] creates trustline for user wallet to receive WHLAQUA
