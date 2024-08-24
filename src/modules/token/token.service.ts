@@ -3,8 +3,10 @@ import { CreateTokenDto } from './dto/create-token.dto';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { ConfigService } from '@nestjs/config';
 import {
+  Account,
   Asset,
   BASE_FEE,
+  Claimant,
   Keypair,
   Networks,
   Operation,
@@ -22,6 +24,29 @@ import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 //   'src/soroban-contracts/soroban_token_contract.wasm',
 // );
 // const tokenAddress = 'CANRKM7ICT63COUOOUOIV5UMSFS5KZY2KQQLD24JIAHJJSXT4YSUJP3P';
+const assetCode = 'WHLAQUA';
+
+export const AQUA_CODE = 'AQUA';
+export const AQUA_ISSUER =
+  'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA';
+export const yXLM_CODE = 'yXLM';
+export const yXLM_ISSUER =
+  'GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55';
+
+export const ICE_CODE = 'ICE';
+export const ICE_ISSUER =
+  'GAXSGZ2JM3LNWOO4WRGADISNMWO4HQLG4QBGUZRKH5ZHL3EQBGX73ICE';
+
+export const GOV_ICE_CODE = 'governICE';
+export const UP_ICE_CODE = 'upvoteICE';
+export const DOWN_ICE_CODE = 'downvoteICE';
+
+export const ICE_ASSETS = [
+  `${ICE_CODE}:${ICE_ISSUER}`,
+  `${GOV_ICE_CODE}:${ICE_ISSUER}`,
+  `${UP_ICE_CODE}:${ICE_ISSUER}`,
+  `${DOWN_ICE_CODE}:${ICE_ISSUER}`,
+];
 
 @Injectable()
 export class TokenService {
@@ -29,6 +54,7 @@ export class TokenService {
   private walletSecretKey: string;
   private walletKeypair: Keypair;
   private rpcUrl: string;
+  whaleAcqua;
 
   constructor(
     private configService: ConfigService,
@@ -44,6 +70,8 @@ export class TokenService {
       allowHttp: true,
     });
     this.walletKeypair = Keypair.fromSecret(this.walletSecretKey);
+
+    this.whaleAcqua = new Asset(assetCode, this.walletKeypair.publicKey());
   }
 
   async create(createTokenDto: CreateTokenDto): Promise<void> {
@@ -52,9 +80,6 @@ export class TokenService {
       // const byteArray = uploadResponse.response.returnValue.bytes();
       // const wasmHash = byteArray.toString('hex');
       // console.log(`Wasm hash: ${wasmHash}`);
-
-      const assetCode = 'WHLAQUA';
-      const asset = new Asset(assetCode, this.walletKeypair.publicKey());
 
       const sourceAccount = await this.sorobanClient.getAccount(
         this.walletKeypair.publicKey(),
@@ -66,7 +91,7 @@ export class TokenService {
       })
         .addOperation(
           Operation.changeTrust({
-            asset: asset,
+            asset: this.whaleAcqua,
             limit: '1',
             source: this.walletKeypair.publicKey(),
           }),
@@ -74,7 +99,7 @@ export class TokenService {
         .addOperation(
           Operation.payment({
             destination: this.walletKeypair.publicKey(),
-            asset: asset,
+            asset: this.whaleAcqua,
             amount: '1000000',
           }),
         )
@@ -103,21 +128,22 @@ export class TokenService {
 
       transaction.sign(this.walletKeypair);
 
-      const response = await this.sorobanClient.sendTransaction(transaction);
-      const hash = response.hash;
-      console.log('hash :', hash);
+      const transferAquaTxn =
+        await this.sorobanClient.sendTransaction(transaction);
+      const hash = transferAquaTxn.hash;
+      console.log('deposit aqua hash :', hash);
 
-      const transactionResult = await this.checkTransactionStatus(
+      const depositAquaTransactionResult = await this.checkTransactionStatus(
         this.sorobanClient,
         hash,
       );
 
-      if (transactionResult.status === 'SUCCESS') {
+      if (depositAquaTransactionResult.status === 'SUCCESS') {
         let user: UserEntity = await this.userRepository.findOneBy({
           account: createStakeDto.senderPublicKey,
         });
 
-        //create a new user record for public key
+        // create a new user record for public key
         if (!user) {
           const newUserAccountRecord = new UserEntity();
           newUserAccountRecord.account = createStakeDto.senderPublicKey;
@@ -129,9 +155,82 @@ export class TokenService {
         stake.amount = createStakeDto.amount;
         await stake.save();
 
-        //[x] creates trustline for user wallet to receive WHLAQUA
-        //[x] create trustlines for server wallet to receive governance tokens
-        //[x] create aqua claimable balance
+        const trustlineClaimTxn = new TransactionBuilder(account, {
+          fee: BASE_FEE,
+          networkPassphrase: Networks.PUBLIC,
+        }).addOperation(
+          Operation.changeTrust({
+            asset: this.whaleAcqua,
+            limit: '1000000000.0000000',
+            source: createStakeDto.senderPublicKey,
+          }),
+        );
+
+        // add ice trustline for account
+        trustlineClaimTxn.addOperation(
+          Operation.changeTrust({
+            asset: new Asset(ICE_CODE, ICE_ISSUER),
+            limit: '1000000000.0000000',
+            source: account.accountId(),
+          }),
+        );
+
+        //add GOV_ICE ice trustline for account
+        trustlineClaimTxn.addOperation(
+          Operation.changeTrust({
+            asset: new Asset(GOV_ICE_CODE, ICE_ISSUER),
+            limit: '1000000000.0000000',
+            source: account.accountId(),
+          }),
+        );
+
+        //add UP_ICE trutline for account
+        trustlineClaimTxn.addOperation(
+          Operation.changeTrust({
+            asset: new Asset(UP_ICE_CODE, ICE_ISSUER),
+            limit: '1000000000.0000000',
+            source: account.accountId(),
+          }),
+        );
+
+        // add DOWN_ICE_CODE trusline
+        trustlineClaimTxn.addOperation(
+          Operation.changeTrust({
+            asset: new Asset(DOWN_ICE_CODE, ICE_ISSUER),
+            limit: '1000000000.0000000',
+            source: account.accountId(),
+          }),
+        );
+
+        //[x] should be updated using the timeline
+        let whaleHubCanClaim = Claimant.predicateNot(
+          Claimant.predicateUnconditional(),
+        );
+
+        // Create the operation and submit it in a transaction.
+        let claimableBalanceEntry = Operation.createClaimableBalance({
+          claimants: [new Claimant(account.accountId(), whaleHubCanClaim)],
+          asset: new Asset(AQUA_CODE, AQUA_ISSUER),
+          amount: `${createStakeDto.amount}`,
+        });
+
+        trustlineClaimTxn
+          .addOperation(claimableBalanceEntry)
+          .setTimeout(180)
+          .build();
+
+        const txn = trustlineClaimTxn.build();
+        txn.sign(this.walletKeypair);
+
+        const truslineClaimTxnResponse =
+          await this.sorobanClient.sendTransaction(transaction);
+
+        const transactionResult = await this.checkTransactionStatus(
+          this.sorobanClient,
+          truslineClaimTxnResponse.hash,
+        );
+
+        console.log(transactionResult, 'claimable transaction success');
       }
     } catch (err) {
       console.log(err);
