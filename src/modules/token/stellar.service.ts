@@ -179,6 +179,8 @@ export class StellarService {
         { code: DOWN_ICE_CODE, issuer: ICE_ISSUER },
       ];
 
+      let trustlineOperationAdded = false;
+
       // Add trustline operations only if they don't already exist
       for (const asset of assetsToCheck) {
         if (!existingTrustlines.includes(asset.code as any)) {
@@ -188,6 +190,7 @@ export class StellarService {
               limit: '1000000000.0000000',
             }),
           );
+          trustlineOperationAdded = true;
           console.log(`Adding trustline for asset: ${asset.code}`);
         } else {
           console.log(`Trustline for asset ${asset.code} already exists.`);
@@ -208,65 +211,62 @@ export class StellarService {
       //   );
       // }
 
-      if (trustlineTransaction.operations.length > 0) {
+      if (trustlineOperationAdded) {
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
         builtTrustlineTxn.sign(this.keypair);
 
-        const trustlineResponse =
-          await this.server.submitTransaction(builtTrustlineTxn);
-        const trustlineHash = trustlineResponse.hash;
-        console.log('Trustline transaction hash:', trustlineHash);
+        if (trustlineTransaction.operations.length > 0) {
+          console.log('starting trustline transaction');
+          const trustlineResponse =
+            await this.server.submitTransaction(builtTrustlineTxn);
+          const trustlineHash = trustlineResponse.hash;
+          console.log('Trustline transaction hash:', trustlineHash);
 
-        const trustlineResult = (await this.checkTransactionStatus(
-          this.server,
-          trustlineHash,
-        )) as any;
-
-        if (trustlineResult) {
-          console.log('Trustline transaction was successful.');
-
-          // Create and submit the claimable balance transaction
-          const claimableTransaction = new TransactionBuilder(account, {
-            fee: BASE_FEE,
-            networkPassphrase: Networks.PUBLIC,
-          })
-            .addOperation(
-              Operation.createClaimableBalance({
-                claimants: [
-                  new Claimant(
-                    account.accountId(),
-                    Claimant.predicateNot(Claimant.predicateUnconditional()),
-                  ),
-                ],
-                asset: new Asset(AQUA_CODE, AQUA_ISSUER),
-                amount: `${amountToStake}`,
-              }),
-            )
-            .setTimeout(180)
-            .build();
-
-          claimableTransaction.sign(this.keypair);
-          const claimableResponse =
-            await this.server.submitTransaction(claimableTransaction);
-          const claimableHash = claimableResponse.hash;
-          console.log('Claimable balance transaction hash:', claimableHash);
-
-          // Check the status of the claimable balance transaction
-          const claimableResult = (await this.checkTransactionStatus(
+          const trustlineResult = (await this.checkTransactionStatus(
             this.server,
-            claimableHash,
+            trustlineHash,
           )) as any;
-
-          if (claimableResult) {
-            console.log('Claimable balance transaction was successful.');
-          } else {
-            console.error('Claimable balance transaction failed.');
-          }
-        } else {
-          console.log(
-            'No new trustlines needed; proceeding to create claimable balance.',
-          );
         }
+      } else {
+        console.log('No trustline added for publc keys');
+      }
+
+      // Create and submit the claimable balance transaction
+      const claimableTransaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.createClaimableBalance({
+            claimants: [
+              new Claimant(
+                account.accountId(),
+                Claimant.predicateNot(Claimant.predicateUnconditional()),
+              ),
+            ],
+            asset: new Asset(AQUA_CODE, AQUA_ISSUER),
+            amount: `${amountToStake}`,
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      claimableTransaction.sign(this.keypair);
+      const claimableResponse =
+        await this.server.submitTransaction(claimableTransaction);
+      const claimableHash = claimableResponse.hash;
+      console.log('Claimable balance transaction hash:', claimableHash);
+
+      // Check the status of the claimable balance transaction
+      const claimableResult = (await this.checkTransactionStatus(
+        this.server,
+        claimableHash,
+      )) as any;
+
+      if (claimableResult) {
+        console.log('Claimable balance transaction was successful.');
+      } else {
+        console.error('Claimable balance transaction failed.');
       }
     } catch (err) {
       //[x] get status and check if it was a timeout
