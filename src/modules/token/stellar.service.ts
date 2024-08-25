@@ -118,15 +118,6 @@ export class StellarService {
       // Load the account details
       const account = await this.server.loadAccount(this.keypair.publicKey());
 
-      //[x]
-      await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
-      // await this.transferAsset(
-      //   this.keypair,
-      //   createStakeDto.senderPublicKey,
-      //   '100',
-      //   this.whaleAcqua,
-      // );
-
       // Calculate the amounts to stake and for liquidity
       const amountToStake = createStakeDto.amount * 0.9;
       const remaniningAmount = createStakeDto.amount * 0.1;
@@ -262,10 +253,18 @@ export class StellarService {
       if (claimableResult) {
         console.log('Claimable balance transaction was successful.');
 
-        const trackerAmountForUser = Number(createStakeDto.amount) * 1.1;
-        const multipliedAmount = Number(createStakeDto.amount) * 0.1;
+        const trackerAmountForUser = Number(createStakeDto.amount);
+        const additionalAmountForLiquidity =
+          Number(createStakeDto.amount) * 0.1;
 
-        console.log(trackerAmountForUser, multipliedAmount);
+        await this.transferAsset(
+          this.keypair,
+          createStakeDto.senderPublicKey,
+          `${createStakeDto.amount}`,
+          this.whaleAcqua,
+        );
+
+        await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
       } else {
         console.error('Claimable balance transaction failed.');
       }
@@ -274,61 +273,6 @@ export class StellarService {
       console.error('Error during staking process:', err);
     }
   }
-
-  // private async buildAndSendTransaction(account: any, operations) {
-  //   try {
-  //     const transaction = new TransactionBuilder(account, {
-  //       fee: BASE_FEE,
-  //       networkPassphrase: Networks.PUBLIC,
-  //     })
-  //       .addOperation(operations)
-  //       .setTimeout(180)
-  //       .build();
-
-  //     const tx = await this.server.prepareTransaction(transaction);
-  //     tx.sign(this.keypair);
-
-  //     console.log('Submitting transaction...');
-  //     const response = await this.server.sendTransaction(tx);
-  //     const hash = response.hash;
-  //     console.log(`Transaction hash: ${hash}`);
-  //     console.log('Awaiting confirmation...');
-
-  //     let confirmationResponse = await this.server.getTransaction(hash);
-
-  //     while (confirmationResponse.status === 'NOT_FOUND') {
-  //       await new Promise((resolve) => setTimeout(resolve, 1000));
-  //       confirmationResponse = await this.server.getTransaction(hash);
-  //     }
-
-  //     if (confirmationResponse.status === 'SUCCESS') {
-  //       console.log('Transaction successful.');
-  //       console.log(confirmationResponse);
-  //       return {
-  //         response: confirmationResponse,
-  //       };
-  //     } else {
-  //       console.error('Transaction failed:', confirmationResponse);
-  //       throw new Error('Transaction failed');
-  //     }
-  //   } catch (error) {
-  //     console.error('Error building or sending transaction:', error);
-  //     throw error;
-  //   }
-  // }
-
-  // private async uploadWasm(filePath: string) {
-  //   try {
-  //     const bytecode = fs.readFileSync(filePath);
-  //     const account = await this.server.loadAccount(this.keypair.publicKey());
-
-  //     const operation = Operation.uploadContractWasm({ wasm: bytecode });
-  //     // return await this.buildAndSendTransaction(account, operation);
-  //   } catch (error) {
-  //     console.error('Error uploading WASM file:', error);
-  //     throw error;
-  //   }
-  // }
 
   async checkTransactionStatus(server: Horizon.Server, hash: string) {
     while (true) {
