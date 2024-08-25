@@ -27,7 +27,7 @@ import { Balance } from '@/utils/models/interfaces';
 //   'src/soroban-contracts/soroban_token_contract.wasm',
 // );
 
-const assetCode = 'WHLAQUA';
+const WHLAQUA_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
 export const AQUA_ISSUER =
   'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA';
@@ -69,7 +69,7 @@ export class StellarService {
     this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
     this.keypair = Keypair.fromSecret(this.secret);
 
-    this.whaleAcqua = new Asset(assetCode, this.keypair.publicKey());
+    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
   }
 
   async create(createTokenDto: CreateTokenDto): Promise<void> {
@@ -118,8 +118,18 @@ export class StellarService {
       // Load the account details
       const account = await this.server.loadAccount(this.keypair.publicKey());
 
+      //[x]
+      await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
+      // await this.transferAsset(
+      //   this.keypair,
+      //   createStakeDto.senderPublicKey,
+      //   '100',
+      //   this.whaleAcqua,
+      // );
+
       // Calculate the amounts to stake and for liquidity
       const amountToStake = createStakeDto.amount * 0.9;
+      const remaniningAmount = createStakeDto.amount * 0.1;
 
       // Create and submit the first transaction for transferring AQUA
       const transferAquaTxn = new Transaction(
@@ -183,7 +193,7 @@ export class StellarService {
 
       // Add trustline operations only if they don't already exist
       for (const asset of assetsToCheck) {
-        if (!existingTrustlines.includes(asset.code as any)) {
+        if (!existingTrustlines.includes(asset.code)) {
           trustlineTransaction.addOperation(
             Operation.changeTrust({
               asset: new Asset(asset.code, asset.issuer),
@@ -197,20 +207,6 @@ export class StellarService {
         }
       }
 
-      // Create the whaleAcqua trustline if it doesn't exist
-      // if (!existingTrustlines.includes(this.whaleAcqua.code as any)) {
-      //   trustlineTransaction.addOperation(
-      //     Operation.changeTrust({
-      //       asset: new Asset(
-      //         'WHLAQUA',
-      //         'GCX6LOZ6ZEXBHLTPOPP2THN74K33LMT4HKSPDTWSLVCF4EWRGXOS7D3V',
-      //       ),
-      //       limit: '1000000000.0000000',
-      //       source: createStakeDto.senderPublicKey,
-      //     }),
-      //   );
-      // }
-
       if (trustlineOperationAdded) {
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
         builtTrustlineTxn.sign(this.keypair);
@@ -222,10 +218,10 @@ export class StellarService {
           const trustlineHash = trustlineResponse.hash;
           console.log('Trustline transaction hash:', trustlineHash);
 
-          const trustlineResult = (await this.checkTransactionStatus(
+          const trustlineResult = await this.checkTransactionStatus(
             this.server,
             trustlineHash,
-          )) as any;
+          );
         }
       } else {
         console.log('No trustline added for publc keys');
@@ -265,6 +261,11 @@ export class StellarService {
 
       if (claimableResult) {
         console.log('Claimable balance transaction was successful.');
+
+        const trackerAmountForUser = Number(createStakeDto.amount) * 1.1;
+        const multipliedAmount = Number(createStakeDto.amount) * 0.1;
+
+        console.log(trackerAmountForUser, multipliedAmount);
       } else {
         console.error('Claimable balance transaction failed.');
       }
@@ -357,6 +358,55 @@ export class StellarService {
 
       // Wait for 5 seconds before retrying
       await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+
+  async checkBalance(publicKey: string, asset: Asset) {
+    const account = await this.server.loadAccount(publicKey);
+    const balance = account.balances.find(
+      (balance: Balance) =>
+        balance.asset_code === asset.code &&
+        balance.asset_issuer === asset.issuer,
+    );
+
+    if (balance) {
+      console.log(`Balance of ${asset.code}: ${balance.balance}`);
+    } else {
+      console.log(`No balance found for ${asset.code}`);
+    }
+  }
+
+  async transferAsset(
+    senderKeypair: Keypair,
+    destinationPublicKey: string,
+    amount: string,
+    asset: Asset,
+  ) {
+    const senderAccount = await this.server.loadAccount(
+      senderKeypair.publicKey(),
+    );
+
+    const transaction = new TransactionBuilder(senderAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.PUBLIC,
+    })
+      .addOperation(
+        Operation.payment({
+          destination: destinationPublicKey,
+          asset: asset,
+          amount: amount,
+        }),
+      )
+      .setTimeout(30)
+      .build();
+
+    transaction.sign(senderKeypair);
+
+    try {
+      const response = await this.server.submitTransaction(transaction);
+      console.log('Transaction successful:', response);
+    } catch (error) {
+      console.error('Transaction failed:', error.response.data);
     }
   }
 }
