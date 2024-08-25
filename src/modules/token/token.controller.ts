@@ -1,13 +1,13 @@
 import { Controller, Get, Post, Body } from '@nestjs/common';
-import { TokenService } from './token.service';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateStakeDto } from './dto/create-stake.dto';
+import { StellarService } from './stellar.service';
 
 @ApiTags('Token')
 @Controller('token')
 export class TokenController {
-  constructor(private readonly tokenService: TokenService) {}
+  constructor(private readonly stellarService: StellarService) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new token' })
@@ -21,7 +21,7 @@ export class TokenController {
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   create(@Body() createTokenDto: CreateTokenDto) {
-    return this.tokenService.create(createTokenDto);
+    // return this.stellarService.create(createTokenDto);
   }
 
   @Post('stake')
@@ -36,6 +36,6 @@ export class TokenController {
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   stake(@Body() createStakeDto: CreateStakeDto) {
-    return this.tokenService.stake(createStakeDto);
+    return this.stellarService.stake(createStakeDto);
   }
 }
