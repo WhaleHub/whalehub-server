@@ -21,6 +21,7 @@ import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 import fs from 'fs';
 import { error } from 'console';
 import { Balance } from '@/utils/models/interfaces';
+import { SorobanService } from './soroban.service';
 
 // const sorobanTokenContractPath = path.join(
 //   process.cwd(),
@@ -61,6 +62,8 @@ export class StellarService {
   constructor(
     private configService: ConfigService,
 
+    private sorobanService: SorobanService,
+
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
   ) {
@@ -74,11 +77,6 @@ export class StellarService {
 
   async create(createTokenDto: CreateTokenDto): Promise<void> {
     try {
-      // const uploadResponse = await this.uploadWasm(sorobanTokenContractPath);
-      // const byteArray = uploadResponse.response.returnValue.bytes();
-      // const wasmHash = byteArray.toString('hex');
-      // console.log(`Wasm hash: ${wasmHash}`);
-
       const sourceAccount = await this.server.loadAccount(
         this.keypair.publicKey(),
       );
@@ -114,6 +112,27 @@ export class StellarService {
   }
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
+    const remaniningAmount = createStakeDto.amount * 0.1;
+    const assets = [
+      new Asset(
+        'AQUA',
+        'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA',
+      ),
+      new Asset(
+        'XLM',
+        'GBSTRH4QOTWNSVA6E4HFERETX4ZLSR3CIUBLK7AXYII277PFJC4BBYOG',
+      ),
+    ];
+    const amounts = new Map<string, string>();
+    amounts.set('XLM', `${remaniningAmount}`);
+    amounts.set(AQUA_CODE, '50');
+
+    const depositTx = await this.sorobanService.depositAQUAWHLHUB(
+      assets,
+      amounts,
+    );
+
+    return depositTx;
     try {
       // Load the account details
       const account = await this.server.loadAccount(this.keypair.publicKey());
@@ -265,6 +284,23 @@ export class StellarService {
         );
 
         await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
+
+        const assets = [
+          new Asset('WHLAQUA', this.keypair.publicKey()),
+          Asset.native(), // Assuming XLM as the other asset
+        ];
+        const amounts = new Map<string, string>();
+        amounts.set('WHLAQUA', '1000'); // Deposit 1000 WHLAQUA
+        amounts.set('XLM', '50'); // Deposit 50 XLM
+
+        const depositTx = await this.sorobanService.depositAQUAWHLHUB(
+          assets,
+          amounts,
+        );
+
+        //[x] transfer the trackerAmountTo user
+        //[x] transfer additional liquidity to jewelboost protocol
+        //[x]
       } else {
         console.error('Claimable balance transaction failed.');
       }
@@ -351,6 +387,21 @@ export class StellarService {
       console.log('Transaction successful:', response);
     } catch (error) {
       console.error('Transaction failed:', error.response.data);
+    }
+  }
+
+  public async getAssetDetails(asset: Asset) {
+    try {
+      const assetRecords = await this.server
+        .assets()
+        .forCode(asset.code)
+        .forIssuer(asset.issuer)
+        .call();
+
+      console.log('Asset Details:', assetRecords);
+      return assetRecords;
+    } catch (error) {
+      console.error('Error fetching asset details:', error);
     }
   }
 }

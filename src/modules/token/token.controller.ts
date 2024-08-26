@@ -21,7 +21,7 @@ export class TokenController {
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   create(@Body() createTokenDto: CreateTokenDto) {
-    // return this.stellarService.create(createTokenDto);
+    return this.stellarService.create(createTokenDto);
   }
 
   @Post('stake')
