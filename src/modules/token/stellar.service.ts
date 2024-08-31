@@ -23,11 +23,13 @@ import fs from 'fs';
 import { error } from 'console';
 import { Balance } from '@/utils/models/interfaces';
 import { SorobanService } from './soroban.service';
+import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 
-const xdr =
-  'AAAAAAHPSd0AAAAAAAAAAQAAAAAAAAAYAAAAAP7AOiayfQ8Zf8oHRWUtjWOdmILoCTjYXVt30ww5tZJUAAAAAA==';
-const result = StellarSdk.xdr.TransactionResult.fromXDR(xdr, 'base64');
-console.log(JSON.stringify(result, null, 2));
+//[x] should decord xdrs later
+// const xdr =
+//   'AAAAAAHPSd0AAAAAAAAAAQAAAAAAAAAYAAAAAP7AOiayfQ8Zf8oHRWUtjWOdmILoCTjYXVt30ww5tZJUAAAAAA==';
+// const result = StellarSdk.xdr.TransactionResult.fromXDR(xdr, 'base64');
+// console.log(JSON.stringify(result, null, 2));
 
 // const sorobanTokenContractPath = path.join(
 //   process.cwd(),
@@ -75,6 +77,9 @@ export class StellarService {
 
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+
+    @InjectRepository(TokenEntity)
+    private tokeRepository: Repository<TokenEntity>,
   ) {
     this.secret = this.configService.get<string>('SOROBAN_WALLET_SECRET_KEY');
     this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
@@ -84,21 +89,59 @@ export class StellarService {
     this.whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
   }
 
-  async create(createTokenDto: CreateTokenDto): Promise<void> {}
+  async create(createTokenDto: CreateTokenDto): Promise<string> {
+    try {
+      const asset = new Asset(createTokenDto.code, createTokenDto.issuer);
+
+      const tokenData = await this.tokeRepository.findOneBy({
+        code: createTokenDto.code,
+        issuer: createTokenDto.issuer,
+      });
+
+      //[x] should throw an error
+      if (tokenData) return;
+
+      const user = new UserEntity();
+      user.account = asset.issuer;
+      await user.save();
+
+      const token = new TokenEntity();
+      token.code = createTokenDto.code;
+      token.issuer = createTokenDto.issuer;
+      token.sacAddress = 'token address';
+
+      console.log('token created');
+
+      await token.save();
+
+      return 'token created';
+    } catch (err) {
+      console.log(err);
+    }
+  }
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
     const remaniningAmount = createStakeDto.amount * 0.1;
     const whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
+
     const assets = [
-      whaleAcqua,
+      StellarSdk.Asset.native(),
       new Asset(
         'AQUA',
         'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA',
       ),
     ];
+
     const amounts = new Map<string, string>();
-    amounts.set('WHLAQUA', '10');
-    amounts.set(AQUA_CODE, `${remaniningAmount}`);
+    amounts.set(WHLAQUA_CODE, '1000');
+    amounts.set(AQUA_CODE, '1000');
+
+    const depositTx = await this.sorobanService.depositAQUAWHLHUB(
+      assets,
+      amounts,
+    );
+
+    return;
 
     try {
       // Load the account details
@@ -189,19 +232,19 @@ export class StellarService {
         builtTrustlineTxn.sign(this.keypair);
 
         if (trustlineTransaction.operations.length > 0) {
-          console.log('starting trustline transaction');
-          const trustlineResponse =
-            await this.server.submitTransaction(builtTrustlineTxn);
-          const trustlineHash = trustlineResponse.hash;
-          console.log(
-            'Trustline transaction xdr:',
-            trustlineResponse.result_xdr,
-          );
-
-          const trustlineResult = await this.checkTransactionStatus(
-            this.server,
-            trustlineHash,
-          );
+          //[x]
+          // console.log('starting trustline transaction');
+          // const trustlineResponse =
+          //   await this.server.submitTransaction(builtTrustlineTxn);
+          // const trustlineHash = trustlineResponse.hash;
+          // console.log(
+          //   'Trustline transaction xdr:',
+          //   trustlineResponse.result_xdr,
+          // );
+          // const trustlineResult = await this.checkTransactionStatus(
+          //   this.server,
+          //   trustlineHash,
+          // );
         }
       } else {
         console.log('No trustline added for publc keys');
@@ -263,10 +306,11 @@ export class StellarService {
       // amounts.set('WHLAQUA', '1');
       // amounts.set(AQUA_CODE, '2');
 
-      const depositTx = await this.sorobanService.depositAQUAWHLHUB(
-        assets,
-        amounts,
-      );
+      //[x]
+      // const depositTx = await this.sorobanService.depositAQUAWHLHUB(
+      //   assets,
+      //   amounts,
+      // );
 
       //[x] transfer the trackerAmountTo user
       //[x] transfer additional liquidity to jewelboost protocol

@@ -9,7 +9,7 @@ import { StellarService } from './stellar.service';
 export class TokenController {
   constructor(private readonly stellarService: StellarService) {}
 
-  @Post()
+  @Post('create')
   @ApiOperation({ summary: 'Create a new token' })
   @ApiBody({
     type: CreateTokenDto,

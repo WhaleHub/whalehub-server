@@ -8,6 +8,7 @@ import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecord
 import { SorobanService } from './soroban.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
+import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
       StakeEntity,
       ClaimableRecordsEntity,
       PoolsEntity,
+      TokenEntity,
     ]),
     ConfigModule,
   ],
