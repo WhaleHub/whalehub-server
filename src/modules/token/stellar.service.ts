@@ -24,6 +24,7 @@ import { error } from 'console';
 import { Balance } from '@/utils/models/interfaces';
 import { SorobanService } from './soroban.service';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
+import { CreateAddLiquidityDto } from './dto/crate-add-lp.dto';
 
 //[x] should decord xdrs later
 // const xdr =
@@ -133,8 +134,8 @@ export class StellarService {
     ];
 
     const amounts = new Map<string, string>();
-    amounts.set(WHLAQUA_CODE, '1000');
-    amounts.set(AQUA_CODE, '1000');
+    amounts.set('XLM', '5');
+    amounts.set(AQUA_CODE, '5');
 
     const depositTx = await this.sorobanService.depositAQUAWHLHUB(
       assets,
@@ -217,7 +218,7 @@ export class StellarService {
           trustlineTransaction.addOperation(
             Operation.changeTrust({
               asset: new Asset(asset.code, asset.issuer),
-              limit: '1000000000.0000000',
+              limit: '1000000000',
             }),
           );
           trustlineOperationAdded = true;
@@ -416,5 +417,9 @@ export class StellarService {
     } catch (error) {
       console.error('Error fetching asset details:', error);
     }
+  }
+
+  async addLiq(createAddLiquidityDto: CreateAddLiquidityDto) {
+    console.log(createAddLiquidityDto);
   }
 }

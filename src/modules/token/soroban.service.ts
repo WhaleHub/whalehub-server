@@ -13,6 +13,7 @@ import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as base64 from 'base64-js';
+import { AQUA_CODE, AQUA_ISSUER } from './stellar.service';
 
 const SOROBAN_SERVER = 'https://soroban-rpc.aqua.network/';
 export const AMM_SMART_CONTACT_ID =
@@ -171,26 +172,28 @@ export class SorobanService {
       } else {
         console.log('trying to deposit into pool');
 
-        this.getDepositTx(
-          account.accountId(),
-          poolsForAsset[0][1],
-          assets,
-          amounts,
-        )
-          .then(async (tx) => {
-            console.log(tx);
-            //[x] submit transaction on chain
-            // const mainTx = await this.server.sendTransaction(tx);
+        // this.getDepositTx(
+        //   account.accountId(),
+        //   poolsForAsset[0][1],
+        //   assets,
+        //   amounts,
+        // )
+        //   .then(async (tx) => {
+        //     console.log(tx);
+        //     //[x] submit transaction on chain
+        //     // const mainTx = await this.server.sendTransaction(tx);
 
-            // if (mainTx.status === 'ERROR') {
-            //   console.log(mainTx);
-            // } else {
-            //   console.log('transaction submitted');
-            // }
-          })
-          .catch((err) => console.log(err));
+        //     // if (mainTx.status === 'ERROR') {
+        //     //   console.log(mainTx);
+        //     // } else {
+        //     //   console.log('transaction submitted');
+        //     // }
+        //   })
+        //   .catch((err) => console.log(err));
 
-        return;
+        // return;
+        // const poolIndex =
+        // 'CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV';
 
         const tokens = [
           new StellarSdk.Address(
@@ -201,16 +204,19 @@ export class SorobanService {
           ).toScVal(),
         ];
 
-        const poolIndex =
-          'CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV';
+        // xdr.ScVal.scvBytes(Buffer.from(poolIndex, 'hex')),
+        // xdr.ScVal.scvVec(tokens),
 
-        const desiredAmounts = [1n, 2n].map(this.bigintToInt128Parts);
-        const minShares = this.bigintToInt128Parts(100000n);
+        const poolIndex = poolsForAsset[0][1];
+
+        const desiredAmounts = [100n, 1n].map(this.bigintToInt128Parts);
+        const minShares = this.bigintToInt128Parts(1n);
 
         const contract = new StellarSdk.Contract(AMM_SMART_CONTACT_ID);
-
-        console.log(Buffer.from(poolIndex, 'hex'));
-
+        //  xdr.ScVal.scvVec(
+        //             desiredAmounts.map(StellarSdk.xdr.ScVal.scvU128),
+        //           ),
+        // xdr.ScVal.scvU128(minShares),
         const transaction = new StellarSdk.TransactionBuilder(account, {
           fee: StellarSdk.BASE_FEE,
           networkPassphrase: StellarSdk.Networks.PUBLIC,
@@ -219,12 +225,19 @@ export class SorobanService {
             contract.call(
               'deposit',
               StellarSdk.Address.fromString(this.keypair.publicKey()).toScVal(),
-              xdr.ScVal.scvVec(tokens),
-              xdr.ScVal.scvBytes(Buffer.from(poolIndex, 'hex')),
-              xdr.ScVal.scvVec(
-                desiredAmounts.map(StellarSdk.xdr.ScVal.scvI128),
+              this.scValToArray(
+                this.orderTokens([
+                  new Asset(AQUA_CODE, AQUA_ISSUER),
+                  StellarSdk.Asset.native(),
+                ]).map((asset) => this.assetToScVal(asset)),
               ),
-              xdr.ScVal.scvI128(minShares),
+              xdr.ScVal.scvBytes(poolIndex),
+              this.scValToArray(
+                this.orderTokens(assets).map((asset) =>
+                  this.amountToUint128(amounts.get(this.getAssetString(asset))),
+                ),
+              ),
+              this.amountToUint128('0.0000001'),
             ),
           )
           .setTimeout(30)
@@ -232,7 +245,10 @@ export class SorobanService {
 
         const txnPrepared = await this.prepareTransaction(transaction);
 
-        console.log(txnPrepared);
+        const txn = await this.server.sendTransaction(txnPrepared);
+        console.log(txn);
+
+        const ab = await this.checkTransactionStatus(this.server, txn.hash);
       }
     } catch (err) {
       console.log(err);
@@ -260,7 +276,7 @@ export class SorobanService {
       this.scValToArray(
         this.orderTokens(assets).map((asset) => {
           // amounts.get(this.getAssetString(asset)
-          return this.amountToUint128('1');
+          return this.amountToUint128('100');
         }),
       ),
       this.amountToUint128('0.0000001'),
@@ -282,7 +298,7 @@ export class SorobanService {
     return xdr.ScVal.scvBytes(buffer);
   }
 
-  bigintToInt128Parts(value) {
+  bigintToInt128Parts(value: BigInt): xdr.UInt128Parts {
     // Ensure value is a bigint
     if (typeof value !== 'bigint') {
       throw new Error('Value must be a bigint');
@@ -294,8 +310,8 @@ export class SorobanService {
     const high = Number(value >> 64n);
     const low = Number(value & HIGH_MASK);
 
-    return new StellarSdk.xdr.Int128Parts({
-      hi: new StellarSdk.xdr.Int64(high),
+    return new StellarSdk.xdr.UInt128Parts({
+      hi: new StellarSdk.xdr.Uint64(high),
       lo: new StellarSdk.xdr.Uint64(low),
     });
   }
