@@ -1,7 +1,6 @@
 import { Column, Entity, OneToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
-import { Asset } from '@stellar/stellar-sdk';
 
 @Entity({ name: 'pools' })
 export class PoolsEntity extends BaseEntity {
@@ -26,6 +25,6 @@ export class PoolsEntity extends BaseEntity {
   @Column()
   txnHash: string;
 
-  @Column('binary')
-  poolHash: Buffer;
+  @Column()
+  poolHash: string;
 }

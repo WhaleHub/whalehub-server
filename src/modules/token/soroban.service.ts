@@ -155,7 +155,17 @@ export class SorobanService {
                 poolsForAsset[0][1],
                 assets,
                 amounts,
-              );
+              ).then(async (tx) => {
+                tx.sign(this.keypair);
+                const mainTx = await this.server.sendTransaction(tx);
+
+                if (mainTx.status === 'ERROR') {
+                  //[x] using txnHash check when transaction is success
+                  console.log(mainTx);
+                } else {
+                  console.log('transaction submitted', mainTx.hash);
+                }
+              });
             });
           })
           .catch((err) => {
@@ -176,7 +186,7 @@ export class SorobanService {
             const mainTx = await this.server.sendTransaction(tx);
 
             if (mainTx.status === 'ERROR') {
-              console.log(mainTx);
+              //[x] using txnHash check when transaction is success
             } else {
               console.log('transaction submitted', mainTx.hash);
             }
