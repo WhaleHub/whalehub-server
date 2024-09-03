@@ -26,6 +26,6 @@ export class PoolsEntity extends BaseEntity {
   @Column()
   txnHash: string;
 
-  @Column()
-  poolHash: string;
+  @Column('binary')
+  poolHash: Buffer;
 }

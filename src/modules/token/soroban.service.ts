@@ -76,7 +76,7 @@ export class SorobanService {
     this.startServer();
   }
 
-  startServer() {
+  async startServer() {
     this.secret = this.configService.get<string>('SOROBAN_WALLET_SECRET_KEY');
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl, { allowHttp: true });
@@ -93,7 +93,6 @@ export class SorobanService {
         console.log('initializing pool');
         const account = await this.server.getAccount(this.keypair.publicKey());
 
-        //[x]
         // gets pool fees
         // const getFeeInfos = Promise.all([
         //   this.getCreationFeeToken(),
@@ -107,11 +106,6 @@ export class SorobanService {
 
         // const feeInfos = await getFeeInfos;
 
-        // console.olog(createPoolTxnValue[0], createPoolTxnValue[1]);
-
-        // Convert Buffer to hexadecimal string
-
-        // return;
         this.getInitConstantPoolTx(
           account.accountId(),
           assets[0],
@@ -133,8 +127,6 @@ export class SorobanService {
                 return;
               }
               const hash = res.hash;
-              //  const hash =
-              // 'cd9b95a5977174c29c18d752609536229c4851cf7fcaede97ce64dc07bd1425d';
 
               const createPoolTxnValue = this.checkTransactionStatus(
                 this.server,
@@ -146,13 +138,6 @@ export class SorobanService {
 
               poolsForAsset = await this.getPools(assets);
 
-              // [
-              //   [
-              //     'CD4ASKG2XVZRAUXSXPCGUSBIX4JOC2TNA2FDBAPUNJB7RSUG5YGRQRSF',
-              //     <Buffer b2 e0 2f cf ca 6c 96 f8 ad 5c bd 84 e7 78 4a 77 7b 36 d9 c9 6a 24 59 40 2c 4f 45 84 62 aa b7 f0>
-              //   ]
-              // ]
-
               // keep records in db
               const pool = new PoolsEntity();
               pool.assetA = assets[0];
@@ -160,10 +145,17 @@ export class SorobanService {
               pool.account = user;
               pool.fee = 10;
               pool.txnHash = hash;
-              pool.poolHash = poolsForAsset[0][0];
+              pool.poolHash = poolsForAsset[0][1];
               await pool.save();
 
               //[x]deposit tokens to pool
+
+              this.getDepositTx(
+                account.accountId(),
+                poolsForAsset[0][1],
+                assets,
+                amounts,
+              );
             });
           })
           .catch((err) => {
@@ -172,90 +164,28 @@ export class SorobanService {
       } else {
         console.log('trying to deposit into pool');
 
-        // this.getDepositTx(
-        //   account.accountId(),
-        //   poolsForAsset[0][1],
-        //   assets,
-        //   amounts,
-        // )
-        //   .then(async (tx) => {
-        //     console.log(tx);
-        //     //[x] submit transaction on chain
-        //     // const mainTx = await this.server.sendTransaction(tx);
+        this.getDepositTx(
+          account.accountId(),
+          poolsForAsset[0][1],
+          assets,
+          amounts,
+        )
+          .then(async (tx) => {
+            tx.sign(this.keypair);
 
-        //     // if (mainTx.status === 'ERROR') {
-        //     //   console.log(mainTx);
-        //     // } else {
-        //     //   console.log('transaction submitted');
-        //     // }
-        //   })
-        //   .catch((err) => console.log(err));
+            const mainTx = await this.server.sendTransaction(tx);
 
-        // return;
-        // const poolIndex =
-        // 'CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV';
-
-        const tokens = [
-          new StellarSdk.Address(
-            'CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK',
-          ).toScVal(),
-          new StellarSdk.Address(
-            'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
-          ).toScVal(),
-        ];
-
-        // xdr.ScVal.scvBytes(Buffer.from(poolIndex, 'hex')),
-        // xdr.ScVal.scvVec(tokens),
-
-        const poolIndex = poolsForAsset[0][1];
-
-        const desiredAmounts = [100n, 1n].map(this.bigintToInt128Parts);
-        const minShares = this.bigintToInt128Parts(1n);
-
-        const contract = new StellarSdk.Contract(AMM_SMART_CONTACT_ID);
-        //  xdr.ScVal.scvVec(
-        //             desiredAmounts.map(StellarSdk.xdr.ScVal.scvU128),
-        //           ),
-        // xdr.ScVal.scvU128(minShares),
-        const transaction = new StellarSdk.TransactionBuilder(account, {
-          fee: StellarSdk.BASE_FEE,
-          networkPassphrase: StellarSdk.Networks.PUBLIC,
-        })
-          .addOperation(
-            contract.call(
-              'deposit',
-              StellarSdk.Address.fromString(this.keypair.publicKey()).toScVal(),
-              this.scValToArray(
-                this.orderTokens([
-                  new Asset(AQUA_CODE, AQUA_ISSUER),
-                  StellarSdk.Asset.native(),
-                ]).map((asset) => this.assetToScVal(asset)),
-              ),
-              xdr.ScVal.scvBytes(poolIndex),
-              this.scValToArray(
-                this.orderTokens(assets).map((asset) =>
-                  this.amountToUint128(amounts.get(this.getAssetString(asset))),
-                ),
-              ),
-              this.amountToUint128('0.0000001'),
-            ),
-          )
-          .setTimeout(30)
-          .build();
-
-        const txnPrepared = await this.prepareTransaction(transaction);
-
-        const txn = await this.server.sendTransaction(txnPrepared);
-        console.log(txn);
-
-        const ab = await this.checkTransactionStatus(this.server, txn.hash);
+            if (mainTx.status === 'ERROR') {
+              console.log(mainTx);
+            } else {
+              console.log('transaction submitted', mainTx.hash);
+            }
+          })
+          .catch((err) => console.log(err));
       }
     } catch (err) {
       console.log(err);
     }
-    //[x] checks if pool already exists
-    //[x] if not create pool
-    //[x] if exits, fund pool
   }
 
   getDepositTx(
@@ -275,8 +205,7 @@ export class SorobanService {
       this.hashToScVal(poolHash),
       this.scValToArray(
         this.orderTokens(assets).map((asset) => {
-          // amounts.get(this.getAssetString(asset)
-          return this.amountToUint128('100');
+          return this.amountToUint128(amounts.get(this.getAssetString(asset)));
         }),
       ),
       this.amountToUint128('0.0000001'),
@@ -416,8 +345,8 @@ export class SorobanService {
   getAssetContractId(asset: Asset): string {
     const hash = this.getAssetContractHash(asset);
 
-    //[x] asset contract address
-    // console.log(this.getContactIdFromHash(hash));
+    // [x] asset contract address
+    console.log(this.getContactIdFromHash(hash));
 
     return this.getContactIdFromHash(hash);
   }
@@ -586,7 +515,17 @@ export class SorobanService {
           let resultXdr = transactionResult.resultXdr;
           let resultMetaXdr = transactionResult.resultMetaXdr;
 
-          console.log({ resultMetaXdr, resultXdr });
+          // console.log({ resultMetaXdr, resultXdr });
+
+          const resultMetaXdrString = resultMetaXdr.toXDR('base64');
+          const resultString = resultXdr.toXDR('base64');
+          // console.log(
+          //   StellarSdk.xdr.TransactionResult.fromXDR(resultString, 'base64'),
+          // );
+          // const txnMetaResult = StellarSdk.xdr.TransactionResult.fromXDR(
+          //   resultMetaXdrString,
+          //   'base64',
+          // );
 
           // let returnValue = transactionMeta.v3().sorobanMeta().returnValue();
           // const transactionResult1 = returnValue.value();

@@ -108,7 +108,8 @@ export class StellarService {
 
       const token = new TokenEntity();
       token.code = createTokenDto.code;
-      token.issuer = createTokenDto.issuer;
+      token.issuer = this.keypair.publicKey();
+      //[x] ensure to deploy token asset contract
       token.sacAddress = 'token address';
 
       console.log('token created');
@@ -124,25 +125,6 @@ export class StellarService {
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
     const remaniningAmount = createStakeDto.amount * 0.1;
     const whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
-
-    const assets = [
-      StellarSdk.Asset.native(),
-      new Asset(
-        'AQUA',
-        'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA',
-      ),
-    ];
-
-    const amounts = new Map<string, string>();
-    amounts.set('XLM', '5');
-    amounts.set(AQUA_CODE, '5');
-
-    const depositTx = await this.sorobanService.depositAQUAWHLHUB(
-      assets,
-      amounts,
-    );
-
-    return;
 
     try {
       // Load the account details
@@ -162,7 +144,7 @@ export class StellarService {
       const transferAquaResponse =
         await this.server.submitTransaction(transferAquaTxn);
       const transferAquaHash = transferAquaResponse.hash;
-      // console.log('Transfer AQUA transaction hash:', transferAquaHash);
+      console.log('Transfer AQUA transaction hash:', transferAquaHash);
 
       // Check if the first transaction was successful
       const depositAquaTransactionResult = (await this.checkTransactionStatus(
@@ -170,11 +152,11 @@ export class StellarService {
         transferAquaHash,
       )) as any;
 
-      if (
-        depositAquaTransactionResult &&
-        depositAquaTransactionResult.successful
-      ) {
-      }
+      // if (
+      //   depositAquaTransactionResult &&
+      //   depositAquaTransactionResult.successful
+      // ) {
+      // }
 
       // Ensure the user account exists in the database
       let user = await this.userRepository.findOneBy({
@@ -233,19 +215,15 @@ export class StellarService {
         builtTrustlineTxn.sign(this.keypair);
 
         if (trustlineTransaction.operations.length > 0) {
-          //[x]
-          // console.log('starting trustline transaction');
-          // const trustlineResponse =
-          //   await this.server.submitTransaction(builtTrustlineTxn);
-          // const trustlineHash = trustlineResponse.hash;
-          // console.log(
-          //   'Trustline transaction xdr:',
-          //   trustlineResponse.result_xdr,
-          // );
-          // const trustlineResult = await this.checkTransactionStatus(
-          //   this.server,
-          //   trustlineHash,
-          // );
+          console.log('starting trustline transaction');
+          const trustlineResponse =
+            await this.server.submitTransaction(builtTrustlineTxn);
+          const trustlineHash = trustlineResponse.hash;
+          console.log(
+            'Trustline transaction xdr:',
+            trustlineResponse.result_xdr,
+          );
+          await this.checkTransactionStatus(this.server, trustlineHash);
         }
       } else {
         console.log('No trustline added for publc keys');
@@ -261,6 +239,7 @@ export class StellarService {
             claimants: [
               new Claimant(
                 account.accountId(),
+                //[x] ensure to use timeline
                 Claimant.predicateNot(Claimant.predicateUnconditional()),
               ),
             ],
@@ -289,7 +268,18 @@ export class StellarService {
       const trackerAmountForUser = Number(createStakeDto.amount);
       const additionalAmountForLiquidity = Number(createStakeDto.amount) * 0.1;
 
-      //[x] uncomment below codes
+      await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
+
+      //[x] ensure server publick key has WHLAQUA
+      const assets = [this.whaleAcqua, new Asset(AQUA_CODE, AQUA_CODE)];
+
+      const amounts = new Map<string, string>();
+      amounts.set(assets[0].code, additionalAmountForLiquidity.toString());
+      amounts.set(assets[1].code, remaniningAmount.toString());
+
+      await this.sorobanService.depositAQUAWHLHUB(assets, amounts);
+
+      // //[x]
       // await this.transferAsset(
       //   this.keypair,
       //   createStakeDto.senderPublicKey,
@@ -297,24 +287,6 @@ export class StellarService {
       //   this.whaleAcqua,
       // );
 
-      // await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
-
-      // const assets = [
-      //   new Asset('WHLAQUA', this.keypair.publicKey()),
-      //   new Asset(AQUA_CODE, AQUA_CODE),
-      // ];
-      // const amounts = new Map<string, string>();
-      // amounts.set('WHLAQUA', '1');
-      // amounts.set(AQUA_CODE, '2');
-
-      //[x]
-      // const depositTx = await this.sorobanService.depositAQUAWHLHUB(
-      //   assets,
-      //   amounts,
-      // );
-
-      //[x] transfer the trackerAmountTo user
-      //[x] transfer additional liquidity to jewelboost protocol
       // } else {
       //   console.error('Claimable balance transaction failed.');
       // }
@@ -347,7 +319,7 @@ export class StellarService {
           return null;
         }
       } catch (error) {
-        console.error('Error fetching transaction status:', error);
+        // console.error('Error fetching transaction status:', error);
       }
 
       // Wait for 5 seconds before retrying
