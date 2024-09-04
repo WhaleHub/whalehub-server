@@ -7,19 +7,14 @@ import { sha256 } from 'js-sha256';
 import * as binascii from 'binascii';
 import SimulateTransactionSuccessResponse = StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse;
 import BigNumber from 'bignumber.js';
-import bs58 from 'bs58'; // Base32 encoding library
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import * as base64 from 'base64-js';
-import { AQUA_CODE, AQUA_ISSUER } from './stellar.service';
 
-const SOROBAN_SERVER = 'https://soroban-rpc.aqua.network/';
 export const AMM_SMART_CONTACT_ID =
   'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK';
 
-// First stellar account:)
 const ACCOUNT_FOR_SIMULATE =
   'GCX6LOZ6ZEXBHLTPOPP2THN74K33LMT4HKSPDTWSLVCF4EWRGXOS7D3V';
 
@@ -93,19 +88,6 @@ export class SorobanService {
         console.log('initializing pool');
         const account = await this.server.getAccount(this.keypair.publicKey());
 
-        // gets pool fees
-        // const getFeeInfos = Promise.all([
-        //   this.getCreationFeeToken(),
-        //   this.getCreationFee(POOL_TYPE.constant),
-        //   this.getCreationFee(POOL_TYPE.stable),
-        // ]).then(([token, constantFee, stableFee]) => ({
-        //   token,
-        //   constantFee,
-        //   stableFee,
-        // }));
-
-        // const feeInfos = await getFeeInfos;
-
         this.getInitConstantPoolTx(
           account.accountId(),
           assets[0],
@@ -148,7 +130,7 @@ export class SorobanService {
               pool.poolHash = poolsForAsset[0][1];
               await pool.save();
 
-              //[x]deposit tokens to pool
+              //deposit tokens to pool
 
               this.getDepositTx(
                 account.accountId(),
@@ -160,7 +142,7 @@ export class SorobanService {
                 const mainTx = await this.server.sendTransaction(tx);
 
                 if (mainTx.status === 'ERROR') {
-                  //[x] using txnHash check when transaction is success
+                  //TODO: using txnHash check when transaction is success
                   console.log(mainTx);
                 } else {
                   console.log('transaction submitted', mainTx.hash);
@@ -355,8 +337,10 @@ export class SorobanService {
   getAssetContractId(asset: Asset): string {
     const hash = this.getAssetContractHash(asset);
 
-    // [x] asset contract address
-    console.log(this.getContactIdFromHash(hash));
+    console.log(
+      'contract address of asset : ',
+      this.getContactIdFromHash(hash),
+    );
 
     return this.getContactIdFromHash(hash);
   }
@@ -516,31 +500,19 @@ export class SorobanService {
     this.checkTransactionStatus(this.server, txx.hash);
   }
 
-  async checkTransactionStatus(server, hash: string) {
+  async checkTransactionStatus(
+    server: StellarSdk.SorobanRpc.Server,
+    hash: string,
+  ): Promise<{
+    successful: boolean;
+    results: xdr.TransactionResult;
+  }> {
     while (true) {
       try {
-        const transactionResult = await this.server.getTransaction(hash);
-
+        const transactionResult = await server.getTransaction(hash);
         if (transactionResult.status === 'SUCCESS') {
           let resultXdr = transactionResult.resultXdr;
-          let resultMetaXdr = transactionResult.resultMetaXdr;
-
-          // console.log({ resultMetaXdr, resultXdr });
-
-          const resultMetaXdrString = resultMetaXdr.toXDR('base64');
-          const resultString = resultXdr.toXDR('base64');
-          // console.log(
-          //   StellarSdk.xdr.TransactionResult.fromXDR(resultString, 'base64'),
-          // );
-          // const txnMetaResult = StellarSdk.xdr.TransactionResult.fromXDR(
-          //   resultMetaXdrString,
-          //   'base64',
-          // );
-
-          // let returnValue = transactionMeta.v3().sorobanMeta().returnValue();
-          // const transactionResult1 = returnValue.value();
-          // return transactionResult1;
-          return null;
+          return { successful: true, results: resultXdr };
         } else {
           console.error(
             'Transaction failed. Result:',
@@ -551,7 +523,6 @@ export class SorobanService {
       } catch (error) {
         console.error('Error fetching transaction status:', error);
       }
-
       // Wait for 5 seconds before retrying
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }

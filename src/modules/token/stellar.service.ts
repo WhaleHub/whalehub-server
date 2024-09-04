@@ -123,10 +123,22 @@ export class StellarService {
   }
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
-    const remaniningAmount = createStakeDto.amount * 0.1;
-    const whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
-
     try {
+      //TODO: ensure user has 1M AQUA Tokens
+
+      // gets pool fees
+      // const getFeeInfos = Promise.all([
+      //   this.getCreationFeeToken(),
+      //   this.getCreationFee(POOL_TYPE.constant),
+      //   this.getCreationFee(POOL_TYPE.stable),
+      // ]).then(([token, constantFee, stableFee]) => ({
+      //   token,
+      //   constantFee,
+      //   stableFee,
+      // }));
+
+      // const feeInfos = await getFeeInfos;
+
       // Load the account details
       const account = await this.server.loadAccount(this.keypair.publicKey());
 
@@ -147,16 +159,14 @@ export class StellarService {
       console.log('Transfer AQUA transaction hash:', transferAquaHash);
 
       // Check if the first transaction was successful
-      const depositAquaTransactionResult = (await this.checkTransactionStatus(
+      const depositAquaTransactionResult = await this.checkTransactionStatus(
         this.server,
         transferAquaHash,
-      )) as any;
+      );
 
-      // if (
-      //   depositAquaTransactionResult &&
-      //   depositAquaTransactionResult.successful
-      // ) {
-      // }
+      if (!depositAquaTransactionResult.successful) {
+        throw new Error('Transfer AQUA transaction failed.');
+      }
 
       // Ensure the user account exists in the database
       let user = await this.userRepository.findOneBy({
@@ -182,7 +192,7 @@ export class StellarService {
       const trustlineTransaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
-      }) as any;
+      });
 
       // List of governance assets to check
       const assetsToCheck = [
@@ -214,22 +224,15 @@ export class StellarService {
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
         builtTrustlineTxn.sign(this.keypair);
 
-        if (trustlineTransaction.operations.length > 0) {
-          console.log('starting trustline transaction');
-          const trustlineResponse =
-            await this.server.submitTransaction(builtTrustlineTxn);
-          const trustlineHash = trustlineResponse.hash;
-          console.log(
-            'Trustline transaction xdr:',
-            trustlineResponse.result_xdr,
-          );
-          await this.checkTransactionStatus(this.server, trustlineHash);
-        }
+        const trustlineResponse =
+          await this.server.submitTransaction(builtTrustlineTxn);
+        const trustlineHash = trustlineResponse.hash;
+        await this.checkTransactionStatus(this.server, trustlineHash);
       } else {
-        console.log('No trustline added for publc keys');
+        console.log('No new trustline was added.');
       }
 
-      // Create and submit the claimable balance transaction
+      // If all the previous steps succeeded, create and submit the claimable balance transaction
       const claimableTransaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
@@ -239,7 +242,7 @@ export class StellarService {
             claimants: [
               new Claimant(
                 account.accountId(),
-                //[x] ensure to use timeline
+                // Ensure to use the correct predicate
                 Claimant.predicateNot(Claimant.predicateUnconditional()),
               ),
             ],
@@ -250,53 +253,65 @@ export class StellarService {
         .setTimeout(180)
         .build();
 
-      // claimableTransaction.sign(this.keypair);
-      // const claimableResponse =
-      //   await this.server.submitTransaction(claimableTransaction);
-      // const claimableHash = claimableResponse.hash;
-      // console.log('Claimable balance transaction hash:', claimableHash);
+      claimableTransaction.sign(this.keypair);
+      const claimableResponse =
+        await this.server.submitTransaction(claimableTransaction);
+      const claimableHash = claimableResponse.hash;
+      console.log('Claimable balance transaction hash:', claimableHash);
 
-      // // Check the status of the claimable balance transaction
-      // const claimableResult = (await this.checkTransactionStatus(
-      //   this.server,
-      //   claimableHash,
-      // )) as any;
+      // Check the status of the claimable balance transaction
+      const claimableResult = await this.checkTransactionStatus(
+        this.server,
+        claimableHash,
+      );
 
-      // if (claimableResult) {
+      if (!claimableResult.successful) {
+        throw new Error('Claimable balance transaction failed.');
+      }
+
+      const operationResult = claimableResult.results[0].value() as any;
+      const createClaimableBalanceResult =
+        operationResult.createClaimableBalanceResult();
+
+      let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
+
+      //TODO: STORE RECORD ON DATABASE
+      console.log('Balance ID:', balanceId);
       console.log('Claimable balance transaction was successful.');
 
-      const trackerAmountForUser = Number(createStakeDto.amount);
       const additionalAmountForLiquidity = Number(createStakeDto.amount) * 0.1;
 
       await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
 
-      //[x] ensure server publick key has WHLAQUA
-      const assets = [this.whaleAcqua, new Asset(AQUA_CODE, AQUA_CODE)];
+      // Ensure server public key has WHLAQUA
+      const assets = [this.whaleAcqua, new Asset(AQUA_CODE, AQUA_ISSUER)];
 
       const amounts = new Map<string, string>();
       amounts.set(assets[0].code, additionalAmountForLiquidity.toString());
       amounts.set(assets[1].code, remaniningAmount.toString());
 
+      return;
       await this.sorobanService.depositAQUAWHLHUB(assets, amounts);
 
-      // //[x]
+      //TODO: transfer token tracker
       // await this.transferAsset(
       //   this.keypair,
       //   createStakeDto.senderPublicKey,
       //   `${createStakeDto.amount}`,
       //   this.whaleAcqua,
       // );
-
-      // } else {
-      //   console.error('Claimable balance transaction failed.');
-      // }
     } catch (err) {
-      //[x] get status and check if it was a timeout
       console.error('Error during staking process:', err);
     }
   }
 
-  async checkTransactionStatus(server: Horizon.Server, hash: string) {
+  async checkTransactionStatus(
+    server: Horizon.Server,
+    hash: string,
+  ): Promise<{
+    successful: boolean;
+    results: StellarSdk.xdr.OperationResult[];
+  }> {
     while (true) {
       try {
         // Fetch the transaction result using the server's `transactions().transaction()` method
@@ -306,20 +321,23 @@ export class StellarService {
           .call();
 
         if (transactionResult.successful) {
-          // console.log(
-          //   'Transaction confirmed in ledger:',
-          //   await transactionResult.successful,
-          // );
-          return transactionResult.successful;
+          let txResult = StellarSdk.xdr.TransactionResult.fromXDR(
+            transactionResult.result_xdr,
+            'base64',
+          );
+
+          let results = txResult.result().results();
+
+          return { successful: transactionResult.successful, results };
         } else {
-          // console.error(
-          //   'Transaction failed. Result:',
-          //   transactionResult.successful,
-          // );
+          console.error(
+            'Transaction failed. Result:',
+            transactionResult.successful,
+          );
           return null;
         }
       } catch (error) {
-        // console.error('Error fetching transaction status:', error);
+        console.error('Error fetching transaction status:', error);
       }
 
       // Wait for 5 seconds before retrying
