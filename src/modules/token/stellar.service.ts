@@ -290,7 +290,7 @@ export class StellarService {
       amounts.set(assets[0].code, additionalAmountForLiquidity.toString());
       amounts.set(assets[1].code, remaniningAmount.toString());
 
-      return;
+      // return
       await this.sorobanService.depositAQUAWHLHUB(assets, amounts);
 
       //TODO: transfer token tracker
@@ -410,6 +410,6 @@ export class StellarService {
   }
 
   async addLiq(createAddLiquidityDto: CreateAddLiquidityDto) {
-    console.log(createAddLiquidityDto);
+    await this.sorobanService.addLiqudityTxn(createAddLiquidityDto);
   }
 }

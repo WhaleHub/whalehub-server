@@ -11,9 +11,14 @@ import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { CreateAddLiquidityDto } from './dto/crate-add-lp.dto';
+import { AQUA_CODE, AQUA_ISSUER } from './stellar.service';
 
 export const AMM_SMART_CONTACT_ID =
   'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK';
+
+export const JEWEL_CONTRACT_ID =
+  'CD4IRHDYW3GHPBJIVTFJFS62RR3EH4CGIE6DTQLNO3UMIMPXGSAPRMWG';
 
 const ACCOUNT_FOR_SIMULATE =
   'GCX6LOZ6ZEXBHLTPOPP2THN74K33LMT4HKSPDTWSLVCF4EWRGXOS7D3V';
@@ -39,6 +44,12 @@ enum AMM_CONTRACT_METHOD {
   GET_STABLE_CREATION_FEE = 'get_stable_pool_payment_amount',
   GET_CONSTANT_CREATION_FEE = 'get_standard_pool_payment_amount',
   GET_CREATION_FEE_TOKEN = 'get_init_pool_payment_token',
+}
+
+enum JEWEL_CONTRACT_METHOD {
+  GET_POOL = 'get_pool',
+  GET_POOLS = 'get_pools',
+  HELLO = 'hello',
 }
 
 enum ASSET_CONTRACT_METHOD {
@@ -83,6 +94,7 @@ export class SorobanService {
 
     try {
       let poolsForAsset = await this.getPools(assets);
+      console.log(poolsForAsset);
 
       if (poolsForAsset.length === 0) {
         console.log('initializing pool');
@@ -175,6 +187,102 @@ export class SorobanService {
           })
           .catch((err) => console.log(err));
       }
+    } catch (err) {
+      console.log(err);
+    }
+  }
+
+  async addLiqudityTxn(createAddLiquidityDto: CreateAddLiquidityDto) {
+    try {
+      const account = await this.server.getAccount(this.keypair.publicKey());
+
+      const transferTxn = new StellarSdk.Transaction(
+        createAddLiquidityDto.signedTxXdr,
+        StellarSdk.Networks.PUBLIC,
+      );
+      transferTxn.sign(this.keypair);
+
+      const assets = [
+        new Asset(AQUA_CODE, AQUA_ISSUER),
+        new Asset('WHLAQUA', this.keypair.publicKey()),
+      ];
+
+      const contract = new StellarSdk.Contract(
+        'CA5UVEZLV6IXGE4WFHCOT6W6LGWI7KODSNXP5FLFK4M52LCORSPAIFEN',
+      );
+
+      // const contractAddress =
+      //   StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID);
+
+      // const transaction = new StellarSdk.TransactionBuilder(account, {
+      //   fee: StellarSdk.BASE_FEE,
+      //   networkPassphrase: StellarSdk.Networks.PUBLIC,
+      // })
+      //   .addOperation(
+      //     contract.call(
+      //       JEWEL_CONTRACT_METHOD.GET_POOLS,
+      //       contractAddress.toScVal(),
+      //       this.scValToArray(
+      //         this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
+      //       ),
+      //     ),
+      //   )
+      //   .setTimeout(30)
+      //   .build();
+
+      // const ab = await this.prepareTransaction(transaction);
+      // console.log(ab);
+
+      const bdx = await this.buildSmartContactTx(
+        account.accountId(),
+        'CAWFRUCWL2CIA6OKRVB33GQ2E7333LGYVJBQBHKACNPEGJCVCXREQNI2',
+        JEWEL_CONTRACT_METHOD.GET_POOLS,
+        StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
+        this.scValToArray(
+          this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
+        ),
+      );
+
+      const ab = await this.prepareTransaction(bdx);
+      console.log(ab, 'ready');
+
+      // const bdx = await this.buildSmartContactTx(
+      //   account.accountId(),
+      //   'CDQFRJUILOE5XWLYS3MIIKK2MOHBDXB7ZOPAZPMIGI4XDW4JTHRQG77Z',
+      //   JEWEL_CONTRACT_METHOD.HELLO,
+      //   xdr.ScVal.scvSymbol('Yeni'),
+      // );
+
+      // const bdx = await this.buildSmartContactTx(
+      //   account.accountId(),
+      //   'CDQFRJUILOE5XWLYS3MIIKK2MOHBDXB7ZOPAZPMIGI4XDW4JTHRQG77Z',
+      //   JEWEL_CONTRACT_METHOD.HELLO,
+      //   xdr.ScVal.scvSymbol('Yeni'),
+      // );
+
+      // const ab = await this.prepareTransaction(bdx);
+
+      // ab.sign(this.keypair);
+
+      // const zz = await this.server.sendTransaction(ab);
+      // console.log(zz);
+
+      // const contract = new StellarSdk.Contract(
+      //   'CDQFRJUILOE5XWLYS3MIIKK2MOHBDXB7ZOPAZPMIGI4XDW4JTHRQG77Z',
+      // );
+
+      // const transaction = new StellarSdk.TransactionBuilder(account, {
+      //   fee: StellarSdk.BASE_FEE,
+      //   networkPassphrase: StellarSdk.Networks.PUBLIC,
+      // })
+      //   .addOperation(
+      //     contract.call('hello', xdr.ScVal.scvSymbol('World New World')),
+      //   )
+      //   .setTimeout(30)
+      //   .build();
+
+      // const ab = await this.prepareTransaction(transaction);
+      // console.log(ab);
     } catch (err) {
       console.log(err);
     }
