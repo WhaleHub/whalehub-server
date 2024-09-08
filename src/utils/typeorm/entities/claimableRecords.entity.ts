@@ -8,8 +8,8 @@ export class ClaimableRecordsEntity extends BaseEntity {
   account: UserEntity;
 
   @Column()
-  id: string;
+  balanceId: string;
 
   @Column()
-  amount: number;
+  amount: string;
 }

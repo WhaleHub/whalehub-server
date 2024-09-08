@@ -8,5 +8,5 @@ export class StakeEntity extends BaseEntity {
   account: UserEntity;
 
   @Column()
-  amount: number;
+  amount: string;
 }

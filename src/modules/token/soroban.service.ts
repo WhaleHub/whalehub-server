@@ -49,6 +49,7 @@ enum AMM_CONTRACT_METHOD {
 enum JEWEL_CONTRACT_METHOD {
   GET_POOL = 'get_pool',
   GET_POOLS = 'get_pools',
+  DEPOSIT = 'deposit',
   HELLO = 'hello',
 }
 
@@ -67,8 +68,10 @@ export enum POOL_TYPE {
 @Injectable()
 export class SorobanService {
   server: StellarSdk.SorobanRpc.Server | null = null;
-  private secret: string;
-  private keypair: Keypair;
+  private issuingSecret: string;
+  private signerSecret: string;
+  private issuingKeypair: Keypair;
+  private signerKeypair: Keypair;
   private rpcUrl: string;
   whaleAcqua: Asset;
   assetsCache = new Map<string, Asset>();
@@ -83,23 +86,31 @@ export class SorobanService {
   }
 
   async startServer() {
-    this.secret = this.configService.get<string>('SOROBAN_WALLET_SECRET_KEY');
+    this.issuingSecret = this.configService.get<string>(
+      'SOROBAN_ISSUER_SECRET_KEY',
+    );
+    this.signerSecret = this.configService.get<string>(
+      'SOROBAN_SIGNER_SECRET_KEY',
+    );
+
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl, { allowHttp: true });
-    this.keypair = Keypair.fromSecret(this.secret);
+
+    this.issuingKeypair = Keypair.fromSecret(this.issuingSecret);
+    this.signerKeypair = Keypair.fromSecret(this.signerSecret);
   }
 
   async depositAQUAWHLHUB(assets: Asset[], amounts) {
-    const account = await this.server.getAccount(this.keypair.publicKey());
+    const account = await this.server.getAccount(
+      this.signerKeypair.publicKey(),
+    );
 
     try {
       let poolsForAsset = await this.getPools(assets);
-      console.log(poolsForAsset);
-
       if (poolsForAsset.length === 0) {
-        console.log('initializing pool');
-        const account = await this.server.getAccount(this.keypair.publicKey());
-
+        const account = await this.server.getAccount(
+          this.signerKeypair.publicKey(),
+        );
         this.getInitConstantPoolTx(
           account.accountId(),
           assets[0],
@@ -108,30 +119,23 @@ export class SorobanService {
         )
           .then((tx) => {
             const xdr = tx.toEnvelope().toXDR('base64');
-
             const initPoolTxn = new StellarSdk.Transaction(
               xdr,
               StellarSdk.Networks.PUBLIC,
             );
-
-            initPoolTxn.sign(this.keypair);
-
+            initPoolTxn.sign(this.signerKeypair);
             this.server.sendTransaction(initPoolTxn).then(async (res) => {
               if (!res) {
                 return;
               }
               const hash = res.hash;
-
               const createPoolTxnValue = this.checkTransactionStatus(
                 this.server,
                 hash,
               );
-
               const user = new UserEntity();
-              user.account = this.keypair.publicKey();
-
+              user.account = this.signerKeypair.publicKey();
               poolsForAsset = await this.getPools(assets);
-
               // keep records in db
               const pool = new PoolsEntity();
               pool.assetA = assets[0];
@@ -141,18 +145,15 @@ export class SorobanService {
               pool.txnHash = hash;
               pool.poolHash = poolsForAsset[0][1];
               await pool.save();
-
               //deposit tokens to pool
-
               this.getDepositTx(
                 account.accountId(),
                 poolsForAsset[0][1],
                 assets,
                 amounts,
               ).then(async (tx) => {
-                tx.sign(this.keypair);
+                tx.sign(this.signerKeypair);
                 const mainTx = await this.server.sendTransaction(tx);
-
                 if (mainTx.status === 'ERROR') {
                   //TODO: using txnHash check when transaction is success
                   console.log(mainTx);
@@ -166,7 +167,8 @@ export class SorobanService {
             console.log(err, 'caught');
           });
       } else {
-        console.log('trying to deposit into pool');
+        console.log('trying to deposit into pool, change amount later');
+        console.log('amounts: ', amounts);
 
         this.getDepositTx(
           account.accountId(),
@@ -175,14 +177,26 @@ export class SorobanService {
           amounts,
         )
           .then(async (tx) => {
-            tx.sign(this.keypair);
-
+            tx.sign(this.signerKeypair);
             const mainTx = await this.server.sendTransaction(tx);
 
-            if (mainTx.status === 'ERROR') {
-              //[x] using txnHash check when transaction is success
-            } else {
-              console.log('transaction submitted', mainTx.hash);
+            const result = await this.checkTransactionStatus(
+              this.server,
+              mainTx.hash,
+            );
+
+            if (result.successful) {
+              const user = new UserEntity();
+              user.account = this.signerKeypair.publicKey();
+
+              const poolRecord = new PoolsEntity();
+              poolRecord.account = user;
+              poolRecord.assetA = assets[0];
+              poolRecord.assetB = assets[1];
+              poolRecord.assetAAmount = amounts[assets[0].code];
+              poolRecord.assetBAmount = amounts[assets[1].code];
+              poolRecord.txnHash = mainTx.hash;
+              poolRecord.poolHash = poolsForAsset[0][1];
             }
           })
           .catch((err) => console.log(err));
@@ -193,99 +207,62 @@ export class SorobanService {
   }
 
   async addLiqudityTxn(createAddLiquidityDto: CreateAddLiquidityDto) {
-    try {
-      const account = await this.server.getAccount(this.keypair.publicKey());
-
-      const transferTxn = new StellarSdk.Transaction(
-        createAddLiquidityDto.signedTxXdr,
-        StellarSdk.Networks.PUBLIC,
-      );
-      transferTxn.sign(this.keypair);
-
-      const assets = [
-        new Asset(AQUA_CODE, AQUA_ISSUER),
-        new Asset('WHLAQUA', this.keypair.publicKey()),
-      ];
-
-      const contract = new StellarSdk.Contract(
-        'CA5UVEZLV6IXGE4WFHCOT6W6LGWI7KODSNXP5FLFK4M52LCORSPAIFEN',
-      );
-
-      // const contractAddress =
-      //   StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID);
-
-      // const transaction = new StellarSdk.TransactionBuilder(account, {
-      //   fee: StellarSdk.BASE_FEE,
-      //   networkPassphrase: StellarSdk.Networks.PUBLIC,
-      // })
-      //   .addOperation(
-      //     contract.call(
-      //       JEWEL_CONTRACT_METHOD.GET_POOLS,
-      //       contractAddress.toScVal(),
-      //       this.scValToArray(
-      //         this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
-      //       ),
-      //     ),
-      //   )
-      //   .setTimeout(30)
-      //   .build();
-
-      // const ab = await this.prepareTransaction(transaction);
-      // console.log(ab);
-
-      const bdx = await this.buildSmartContactTx(
-        account.accountId(),
-        'CAWFRUCWL2CIA6OKRVB33GQ2E7333LGYVJBQBHKACNPEGJCVCXREQNI2',
-        JEWEL_CONTRACT_METHOD.GET_POOLS,
-        StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
-        this.scValToArray(
-          this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
-        ),
-      );
-
-      const ab = await this.prepareTransaction(bdx);
-      console.log(ab, 'ready');
-
-      // const bdx = await this.buildSmartContactTx(
-      //   account.accountId(),
-      //   'CDQFRJUILOE5XWLYS3MIIKK2MOHBDXB7ZOPAZPMIGI4XDW4JTHRQG77Z',
-      //   JEWEL_CONTRACT_METHOD.HELLO,
-      //   xdr.ScVal.scvSymbol('Yeni'),
-      // );
-
-      // const bdx = await this.buildSmartContactTx(
-      //   account.accountId(),
-      //   'CDQFRJUILOE5XWLYS3MIIKK2MOHBDXB7ZOPAZPMIGI4XDW4JTHRQG77Z',
-      //   JEWEL_CONTRACT_METHOD.HELLO,
-      //   xdr.ScVal.scvSymbol('Yeni'),
-      // );
-
-      // const ab = await this.prepareTransaction(bdx);
-
-      // ab.sign(this.keypair);
-
-      // const zz = await this.server.sendTransaction(ab);
-      // console.log(zz);
-
-      // const contract = new StellarSdk.Contract(
-      //   'CDQFRJUILOE5XWLYS3MIIKK2MOHBDXB7ZOPAZPMIGI4XDW4JTHRQG77Z',
-      // );
-
-      // const transaction = new StellarSdk.TransactionBuilder(account, {
-      //   fee: StellarSdk.BASE_FEE,
-      //   networkPassphrase: StellarSdk.Networks.PUBLIC,
-      // })
-      //   .addOperation(
-      //     contract.call('hello', xdr.ScVal.scvSymbol('World New World')),
-      //   )
-      //   .setTimeout(30)
-      //   .build();
-
-      // const ab = await this.prepareTransaction(transaction);
-      // console.log(ab);
-    } catch (err) {
-      console.log(err);
-    }
+    // try {
+    //   const account = await this.server.getAccount(this.keypair.publicKey());
+    //   const transferTxn = new StellarSdk.Transaction(
+    //     createAddLiquidityDto.signedTxXdr,
+    //     StellarSdk.Networks.PUBLIC,
+    //   );
+    //   transferTxn.sign(this.keypair);
+    //   // new Asset('WHLAQUA', this.keypair.publicKey()),
+    //   const assets = [
+    //     new Asset(AQUA_CODE, AQUA_ISSUER),
+    //     StellarSdk.Asset.native(),
+    //   ];
+    //   const poolInfo = await this.getPools(assets);
+    //   const poolHash = poolInfo[0][1];
+    //   const contractIds = assets.map((asset) => this.getAssetContractId(asset));
+    //   // const bdx = await this.buildSmartContactTx(
+    //   //   account.accountId(),
+    //   //   'CAQRJ7K3FQHRSWLS7FBHWICQL2TVI747R6BTPW74LQMLSL45ZZYD3TXT',
+    //   //   JEWEL_CONTRACT_METHOD.GET_POOLS,
+    //   //   StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
+    //   //   tokensScVal,
+    //   // );
+    //   // const tx = await this.prepareTransaction(bdx);
+    //   // tx.sign(this.keypair);
+    //   // const sentTx = await this.server.sendTransaction(tx);
+    //   // const hash = sentTx.hash;
+    //   // const { results } = await this.checkTransactionStatus(this.server, hash);
+    //   // const sorobanResult = results
+    //   //   .result()
+    //   //   .results()[0]
+    //   //   .tr()
+    //   //   .invokeHostFunctionResult()
+    //   //   .success();
+    //   // console.log(sorobanResult);
+    //   const txx = await this.buildSmartContactTx(
+    //     account.accountId(),
+    //     'CCY2OUH2GSQ3VUCK26WUPFKVWYOR7XR7EQ3LJBJGBCQPMPEJC2MIINLY',
+    //     JEWEL_CONTRACT_METHOD.DEPOSIT,
+    //     StellarSdk.Address.fromString(this.keypair.publicKey()).toScVal(),
+    //     this.amountToUint128('1'),
+    //     this.amountToUint128('1'),
+    //     StellarSdk.Address.fromString(contractIds[0]).toScVal(),
+    //     StellarSdk.Address.fromString(contractIds[1]).toScVal(),
+    //     StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
+    //     this.hashToScVal(poolHash),
+    //     this.amountToUint128('0.0000001'),
+    //   );
+    //   const tx = await this.prepareTransaction(txx);
+    //   console.log(tx, 'passed');
+    //   // tx.sign(this.keypair);
+    //   // const transaction = await this.server.sendTransaction(tx);
+    //   // console.log(transaction);
+    //   // const { results } = await this.checkTransactionStatus(this.server, transaction.hash);
+    // } catch (err) {
+    //   console.log(err);
+    // }
   }
 
   getDepositTx(
@@ -585,27 +562,22 @@ export class SorobanService {
   }
 
   async increaseTrust(asset: Asset) {
-    const account = await this.server.getAccount(this.keypair.publicKey());
-
-    const transaction = new StellarSdk.TransactionBuilder(account, {
-      fee: StellarSdk.BASE_FEE,
-      networkPassphrase: StellarSdk.Networks.PUBLIC,
-    })
-
-      .addOperation(
-        StellarSdk.Operation.changeTrust({
-          asset,
-          limit: '100000000',
-        }),
-      )
-      .setTimeout(30)
-      .build();
-
-    transaction.sign(this.keypair);
-
-    const txx = await this.server.sendTransaction(transaction);
-
-    this.checkTransactionStatus(this.server, txx.hash);
+    // const account = await this.server.getAccount(this.keypair.publicKey());
+    // const transaction = new StellarSdk.TransactionBuilder(account, {
+    //   fee: StellarSdk.BASE_FEE,
+    //   networkPassphrase: StellarSdk.Networks.PUBLIC,
+    // })
+    //   .addOperation(
+    //     StellarSdk.Operation.changeTrust({
+    //       asset,
+    //       limit: '100000000',
+    //     }),
+    //   )
+    //   .setTimeout(30)
+    //   .build();
+    // transaction.sign(this.keypair);
+    // const txx = await this.server.sendTransaction(transaction);
+    // this.checkTransactionStatus(this.server, txx.hash);
   }
 
   async checkTransactionStatus(
@@ -613,25 +585,29 @@ export class SorobanService {
     hash: string,
   ): Promise<{
     successful: boolean;
-    results: xdr.TransactionResult;
+    results?: xdr.TransactionResult;
   }> {
     while (true) {
       try {
+        console.log(hash);
         const transactionResult = await server.getTransaction(hash);
+
         if (transactionResult.status === 'SUCCESS') {
           let resultXdr = transactionResult.resultXdr;
           return { successful: true, results: resultXdr };
+        } else if (transactionResult.status === 'NOT_FOUND') {
+          console.log('Transaction is pending. Retrying...');
+          await new Promise((resolve) => setTimeout(resolve, 5000));
         } else {
           console.error(
             'Transaction failed. Result:',
             transactionResult.status,
           );
-          return null;
+          return { successful: false };
         }
       } catch (error) {
         console.error('Error fetching transaction status:', error);
       }
-      // Wait for 5 seconds before retrying
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }

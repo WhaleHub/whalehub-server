@@ -25,22 +25,10 @@ import { Balance } from '@/utils/models/interfaces';
 import { SorobanService } from './soroban.service';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 import { CreateAddLiquidityDto } from './dto/crate-add-lp.dto';
+import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposits.entity';
+import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 
-//[x] should decord xdrs later
-// const xdr =
-//   'AAAAAAHPSd0AAAAAAAAAAQAAAAAAAAAYAAAAAP7AOiayfQ8Zf8oHRWUtjWOdmILoCTjYXVt30ww5tZJUAAAAAA==';
-// const result = StellarSdk.xdr.TransactionResult.fromXDR(xdr, 'base64');
-// console.log(JSON.stringify(result, null, 2));
-
-// const sorobanTokenContractPath = path.join(
-//   process.cwd(),
-//   'src/soroban-contracts/soroban_token_contract.wasm',
-// );
-
-// CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA - XLM
-// CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK - AQUA
-
-const WHLAQUA_CODE = 'WHLAQUA'; //CA6UGBC4PRUILK3J44WJMXLYKZXM7KEDW25K5B4A32MGX37UYT3C5VZW - contract
+const WHLAQUA_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
 export const AQUA_ISSUER =
   'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA';
@@ -66,8 +54,10 @@ export const ICE_ASSETS = [
 @Injectable()
 export class StellarService {
   private server: Horizon.Server;
-  private secret: string;
-  private keypair: Keypair;
+  private issuingSecret: string;
+  private signerSecret: string;
+  private issuingKeypair: Keypair;
+  private signerKeypair: Keypair;
   private rpcUrl: string;
   whaleAcqua: Asset;
 
@@ -82,12 +72,45 @@ export class StellarService {
     @InjectRepository(TokenEntity)
     private tokeRepository: Repository<TokenEntity>,
   ) {
-    this.secret = this.configService.get<string>('SOROBAN_WALLET_SECRET_KEY');
+    this.issuingSecret = this.configService.get<string>(
+      'SOROBAN_ISSUER_SECRET_KEY',
+    );
+    this.signerSecret = this.configService.get<string>(
+      'SOROBAN_SIGNER_SECRET_KEY',
+    );
     this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
-    this.keypair = Keypair.fromSecret(this.secret);
 
-    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
+    this.issuingKeypair = Keypair.fromSecret(this.issuingSecret);
+    this.signerKeypair = Keypair.fromSecret(this.signerSecret);
+
+    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey());
+
+    // this.server
+    //   .loadAccount(this.signerKeypair.publicKey())
+    //   .then((account) => {
+    //     const transaction = new StellarSdk.TransactionBuilder(account, {
+    //       fee: StellarSdk.BASE_FEE,
+    //       networkPassphrase: StellarSdk.Networks.PUBLIC,
+    //     })
+    //       .addOperation(
+    //         Operation.changeTrust({
+    //           asset: new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey()),
+    //           limit: '1000000000',
+    //         }),
+    //       )
+    //       .setTimeout(30)
+    //       .build();
+
+    //     transaction.sign(this.signerKeypair);
+    //     return this.server.submitTransaction(transaction);
+    //   })
+    //   .then((result) => {
+    //     console.log('Transaction submitted successfully!');
+    //   })
+    //   .catch((error) => {
+    //     console.error('Error:', error.response);
+    //   });
   }
 
   async create(createTokenDto: CreateTokenDto): Promise<string> {
@@ -108,7 +131,7 @@ export class StellarService {
 
       const token = new TokenEntity();
       token.code = createTokenDto.code;
-      token.issuer = this.keypair.publicKey();
+      token.issuer = this.issuingKeypair.publicKey();
       //[x] ensure to deploy token asset contract
       token.sacAddress = 'token address';
 
@@ -124,8 +147,7 @@ export class StellarService {
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
     try {
-      //TODO: ensure user has 1M AQUA Tokens
-
+      //TODO: ensure signer has 1M AQUA Tokens
       // gets pool fees
       // const getFeeInfos = Promise.all([
       //   this.getCreationFeeToken(),
@@ -138,20 +160,28 @@ export class StellarService {
       // }));
 
       // const feeInfos = await getFeeInfos;
+      // GDJ2BJCYLWFCLDVF4THQLQDTTQGBJ4UJ3OQTJ3IHJ5L3E2ZTLSCIGOSH
 
       // Load the account details
-      const account = await this.server.loadAccount(this.keypair.publicKey());
+      const account = await this.server.loadAccount(
+        this.issuingKeypair.publicKey(),
+      );
+
+      //[x] treasury transfer txn
 
       // Calculate the amounts to stake and for liquidity
       const amountToStake = createStakeDto.amount * 0.9;
       const remaniningAmount = createStakeDto.amount * 0.1;
+      const trackerTransferAmount =
+        (createStakeDto.amount + createStakeDto.treasuryAmount) * 1.1;
 
       // Create and submit the first transaction for transferring AQUA
       const transferAquaTxn = new Transaction(
         createStakeDto.signedTxXdr,
         Networks.PUBLIC,
       );
-      transferAquaTxn.sign(this.keypair);
+
+      transferAquaTxn.sign(this.issuingKeypair);
 
       const transferAquaResponse =
         await this.server.submitTransaction(transferAquaTxn);
@@ -172,6 +202,7 @@ export class StellarService {
       let user = await this.userRepository.findOneBy({
         account: createStakeDto.senderPublicKey,
       });
+
       if (!user) {
         user = new UserEntity();
         user.account = createStakeDto.senderPublicKey;
@@ -181,14 +212,21 @@ export class StellarService {
       // Record the stake amount in the database
       const stake = new StakeEntity();
       stake.account = user;
-      stake.amount = createStakeDto.amount;
+      stake.amount = createStakeDto.amount.toString();
       await stake.save();
+
+      // Record the treasury amount in the database
+      const treasury = new TreasuryDepositsEntity();
+      treasury.account = user;
+      treasury.amount = createStakeDto.treasuryAmount.toString();
+      // await treasury.save();
 
       // Check existing trustlines
       const existingTrustlines = account.balances.map(
         (balance: Balance) => balance.asset_code,
       );
 
+      //transaction
       const trustlineTransaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
@@ -222,7 +260,7 @@ export class StellarService {
 
       if (trustlineOperationAdded) {
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
-        builtTrustlineTxn.sign(this.keypair);
+        builtTrustlineTxn.sign(this.issuingKeypair);
 
         const trustlineResponse =
           await this.server.submitTransaction(builtTrustlineTxn);
@@ -242,7 +280,7 @@ export class StellarService {
             claimants: [
               new Claimant(
                 account.accountId(),
-                // Ensure to use the correct predicate
+                //TODO: Ensure to use the correct predicate
                 Claimant.predicateNot(Claimant.predicateUnconditional()),
               ),
             ],
@@ -253,7 +291,7 @@ export class StellarService {
         .setTimeout(180)
         .build();
 
-      claimableTransaction.sign(this.keypair);
+      claimableTransaction.sign(this.issuingKeypair);
       const claimableResponse =
         await this.server.submitTransaction(claimableTransaction);
       const claimableHash = claimableResponse.hash;
@@ -275,31 +313,42 @@ export class StellarService {
 
       let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
 
-      //TODO: STORE RECORD ON DATABASE
       console.log('Balance ID:', balanceId);
       console.log('Claimable balance transaction was successful.');
 
-      const additionalAmountForLiquidity = Number(createStakeDto.amount) * 0.1;
+      const claimableRecord = new ClaimableRecordsEntity();
+      claimableRecord.account = user;
+      claimableRecord.balanceId = balanceId;
+      claimableRecord.amount = createStakeDto.amount.toString();
+      await claimableRecord.save();
 
-      await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
+      const additionalAmountForLiquidity = Number(createStakeDto.amount) * 1.1;
 
-      // Ensure server public key has WHLAQUA
+      await this.transferAsset(
+        this.issuingKeypair,
+        this.signerKeypair.publicKey(),
+        additionalAmountForLiquidity.toString(),
+        this.whaleAcqua,
+      );
+
+      await this.checkBalance(this.signerKeypair.publicKey(), this.whaleAcqua);
+
       const assets = [this.whaleAcqua, new Asset(AQUA_CODE, AQUA_ISSUER)];
 
       const amounts = new Map<string, string>();
       amounts.set(assets[0].code, additionalAmountForLiquidity.toString());
       amounts.set(assets[1].code, remaniningAmount.toString());
 
-      // return
+      //send token to new signer for staking
       await this.sorobanService.depositAQUAWHLHUB(assets, amounts);
 
-      //TODO: transfer token tracker
-      // await this.transferAsset(
-      //   this.keypair,
-      //   createStakeDto.senderPublicKey,
-      //   `${createStakeDto.amount}`,
-      //   this.whaleAcqua,
-      // );
+      // transfer token tracker
+      await this.transferAsset(
+        this.issuingKeypair,
+        createStakeDto.senderPublicKey,
+        `${trackerTransferAmount}`,
+        this.whaleAcqua,
+      );
     } catch (err) {
       console.error('Error during staking process:', err);
     }
@@ -355,6 +404,7 @@ export class StellarService {
 
     if (balance) {
       console.log(`Balance of ${asset.code}: ${balance.balance}`);
+      return balance.balance;
     } else {
       console.log(`No balance found for ${asset.code}`);
     }
@@ -387,8 +437,8 @@ export class StellarService {
     transaction.sign(senderKeypair);
 
     try {
-      const response = await this.server.submitTransaction(transaction);
-      // console.log('Transaction successful:', response);
+      const txn = await this.server.submitTransaction(transaction);
+      console.log(`Transfer token tracker successful: `, txn.hash);
     } catch (error) {
       console.error('Transaction failed:', error.response.data);
     }

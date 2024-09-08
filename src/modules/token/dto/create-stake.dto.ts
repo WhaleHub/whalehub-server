@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, Min } from 'class-validator';
+import { IsNumber, IsString, Min } from 'class-validator';
 
 export class CreateStakeDto {
   @ApiProperty({ description: 'The name of the token' })
@@ -10,15 +10,21 @@ export class CreateStakeDto {
 
   @ApiProperty({ description: 'Amount to lock', minimum: 1 })
   @IsNumber()
-  @Min(1, { message: 'Amount must be at least 1' })
   amount: number;
 
+  @ApiProperty({ description: 'Treasury Amount', minimum: 1 })
+  @IsNumber()
+  treasuryAmount: number;
+
   @ApiProperty({ description: 'The total duration to be locked' })
+  @IsString()
   timeline: string;
 
   @ApiProperty({ description: 'The signed transaction from user' })
+  @IsString()
   signedTxXdr: string;
 
   @ApiProperty({ description: 'The signed transaction from user' })
+  @IsString()
   senderPublicKey: string;
 }

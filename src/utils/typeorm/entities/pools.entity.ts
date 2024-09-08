@@ -19,6 +19,12 @@ export class PoolsEntity extends BaseEntity {
     issuer: string;
   };
 
+  @Column()
+  assetAAmount: string;
+
+  @Column()
+  assetBAmount: string;
+
   @Column({ default: 10 })
   fee: number;
 
