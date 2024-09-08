@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateStakeDto } from './dto/create-stake.dto';
@@ -53,5 +53,11 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   addLiquidity(@Body() createAddLiquidityDto: CreateAddLiquidityDto) {
     return this.stellarService.addLiq(createAddLiquidityDto);
+  }
+
+  @Get('user')
+  @ApiOperation({ summary: 'Get user wallet records' })
+  getUserInfo(@Query('userPublicKey') userPublicKey: string) {
+    return this.stellarService.getUser(userPublicKey);
   }
 }

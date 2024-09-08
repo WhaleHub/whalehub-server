@@ -1,10 +1,13 @@
-import { Column, Entity, OneToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, OneToMany, OneToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
+import { StakeEntity } from './stake.entity';
+import { ClaimableRecordsEntity } from './claimableRecords.entity';
 
 @Entity({ name: 'pools' })
 export class PoolsEntity extends BaseEntity {
   @OneToOne(() => UserEntity, (user) => user.account)
+  @JoinColumn()
   account: UserEntity;
 
   @Column('jsonb')
@@ -33,4 +36,7 @@ export class PoolsEntity extends BaseEntity {
 
   @Column()
   poolHash: string;
+
+  @Column()
+  senderPublicKey: string;
 }

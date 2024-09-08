@@ -13,6 +13,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateAddLiquidityDto } from './dto/crate-add-lp.dto';
 import { AQUA_CODE, AQUA_ISSUER } from './stellar.service';
+import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
+import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 
 export const AMM_SMART_CONTACT_ID =
   'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK';
@@ -22,6 +24,8 @@ export const JEWEL_CONTRACT_ID =
 
 const ACCOUNT_FOR_SIMULATE =
   'GCX6LOZ6ZEXBHLTPOPP2THN74K33LMT4HKSPDTWSLVCF4EWRGXOS7D3V';
+
+const WHLAQUA_CODE = 'WHLAQUA';
 
 enum AMM_CONTRACT_METHOD {
   GET_POOLS = 'get_pools',
@@ -98,85 +102,51 @@ export class SorobanService {
 
     this.issuingKeypair = Keypair.fromSecret(this.issuingSecret);
     this.signerKeypair = Keypair.fromSecret(this.signerSecret);
+
+    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey());
   }
 
-  async depositAQUAWHLHUB(assets: Asset[], amounts) {
+  async depositAQUAWHLHUB(
+    assets: Asset[],
+    amounts: Map<string, string>,
+    senderPublicKey: string,
+  ) {
     const account = await this.server.getAccount(
       this.signerKeypair.publicKey(),
     );
 
-    try {
-      let poolsForAsset = await this.getPools(assets);
-      if (poolsForAsset.length === 0) {
-        const account = await this.server.getAccount(
-          this.signerKeypair.publicKey(),
+    let poolsForAsset = await this.getPools(assets);
+    if (poolsForAsset.length === 0) {
+      const account = await this.server.getAccount(
+        this.signerKeypair.publicKey(),
+      );
+      this.getInitConstantPoolTx(
+        account.accountId(),
+        assets[0],
+        assets[1],
+        10,
+      ).then((tx) => {
+        const xdr = tx.toEnvelope().toXDR('base64');
+        const initPoolTxn = new StellarSdk.Transaction(
+          xdr,
+          StellarSdk.Networks.PUBLIC,
         );
-        this.getInitConstantPoolTx(
-          account.accountId(),
-          assets[0],
-          assets[1],
-          10,
-        )
-          .then((tx) => {
-            const xdr = tx.toEnvelope().toXDR('base64');
-            const initPoolTxn = new StellarSdk.Transaction(
-              xdr,
-              StellarSdk.Networks.PUBLIC,
-            );
-            initPoolTxn.sign(this.signerKeypair);
-            this.server.sendTransaction(initPoolTxn).then(async (res) => {
-              if (!res) {
-                return;
-              }
-              const hash = res.hash;
-              const createPoolTxnValue = this.checkTransactionStatus(
-                this.server,
-                hash,
-              );
-              const user = new UserEntity();
-              user.account = this.signerKeypair.publicKey();
-              poolsForAsset = await this.getPools(assets);
-              // keep records in db
-              const pool = new PoolsEntity();
-              pool.assetA = assets[0];
-              pool.assetB = assets[1];
-              pool.account = user;
-              pool.fee = 10;
-              pool.txnHash = hash;
-              pool.poolHash = poolsForAsset[0][1];
-              await pool.save();
-              //deposit tokens to pool
-              this.getDepositTx(
-                account.accountId(),
-                poolsForAsset[0][1],
-                assets,
-                amounts,
-              ).then(async (tx) => {
-                tx.sign(this.signerKeypair);
-                const mainTx = await this.server.sendTransaction(tx);
-                if (mainTx.status === 'ERROR') {
-                  //TODO: using txnHash check when transaction is success
-                  console.log(mainTx);
-                } else {
-                  console.log('transaction submitted', mainTx.hash);
-                }
-              });
-            });
-          })
-          .catch((err) => {
-            console.log(err, 'caught');
-          });
-      } else {
-        console.log('trying to deposit into pool, change amount later');
-        console.log('amounts: ', amounts);
+        initPoolTxn.sign(this.signerKeypair);
+        this.server.sendTransaction(initPoolTxn).then(async (res) => {
+          if (!res) {
+            return;
+          }
+          const hash = res.hash;
 
-        this.getDepositTx(
-          account.accountId(),
-          poolsForAsset[0][1],
-          assets,
-          amounts,
-        )
-          .then(async (tx) => {
+          await this.checkTransactionStatus(this.server, hash);
+
+          //deposit tokens to pool
+          this.getDepositTx(
+            account.accountId(),
+            poolsForAsset[0][1],
+            assets,
+            amounts,
+          ).then(async (tx) => {
             tx.sign(this.signerKeypair);
             const mainTx = await this.server.sendTransaction(tx);
 
@@ -190,79 +160,102 @@ export class SorobanService {
               user.account = this.signerKeypair.publicKey();
 
               const poolRecord = new PoolsEntity();
-              poolRecord.account = user;
-              poolRecord.assetA = assets[0];
-              poolRecord.assetB = assets[1];
-              poolRecord.assetAAmount = amounts[assets[0].code];
-              poolRecord.assetBAmount = amounts[assets[1].code];
-              poolRecord.txnHash = mainTx.hash;
-              poolRecord.poolHash = poolsForAsset[0][1];
+              // poolRecord.account = user;
+              // poolRecord.assetA = assets[0];
+              // poolRecord.assetB = assets[1];
+              // poolRecord.assetAAmount = amounts[assets[0].code];
+              // poolRecord.assetBAmount = amounts[assets[1].code];
+              // poolRecord.txnHash = mainTx.hash;
+              // poolRecord.poolHash = poolsForAsset[0][0];
+              // poolRecord.poolBinary = poolsForAsset[0][1];
+              // poolRecord.senderPublicKey = senderPublicKey;
+              await poolRecord.save();
             }
-          })
-          .catch((err) => console.log(err));
-      }
-    } catch (err) {
-      console.log(err);
+          });
+        });
+      });
+    } else {
+      console.log('trying to deposit into pool');
+
+      this.getDepositTx(
+        account.accountId(),
+        poolsForAsset[0][1],
+        assets,
+        amounts,
+      ).then(async (tx) => {
+        tx.sign(this.signerKeypair);
+        const mainTx = await this.server.sendTransaction(tx);
+
+        console.log('deposit into pool hash: ', mainTx.hash);
+
+        const result = await this.checkTransactionStatus(
+          this.server,
+          mainTx.hash,
+        );
+
+        if (result.successful) {
+          const user = await this.userRepository.findOneBy({
+            account: senderPublicKey,
+          });
+
+          const poolRecord = new PoolsEntity();
+          poolRecord.account = user;
+          poolRecord.assetA = assets[0];
+          poolRecord.assetB = assets[1];
+          poolRecord.assetAAmount = '10';
+          poolRecord.assetBAmount = '10';
+          poolRecord.txnHash = mainTx.hash;
+          poolRecord.poolHash = poolsForAsset[0][0];
+          poolRecord.senderPublicKey = senderPublicKey;
+          await poolRecord.save();
+        }
+      });
     }
   }
 
   async addLiqudityTxn(createAddLiquidityDto: CreateAddLiquidityDto) {
-    // try {
-    //   const account = await this.server.getAccount(this.keypair.publicKey());
-    //   const transferTxn = new StellarSdk.Transaction(
-    //     createAddLiquidityDto.signedTxXdr,
-    //     StellarSdk.Networks.PUBLIC,
-    //   );
-    //   transferTxn.sign(this.keypair);
-    //   // new Asset('WHLAQUA', this.keypair.publicKey()),
-    //   const assets = [
-    //     new Asset(AQUA_CODE, AQUA_ISSUER),
-    //     StellarSdk.Asset.native(),
-    //   ];
-    //   const poolInfo = await this.getPools(assets);
-    //   const poolHash = poolInfo[0][1];
-    //   const contractIds = assets.map((asset) => this.getAssetContractId(asset));
-    //   // const bdx = await this.buildSmartContactTx(
-    //   //   account.accountId(),
-    //   //   'CAQRJ7K3FQHRSWLS7FBHWICQL2TVI747R6BTPW74LQMLSL45ZZYD3TXT',
-    //   //   JEWEL_CONTRACT_METHOD.GET_POOLS,
-    //   //   StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
-    //   //   tokensScVal,
-    //   // );
-    //   // const tx = await this.prepareTransaction(bdx);
-    //   // tx.sign(this.keypair);
-    //   // const sentTx = await this.server.sendTransaction(tx);
-    //   // const hash = sentTx.hash;
-    //   // const { results } = await this.checkTransactionStatus(this.server, hash);
-    //   // const sorobanResult = results
-    //   //   .result()
-    //   //   .results()[0]
-    //   //   .tr()
-    //   //   .invokeHostFunctionResult()
-    //   //   .success();
-    //   // console.log(sorobanResult);
-    //   const txx = await this.buildSmartContactTx(
-    //     account.accountId(),
-    //     'CCY2OUH2GSQ3VUCK26WUPFKVWYOR7XR7EQ3LJBJGBCQPMPEJC2MIINLY',
-    //     JEWEL_CONTRACT_METHOD.DEPOSIT,
-    //     StellarSdk.Address.fromString(this.keypair.publicKey()).toScVal(),
-    //     this.amountToUint128('1'),
-    //     this.amountToUint128('1'),
-    //     StellarSdk.Address.fromString(contractIds[0]).toScVal(),
-    //     StellarSdk.Address.fromString(contractIds[1]).toScVal(),
-    //     StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
-    //     this.hashToScVal(poolHash),
-    //     this.amountToUint128('0.0000001'),
-    //   );
-    //   const tx = await this.prepareTransaction(txx);
-    //   console.log(tx, 'passed');
-    //   // tx.sign(this.keypair);
-    //   // const transaction = await this.server.sendTransaction(tx);
-    //   // console.log(transaction);
-    //   // const { results } = await this.checkTransactionStatus(this.server, transaction.hash);
-    // } catch (err) {
-    //   console.log(err);
-    // }
+    try {
+      const account = await this.server.getAccount(
+        this.signerKeypair.publicKey(),
+      );
+      const transferTxn = new StellarSdk.Transaction(
+        createAddLiquidityDto.signedTxXdr,
+        StellarSdk.Networks.PUBLIC,
+      );
+      transferTxn.sign(this.signerKeypair);
+      const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whaleAcqua];
+      const poolInfo = await this.getPools(assets);
+      const poolHash = poolInfo[0][1];
+      const contractIds = assets.map((asset) => this.getAssetContractId(asset));
+
+      const txx = await this.buildSmartContactTx(
+        account.accountId(),
+        'CCY2OUH2GSQ3VUCK26WUPFKVWYOR7XR7EQ3LJBJGBCQPMPEJC2MIINLY',
+        JEWEL_CONTRACT_METHOD.DEPOSIT,
+        StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
+        this.amountToUint128('1'),
+        this.amountToUint128('1'),
+        StellarSdk.Address.fromString(contractIds[0]).toScVal(),
+        StellarSdk.Address.fromString(contractIds[1]).toScVal(),
+        StellarSdk.Address.fromString(AMM_SMART_CONTACT_ID).toScVal(),
+        this.hashToScVal(poolHash),
+        this.amountToUint128('0.0000001'),
+      );
+      const tx = await this.prepareTransaction(txx);
+      console.log(tx, 'passed');
+
+      tx.sign(this.signerKeypair);
+      const transaction = await this.server.sendTransaction(tx);
+
+      const { results } = await this.checkTransactionStatus(
+        this.server,
+        transaction.hash,
+      );
+
+      //TODO: Keep deposit record on pool table
+    } catch (err) {
+      console.log(err);
+    }
   }
 
   getDepositTx(
@@ -282,7 +275,8 @@ export class SorobanService {
       this.hashToScVal(poolHash),
       this.scValToArray(
         this.orderTokens(assets).map((asset) => {
-          return this.amountToUint128(amounts.get(this.getAssetString(asset)));
+          // amounts.get(this.getAssetString(asset))
+          return this.amountToUint128('10');
         }),
       ),
       this.amountToUint128('0.0000001'),
@@ -589,7 +583,6 @@ export class SorobanService {
   }> {
     while (true) {
       try {
-        console.log(hash);
         const transactionResult = await server.getTransaction(hash);
 
         if (transactionResult.status === 'SUCCESS') {

@@ -9,6 +9,7 @@ import { TokenEntity } from './utils/typeorm/entities/token.entity';
 import { typeOrmConfig } from './config/typeOrm.config';
 import { TreasuryDepositsEntity } from './utils/typeorm/entities/treasuryDeposits.entity';
 import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecords.entity';
+import { PoolsEntity } from './utils/typeorm/entities/pools.entity';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecord
       TokenEntity,
       TreasuryDepositsEntity,
       ClaimableRecordsEntity,
+      PoolsEntity,
     ]),
     TypeOrmModule.forRootAsync({
       useFactory: async (configService: ConfigService) =>

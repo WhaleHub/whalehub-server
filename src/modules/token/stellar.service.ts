@@ -19,8 +19,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
-import fs from 'fs';
-import { error } from 'console';
 import { Balance } from '@/utils/models/interfaces';
 import { SorobanService } from './soroban.service';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
@@ -147,7 +145,6 @@ export class StellarService {
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
     try {
-      //TODO: ensure signer has 1M AQUA Tokens
       // gets pool fees
       // const getFeeInfos = Promise.all([
       //   this.getCreationFeeToken(),
@@ -160,20 +157,21 @@ export class StellarService {
       // }));
 
       // const feeInfos = await getFeeInfos;
-      // GDJ2BJCYLWFCLDVF4THQLQDTTQGBJ4UJ3OQTJ3IHJ5L3E2ZTLSCIGOSH
 
       // Load the account details
       const account = await this.server.loadAccount(
         this.issuingKeypair.publicKey(),
       );
 
-      //[x] treasury transfer txn
-
       // Calculate the amounts to stake and for liquidity
-      const amountToStake = createStakeDto.amount * 0.9;
-      const remaniningAmount = createStakeDto.amount * 0.1;
-      const trackerTransferAmount =
-        (createStakeDto.amount + createStakeDto.treasuryAmount) * 1.1;
+      const amountToStake = Math.round(createStakeDto.amount * 0.9);
+      const remaniningAmount = Math.round(createStakeDto.amount * 0.1);
+      const trackerTransferAmount = Math.round(
+        (createStakeDto.amount + createStakeDto.treasuryAmount) * 1.1,
+      );
+      const additionalAmountForLiquidity = Math.round(
+        Number(createStakeDto.amount) * 1.1,
+      );
 
       // Create and submit the first transaction for transferring AQUA
       const transferAquaTxn = new Transaction(
@@ -213,7 +211,7 @@ export class StellarService {
       const stake = new StakeEntity();
       stake.account = user;
       stake.amount = createStakeDto.amount.toString();
-      await stake.save();
+      const stakeRecordDB = await stake.save();
 
       // Record the treasury amount in the database
       const treasury = new TreasuryDepositsEntity();
@@ -288,7 +286,7 @@ export class StellarService {
             amount: `${amountToStake}`,
           }),
         )
-        .setTimeout(180)
+        .setTimeout(1000)
         .build();
 
       claimableTransaction.sign(this.issuingKeypair);
@@ -322,8 +320,6 @@ export class StellarService {
       claimableRecord.amount = createStakeDto.amount.toString();
       await claimableRecord.save();
 
-      const additionalAmountForLiquidity = Number(createStakeDto.amount) * 1.1;
-
       await this.transferAsset(
         this.issuingKeypair,
         this.signerKeypair.publicKey(),
@@ -340,17 +336,18 @@ export class StellarService {
       amounts.set(assets[1].code, remaniningAmount.toString());
 
       //send token to new signer for staking
-      await this.sorobanService.depositAQUAWHLHUB(assets, amounts);
-
-      // transfer token tracker
-      await this.transferAsset(
-        this.issuingKeypair,
-        createStakeDto.senderPublicKey,
-        `${trackerTransferAmount}`,
-        this.whaleAcqua,
-      );
+      await this.sorobanService
+        .depositAQUAWHLHUB(assets, amounts, createStakeDto.senderPublicKey)
+        .then(async (passed) => {
+          await this.transferAsset(
+            this.issuingKeypair,
+            createStakeDto.senderPublicKey,
+            `${trackerTransferAmount}`,
+            this.whaleAcqua,
+          );
+        });
     } catch (err) {
-      console.error('Error during staking process:', err);
+      console.error('Error during staking process:', err.data.extras);
     }
   }
 
@@ -461,5 +458,18 @@ export class StellarService {
 
   async addLiq(createAddLiquidityDto: CreateAddLiquidityDto) {
     await this.sorobanService.addLiqudityTxn(createAddLiquidityDto);
+  }
+
+  async getUser(userPublicKey: string): Promise<UserEntity> {
+    try {
+      const userRecord = await this.userRepository.findOne({
+        where: { account: userPublicKey },
+        relations: ['stakes', 'treasurydeposits', 'claimableRecords', 'pools'],
+      });
+
+      return userRecord;
+    } catch (err) {
+      console.log(err);
+    }
   }
 }
