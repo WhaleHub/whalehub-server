@@ -268,7 +268,9 @@ export class StellarService {
         console.log('No new trustline was added.');
       }
 
-      // If all the previous steps succeeded, create and submit the claimable balance transaction
+      //[x] will be used later
+      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; // 2 years in seconds
+
       const claimableTransaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,

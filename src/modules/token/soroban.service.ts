@@ -223,6 +223,7 @@ export class SorobanService {
         StellarSdk.Networks.PUBLIC,
       );
       transferTxn.sign(this.signerKeypair);
+
       const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whaleAcqua];
       const poolInfo = await this.getPools(assets);
       const poolHash = poolInfo[0][1];
