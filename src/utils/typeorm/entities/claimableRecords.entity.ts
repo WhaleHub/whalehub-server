@@ -3,17 +3,17 @@ import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
 import { PoolsEntity } from './pools.entity';
 
-@Entity({ name: 'stakes' })
-export class StakeEntity extends BaseEntity {
+@Entity({ name: 'claimablerecords' })
+export class ClaimableRecordsEntity extends BaseEntity {
   @ManyToOne(() => UserEntity, (user) => user.stakes, { onDelete: 'CASCADE' })
   @JoinColumn()
   account: UserEntity;
 
   @Column()
-  amount: string;
+  balanceId: string;
 
-  @OneToOne(() => StakeEntity, (stakes) => stakes.pools)
-  pools: StakeEntity[];
+  @Column()
+  amount: string;
 
   // @OneToOne(() => PoolsEntity, (pool) => pool.stakes)
   // @JoinColumn()

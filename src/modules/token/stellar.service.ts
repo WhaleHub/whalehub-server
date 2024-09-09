@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { ConfigService } from '@nestjs/config';
+import * as StellarSdk from '@stellar/stellar-sdk';
 import {
   Asset,
   BASE_FEE,
@@ -18,14 +19,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
-import fs from 'fs';
-import { error } from 'console';
 import { Balance } from '@/utils/models/interfaces';
-
-// const sorobanTokenContractPath = path.join(
-//   process.cwd(),
-//   'src/soroban-contracts/soroban_token_contract.wasm',
-// );
+import { SorobanService } from './soroban.service';
+import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
+import { CreateAddLiquidityDto } from './dto/crate-add-lp.dto';
+import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposits.entity';
+import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 
 const WHLAQUA_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
@@ -53,81 +52,134 @@ export const ICE_ASSETS = [
 @Injectable()
 export class StellarService {
   private server: Horizon.Server;
-  private secret: string;
-  private keypair: Keypair;
+  private issuingSecret: string;
+  private signerSecret: string;
+  private issuingKeypair: Keypair;
+  private signerKeypair: Keypair;
   private rpcUrl: string;
   whaleAcqua: Asset;
 
   constructor(
     private configService: ConfigService,
 
+    private sorobanService: SorobanService,
+
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+
+    @InjectRepository(TokenEntity)
+    private tokeRepository: Repository<TokenEntity>,
   ) {
-    this.secret = this.configService.get<string>('SOROBAN_WALLET_SECRET_KEY');
+    this.issuingSecret = this.configService.get<string>(
+      'SOROBAN_ISSUER_SECRET_KEY',
+    );
+    this.signerSecret = this.configService.get<string>(
+      'SOROBAN_SIGNER_SECRET_KEY',
+    );
     this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
-    this.keypair = Keypair.fromSecret(this.secret);
 
-    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.keypair.publicKey());
+    this.issuingKeypair = Keypair.fromSecret(this.issuingSecret);
+    this.signerKeypair = Keypair.fromSecret(this.signerSecret);
+
+    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey());
+
+    // this.server
+    //   .loadAccount(this.signerKeypair.publicKey())
+    //   .then((account) => {
+    //     const transaction = new StellarSdk.TransactionBuilder(account, {
+    //       fee: StellarSdk.BASE_FEE,
+    //       networkPassphrase: StellarSdk.Networks.PUBLIC,
+    //     })
+    //       .addOperation(
+    //         Operation.changeTrust({
+    //           asset: new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey()),
+    //           limit: '1000000000',
+    //         }),
+    //       )
+    //       .setTimeout(30)
+    //       .build();
+
+    //     transaction.sign(this.signerKeypair);
+    //     return this.server.submitTransaction(transaction);
+    //   })
+    //   .then((result) => {
+    //     console.log('Transaction submitted successfully!');
+    //   })
+    //   .catch((error) => {
+    //     console.error('Error:', error.response);
+    //   });
   }
 
-  async create(createTokenDto: CreateTokenDto): Promise<void> {
+  async create(createTokenDto: CreateTokenDto): Promise<string> {
     try {
-      // const uploadResponse = await this.uploadWasm(sorobanTokenContractPath);
-      // const byteArray = uploadResponse.response.returnValue.bytes();
-      // const wasmHash = byteArray.toString('hex');
-      // console.log(`Wasm hash: ${wasmHash}`);
+      const asset = new Asset(createTokenDto.code, createTokenDto.issuer);
 
-      const sourceAccount = await this.server.loadAccount(
-        this.keypair.publicKey(),
-      );
+      const tokenData = await this.tokeRepository.findOneBy({
+        code: createTokenDto.code,
+        issuer: createTokenDto.issuer,
+      });
 
-      const transaction = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: Networks.PUBLIC,
-      })
-        .addOperation(
-          Operation.changeTrust({
-            asset: this.whaleAcqua,
-            limit: '1',
-            source: this.keypair.publicKey(),
-          }),
-        )
-        .addOperation(
-          Operation.payment({
-            destination: this.keypair.publicKey(),
-            asset: this.whaleAcqua,
-            amount: '1000000',
-          }),
-        )
-        .setTimeout(180)
-        .build();
+      //[x] should throw an error
+      if (tokenData) return;
 
-      transaction.sign(this.keypair);
-      const response = await this.server.submitTransaction(transaction);
-      console.log('Transaction hash:', response.hash);
-      console.log('Transaction successful.');
+      const user = new UserEntity();
+      user.account = asset.issuer;
+      await user.save();
+
+      const token = new TokenEntity();
+      token.code = createTokenDto.code;
+      token.issuer = this.issuingKeypair.publicKey();
+      //[x] ensure to deploy token asset contract
+      token.sacAddress = 'token address';
+
+      console.log('token created');
+
+      await token.save();
+
+      return 'token created';
     } catch (err) {
-      console.error('Error during WASM upload:', err);
+      console.log(err);
     }
   }
 
   async stake(createStakeDto: CreateStakeDto): Promise<void> {
     try {
+      // gets pool fees
+      // const getFeeInfos = Promise.all([
+      //   this.getCreationFeeToken(),
+      //   this.getCreationFee(POOL_TYPE.constant),
+      //   this.getCreationFee(POOL_TYPE.stable),
+      // ]).then(([token, constantFee, stableFee]) => ({
+      //   token,
+      //   constantFee,
+      //   stableFee,
+      // }));
+
+      // const feeInfos = await getFeeInfos;
+
       // Load the account details
-      const account = await this.server.loadAccount(this.keypair.publicKey());
+      const account = await this.server.loadAccount(
+        this.issuingKeypair.publicKey(),
+      );
 
       // Calculate the amounts to stake and for liquidity
-      const amountToStake = createStakeDto.amount * 0.9;
-      const remaniningAmount = createStakeDto.amount * 0.1;
+      const amountToStake = Math.round(createStakeDto.amount * 0.9);
+      const remaniningAmount = Math.round(createStakeDto.amount * 0.1);
+      const trackerTransferAmount = Math.round(
+        (createStakeDto.amount + createStakeDto.treasuryAmount) * 1.1,
+      );
+      const additionalAmountForLiquidity = Math.round(
+        Number(createStakeDto.amount) * 1.1,
+      );
 
       // Create and submit the first transaction for transferring AQUA
       const transferAquaTxn = new Transaction(
         createStakeDto.signedTxXdr,
         Networks.PUBLIC,
       );
-      transferAquaTxn.sign(this.keypair);
+
+      transferAquaTxn.sign(this.issuingKeypair);
 
       const transferAquaResponse =
         await this.server.submitTransaction(transferAquaTxn);
@@ -135,21 +187,20 @@ export class StellarService {
       console.log('Transfer AQUA transaction hash:', transferAquaHash);
 
       // Check if the first transaction was successful
-      const depositAquaTransactionResult = (await this.checkTransactionStatus(
+      const depositAquaTransactionResult = await this.checkTransactionStatus(
         this.server,
         transferAquaHash,
-      )) as any;
+      );
 
-      if (
-        depositAquaTransactionResult &&
-        depositAquaTransactionResult.successful
-      ) {
+      if (!depositAquaTransactionResult.successful) {
+        throw new Error('Transfer AQUA transaction failed.');
       }
 
       // Ensure the user account exists in the database
       let user = await this.userRepository.findOneBy({
         account: createStakeDto.senderPublicKey,
       });
+
       if (!user) {
         user = new UserEntity();
         user.account = createStakeDto.senderPublicKey;
@@ -159,18 +210,25 @@ export class StellarService {
       // Record the stake amount in the database
       const stake = new StakeEntity();
       stake.account = user;
-      stake.amount = createStakeDto.amount;
-      await stake.save();
+      stake.amount = createStakeDto.amount.toString();
+      const stakeRecordDB = await stake.save();
+
+      // Record the treasury amount in the database
+      const treasury = new TreasuryDepositsEntity();
+      treasury.account = user;
+      treasury.amount = createStakeDto.treasuryAmount.toString();
+      // await treasury.save();
 
       // Check existing trustlines
       const existingTrustlines = account.balances.map(
         (balance: Balance) => balance.asset_code,
       );
 
+      //transaction
       const trustlineTransaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
-      }) as any;
+      });
 
       // List of governance assets to check
       const assetsToCheck = [
@@ -188,7 +246,7 @@ export class StellarService {
           trustlineTransaction.addOperation(
             Operation.changeTrust({
               asset: new Asset(asset.code, asset.issuer),
-              limit: '1000000000.0000000',
+              limit: '1000000000',
             }),
           );
           trustlineOperationAdded = true;
@@ -200,25 +258,19 @@ export class StellarService {
 
       if (trustlineOperationAdded) {
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
-        builtTrustlineTxn.sign(this.keypair);
+        builtTrustlineTxn.sign(this.issuingKeypair);
 
-        if (trustlineTransaction.operations.length > 0) {
-          console.log('starting trustline transaction');
-          const trustlineResponse =
-            await this.server.submitTransaction(builtTrustlineTxn);
-          const trustlineHash = trustlineResponse.hash;
-          console.log('Trustline transaction hash:', trustlineHash);
-
-          const trustlineResult = await this.checkTransactionStatus(
-            this.server,
-            trustlineHash,
-          );
-        }
+        const trustlineResponse =
+          await this.server.submitTransaction(builtTrustlineTxn);
+        const trustlineHash = trustlineResponse.hash;
+        await this.checkTransactionStatus(this.server, trustlineHash);
       } else {
-        console.log('No trustline added for publc keys');
+        console.log('No new trustline was added.');
       }
 
-      // Create and submit the claimable balance transaction
+      //[x] will be used later
+      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; // 2 years in seconds
+
       const claimableTransaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
@@ -228,6 +280,7 @@ export class StellarService {
             claimants: [
               new Claimant(
                 account.accountId(),
+                //TODO: Ensure to use the correct predicate
                 Claimant.predicateNot(Claimant.predicateUnconditional()),
               ),
             ],
@@ -235,46 +288,78 @@ export class StellarService {
             amount: `${amountToStake}`,
           }),
         )
-        .setTimeout(180)
+        .setTimeout(1000)
         .build();
 
-      claimableTransaction.sign(this.keypair);
+      claimableTransaction.sign(this.issuingKeypair);
       const claimableResponse =
         await this.server.submitTransaction(claimableTransaction);
       const claimableHash = claimableResponse.hash;
       console.log('Claimable balance transaction hash:', claimableHash);
 
       // Check the status of the claimable balance transaction
-      const claimableResult = (await this.checkTransactionStatus(
+      const claimableResult = await this.checkTransactionStatus(
         this.server,
         claimableHash,
-      )) as any;
+      );
 
-      if (claimableResult) {
-        console.log('Claimable balance transaction was successful.');
-
-        const trackerAmountForUser = Number(createStakeDto.amount);
-        const additionalAmountForLiquidity =
-          Number(createStakeDto.amount) * 0.1;
-
-        await this.transferAsset(
-          this.keypair,
-          createStakeDto.senderPublicKey,
-          `${createStakeDto.amount}`,
-          this.whaleAcqua,
-        );
-
-        await this.checkBalance(this.keypair.publicKey(), this.whaleAcqua);
-      } else {
-        console.error('Claimable balance transaction failed.');
+      if (!claimableResult.successful) {
+        throw new Error('Claimable balance transaction failed.');
       }
+
+      const operationResult = claimableResult.results[0].value() as any;
+      const createClaimableBalanceResult =
+        operationResult.createClaimableBalanceResult();
+
+      let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
+
+      console.log('Balance ID:', balanceId);
+      console.log('Claimable balance transaction was successful.');
+
+      const claimableRecord = new ClaimableRecordsEntity();
+      claimableRecord.account = user;
+      claimableRecord.balanceId = balanceId;
+      claimableRecord.amount = createStakeDto.amount.toString();
+      await claimableRecord.save();
+
+      await this.transferAsset(
+        this.issuingKeypair,
+        this.signerKeypair.publicKey(),
+        additionalAmountForLiquidity.toString(),
+        this.whaleAcqua,
+      );
+
+      await this.checkBalance(this.signerKeypair.publicKey(), this.whaleAcqua);
+
+      const assets = [this.whaleAcqua, new Asset(AQUA_CODE, AQUA_ISSUER)];
+
+      const amounts = new Map<string, string>();
+      amounts.set(assets[0].code, additionalAmountForLiquidity.toString());
+      amounts.set(assets[1].code, remaniningAmount.toString());
+
+      //send token to new signer for staking
+      await this.sorobanService
+        .depositAQUAWHLHUB(assets, amounts, createStakeDto.senderPublicKey)
+        .then(async (passed) => {
+          await this.transferAsset(
+            this.issuingKeypair,
+            createStakeDto.senderPublicKey,
+            `${trackerTransferAmount}`,
+            this.whaleAcqua,
+          );
+        });
     } catch (err) {
-      //[x] get status and check if it was a timeout
-      console.error('Error during staking process:', err);
+      console.error('Error during staking process:', err.data.extras);
     }
   }
 
-  async checkTransactionStatus(server: Horizon.Server, hash: string) {
+  async checkTransactionStatus(
+    server: Horizon.Server,
+    hash: string,
+  ): Promise<{
+    successful: boolean;
+    results: StellarSdk.xdr.OperationResult[];
+  }> {
     while (true) {
       try {
         // Fetch the transaction result using the server's `transactions().transaction()` method
@@ -284,11 +369,14 @@ export class StellarService {
           .call();
 
         if (transactionResult.successful) {
-          console.log(
-            'Transaction confirmed in ledger:',
-            await transactionResult.successful,
+          let txResult = StellarSdk.xdr.TransactionResult.fromXDR(
+            transactionResult.result_xdr,
+            'base64',
           );
-          return transactionResult.successful;
+
+          let results = txResult.result().results();
+
+          return { successful: transactionResult.successful, results };
         } else {
           console.error(
             'Transaction failed. Result:',
@@ -315,6 +403,7 @@ export class StellarService {
 
     if (balance) {
       console.log(`Balance of ${asset.code}: ${balance.balance}`);
+      return balance.balance;
     } else {
       console.log(`No balance found for ${asset.code}`);
     }
@@ -347,10 +436,42 @@ export class StellarService {
     transaction.sign(senderKeypair);
 
     try {
-      const response = await this.server.submitTransaction(transaction);
-      console.log('Transaction successful:', response);
+      const txn = await this.server.submitTransaction(transaction);
+      console.log(`Transfer token tracker successful: `, txn.hash);
     } catch (error) {
       console.error('Transaction failed:', error.response.data);
+    }
+  }
+
+  public async getAssetDetails(asset: Asset) {
+    try {
+      const assetRecords = await this.server
+        .assets()
+        .forCode(asset.code)
+        .forIssuer(asset.issuer)
+        .call();
+
+      console.log('Asset Details:', assetRecords);
+      return assetRecords;
+    } catch (error) {
+      console.error('Error fetching asset details:', error);
+    }
+  }
+
+  async addLiq(createAddLiquidityDto: CreateAddLiquidityDto) {
+    await this.sorobanService.addLiqudityTxn(createAddLiquidityDto);
+  }
+
+  async getUser(userPublicKey: string): Promise<UserEntity> {
+    try {
+      const userRecord = await this.userRepository.findOne({
+        where: { account: userPublicKey },
+        relations: ['stakes', 'treasurydeposits', 'claimableRecords', 'pools'],
+      });
+
+      return userRecord;
+    } catch (err) {
+      console.log(err);
     }
   }
 }

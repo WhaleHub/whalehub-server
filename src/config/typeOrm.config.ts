@@ -2,12 +2,13 @@ import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
+import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposits.entity';
+import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
+import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 
 export const typeOrmConfig = async (
   configService: ConfigService,
 ): Promise<TypeOrmModuleOptions> => {
-  console.log(configService.get<string>('POSTGRES_HOST'), 'sam');
-
   return {
     type: 'postgres',
     host: configService.get<string>('POSTGRES_HOST'),
@@ -15,7 +16,13 @@ export const typeOrmConfig = async (
     username: configService.get<string>('POSTGRES_USER'),
     database: configService.get<string>('POSTGRES_DATABASE'),
     password: configService.get<string>('POSTGRES_PASSWORD'),
-    entities: [UserEntity, TokenEntity],
+    entities: [
+      UserEntity,
+      TokenEntity,
+      TreasuryDepositsEntity,
+      ClaimableRecordsEntity,
+      PoolsEntity,
+    ],
     migrations: [__dirname + '/../database/migrations/*{.ts,.js}'],
     extra: {
       charset: 'utf8mb4_unicode_ci',
