@@ -1,5 +1,5 @@
 import { SorobanPrepareTxErrorHandler } from '@/helpers/error-handler';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Asset, Keypair, xdr } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
@@ -81,6 +81,7 @@ export class SorobanService {
   private rpcUrl: string;
   whaleAcqua: Asset;
   assetsCache = new Map<string, Asset>();
+  logger = new Logger(SorobanService.name);
 
   constructor(
     private configService: ConfigService,
@@ -112,6 +113,7 @@ export class SorobanService {
     assets: Asset[],
     amounts: Map<string, string>,
     senderPublicKey: string,
+    depositType: DepositType,
   ) {
     const account = await this.server.getAccount(
       this.signerKeypair.publicKey(),
@@ -167,12 +169,13 @@ export class SorobanService {
             poolRecord.txnHash = mainTx.hash;
             poolRecord.poolHash = poolsForAsset[0][0];
             poolRecord.senderPublicKey = senderPublicKey;
+            poolRecord.depositType = depositType;
             await poolRecord.save().then(() => console.log('pool txn saved'));
           }
         });
       });
     } else {
-      console.log('trying to deposit into pool');
+      this.logger.log('trying to deposit into pool');
 
       const tx = await this.getDepositTx(
         account.accountId(),
@@ -184,7 +187,7 @@ export class SorobanService {
 
       const mainTx = await this.server.sendTransaction(tx);
 
-      console.log('deposit into pool hash: ', mainTx.hash);
+      this.logger.debug(`deposit into pool hash: ${mainTx.hash}`);
 
       const result = await this.checkTransactionStatus(
         this.server,
@@ -195,16 +198,35 @@ export class SorobanService {
         const user = await this.userRepository.findOneBy({
           account: senderPublicKey,
         });
+
         const poolRecord = new PoolsEntity();
         poolRecord.account = user;
         poolRecord.assetA = assets[1];
         poolRecord.assetB = assets[0];
         poolRecord.assetAAmount = amounts.get(assets[1].code);
         poolRecord.assetBAmount = amounts.get(assets[0].code);
-        poolRecord.poolHash = poolsForAsset[1][1];
+        poolRecord.poolHash = poolsForAsset[0][0];
         poolRecord.txnHash = mainTx.hash;
         poolRecord.senderPublicKey = senderPublicKey;
-        await poolRecord.save().then(() => console.log('pool txn saved'));
+        poolRecord.depositType = depositType;
+        const newPoolRecord = await poolRecord.save();
+        this.logger.debug(
+          `saved txn for ${assets[0].code} and ${assets[1].code}`,
+        );
+
+        //store the balance for account
+        const newBalanceRecord = new LpBalanceEntity();
+        newBalanceRecord.account = user;
+        newBalanceRecord.pool = newPoolRecord;
+        newBalanceRecord.assetA = assets[0];
+        newBalanceRecord.assetB = assets[1];
+        newBalanceRecord.assetAAmount = amounts.get(assets[0].code);
+        newBalanceRecord.assetBAmount = amounts.get(assets[1].code);
+        newBalanceRecord.depositType = depositType;
+        newBalanceRecord.senderPublicKey = senderPublicKey;
+        await newBalanceRecord
+          .save()
+          .then(() => this.logger.log(`Saved new balance record`));
       }
     }
   }
@@ -242,8 +264,6 @@ export class SorobanService {
         createAddLiquidityDto.asset2.amount.toString(),
       );
 
-      console.log(poolsForAsset[1][0]);
-
       const depositTxn = await this.getDepositTx(
         account.accountId(),
         poolsForAsset[1][1],
@@ -255,7 +275,7 @@ export class SorobanService {
       tx.sign(this.signerKeypair);
 
       const transaction = await this.server.sendTransaction(tx);
-      console.log('deposit into pool hash: ', transaction.hash);
+      this.logger.log('deposit into pool hash: ', transaction.hash);
 
       const { successful } = await this.checkTransactionStatus(
         this.server,
@@ -276,7 +296,7 @@ export class SorobanService {
         newPoolRecord.poolHash = poolsForAsset[1][0];
         newPoolRecord.senderPublicKey = createAddLiquidityDto.senderPublicKey;
         newPoolRecord.depositType = DepositType.LIQUIDITY_PROVISION;
-        await newPoolRecord.save().then(() => console.log(`Saved deposit`));
+        await newPoolRecord.save().then(() => this.logger.log(`Saved deposit`));
 
         //store the balance for account
         const newBalanceRecord = new LpBalanceEntity();
@@ -286,11 +306,12 @@ export class SorobanService {
         newBalanceRecord.assetB = assets[1];
         newBalanceRecord.assetAAmount = amounts.get(assets[0].code);
         newBalanceRecord.assetBAmount = amounts.get(assets[1].code);
+        newBalanceRecord.depositType = DepositType.LIQUIDITY_PROVISION;
         newBalanceRecord.senderPublicKey =
           createAddLiquidityDto.senderPublicKey;
         await newBalanceRecord
           .save()
-          .then(() => console.log(`Saved new balance record`));
+          .then(() => this.logger.log(`Saved new balance record`));
       }
     } catch (err) {
       console.log(err);

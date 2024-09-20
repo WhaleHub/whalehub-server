@@ -54,7 +54,7 @@ export class TokenController {
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   addLiquidity(@Body() createAddLiquidityDto: CreateAddLiquidityDto) {
-    return this.stellarService.addLiq(createAddLiquidityDto);
+    return this.stellarService.addLiquidity(createAddLiquidityDto);
   }
 
   @Get('user')

@@ -2,6 +2,7 @@ import { Column, Entity, JoinColumn, ManyToOne, OneToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
 import { PoolsEntity } from './pools.entity';
+import { DepositType } from '@/utils/models/enums';
 
 @Entity({ name: 'lp_balance' })
 export class LpBalanceEntity extends BaseEntity {
@@ -33,4 +34,11 @@ export class LpBalanceEntity extends BaseEntity {
 
   @Column()
   senderPublicKey: string;
+
+  @Column({
+    type: 'enum',
+    enum: DepositType,
+    default: DepositType.LOCKER,
+  })
+  depositType: DepositType;
 }

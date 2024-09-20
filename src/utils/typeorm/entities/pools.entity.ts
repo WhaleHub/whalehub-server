@@ -30,14 +30,14 @@ export class PoolsEntity extends BaseEntity {
   @Column()
   assetBAmount: string;
 
+  @Column()
+  poolHash: string;
+
   @Column({ default: 10 })
   fee: number;
 
   @Column()
   txnHash: string;
-
-  @Column()
-  poolHash: string;
 
   @Column()
   senderPublicKey: string;

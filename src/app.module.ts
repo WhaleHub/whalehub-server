@@ -11,6 +11,7 @@ import { TreasuryDepositsEntity } from './utils/typeorm/entities/treasuryDeposit
 import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecords.entity';
 import { PoolsEntity } from './utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
     }),
     ConfigModule.forRoot({ isGlobal: true }),
     TokenModule,
+    ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [AppService],

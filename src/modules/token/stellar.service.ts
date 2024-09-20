@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { ConfigService } from '@nestjs/config';
@@ -27,6 +27,10 @@ import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposit
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 import { CreateRemoveLiquidityDto } from './dto/create-remove-lp.dto';
 import { stellarAssets } from '@/utils/stellarAssets';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
+import { DepositType } from '@/utils/models/enums';
+import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 
 const WHLAQUA_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
@@ -61,6 +65,8 @@ export class StellarService {
   private rpcUrl: string;
   whlAqua: Asset;
 
+  private readonly logger = new Logger(StellarService.name);
+
   constructor(
     private configService: ConfigService,
 
@@ -70,7 +76,13 @@ export class StellarService {
     private userRepository: Repository<UserEntity>,
 
     @InjectRepository(TokenEntity)
-    private tokeRepository: Repository<TokenEntity>,
+    private tokenRepository: Repository<TokenEntity>,
+
+    @InjectRepository(PoolsEntity)
+    private poolRepository: Repository<PoolsEntity>,
+
+    @InjectRepository(LpBalanceEntity)
+    private lpBalances: Repository<LpBalanceEntity>,
   ) {
     this.issuingSecret = this.configService.get<string>(
       'SOROBAN_ISSUER_SECRET_KEY',
@@ -91,7 +103,7 @@ export class StellarService {
     try {
       const asset = new Asset(createTokenDto.code, createTokenDto.issuer);
 
-      const tokenData = await this.tokeRepository.findOneBy({
+      const tokenData = await this.tokenRepository.findOneBy({
         code: createTokenDto.code,
         issuer: createTokenDto.issuer,
       });
@@ -325,6 +337,7 @@ export class StellarService {
         assets,
         amounts,
         createStakeDto.senderPublicKey,
+        DepositType.LOCKER,
       );
 
       await this.transferAsset(
@@ -334,7 +347,7 @@ export class StellarService {
         this.whlAqua,
       );
     } catch (err) {
-      console.error('Error during staking process:', err.data.extras);
+      this.logger.error('Error during staking process:', err.data.extras);
     }
   }
 
@@ -444,7 +457,7 @@ export class StellarService {
     }
   }
 
-  async addLiq(createAddLiquidityDto: CreateAddLiquidityDto) {
+  async addLiquidity(createAddLiquidityDto: CreateAddLiquidityDto) {
     try {
       // await this.server.loadAccount(this.signerKeypair.publicKey());
 
@@ -506,29 +519,133 @@ export class StellarService {
     console.log(assets);
   }
 
-  async redeemReward(redeemRewardDto) {
-    try {
-      const account = await this.server.loadAccount(
-        redeemRewardDto.senderPublicKey,
-      );
+  //[x] UPDATE TO RUN WEEKLY
+  @Cron(CronExpression.EVERY_10_SECONDS)
+  async redeemAquaRewardsForICE() {
+    //[x] fetch all staked whlaqua and aqua records
+    const poolRecords = await this.poolRepository.find({
+      select: [
+        'assetA',
+        'assetB',
+        'assetAAmount',
+        'assetBAmount',
+        'poolHash',
+        'senderPublicKey',
+      ],
+      where: { depositType: DepositType.LOCKER },
+    });
 
-      const summarizedAssets = redeemRewardDto.summarizedAssets;
+    if (poolRecords.length === 0) return;
+    //[x] so far a user still has ice locked this will run every week.
+    this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
 
-      const extractedAssets = {};
-      for (const assetCode in summarizedAssets) {
-        if (stellarAssets[assetCode]) {
-          extractedAssets[assetCode] = stellarAssets[assetCode];
-        }
+    const totalPoolPerPairAmount = {};
+    const groupedBySender = {};
+    const userTotalAmountForAsset = {};
+    let totalPoolAmountForAllAssets = 0;
+
+    poolRecords.forEach((record) => {
+      const { senderPublicKey, assetA, assetB, assetAAmount, assetBAmount } =
+        record;
+
+      // Create a unique asset pair key, regardless of the order of assetA and assetB
+      const assetPair = [assetA.code, assetB.code].sort().join(':');
+
+      // Ensure assets values are changed to numbers
+      const assetAValue = parseFloat(assetAAmount);
+      const assetBValue = parseFloat(assetBAmount);
+
+      // Initialize the total amount for the asset pair if it doesn't exist
+      if (!totalPoolPerPairAmount[assetPair]) {
+        totalPoolPerPairAmount[assetPair] = { assetA: 0, assetB: 0 };
       }
 
-      const assets = Object.values(extractedAssets) as Asset[];
+      // Initialize the sender's record if it doesn't exist
+      if (!groupedBySender[senderPublicKey]) {
+        groupedBySender[senderPublicKey] = {};
+      }
 
-      await this.sorobanService.claimReward(
-        assets,
-        redeemRewardDto.senderPublicKey,
-      );
-    } catch (err) {
-      console.log('Error redeeming: ', err);
-    }
+      // Initialize the sender's asset pair if it doesn't exist
+      if (!groupedBySender[senderPublicKey][assetPair]) {
+        groupedBySender[senderPublicKey][assetPair] = [];
+      }
+
+      // Initialize userTotalAmountForAsset if it doesn't exist for this sender
+      if (!userTotalAmountForAsset[senderPublicKey]) {
+        userTotalAmountForAsset[senderPublicKey] = {};
+      }
+
+      if (!userTotalAmountForAsset[senderPublicKey][assetPair]) {
+        userTotalAmountForAsset[senderPublicKey][assetPair] = {
+          assetA: 0,
+          assetB: 0,
+          total: 0,
+        };
+      }
+
+      // Update user's total amount for the asset pair
+      userTotalAmountForAsset[senderPublicKey][assetPair].assetA += assetAValue;
+      userTotalAmountForAsset[senderPublicKey][assetPair].assetB += assetAValue;
+
+      // Calculate the total (sum of assetA and assetB) for the user
+      userTotalAmountForAsset[senderPublicKey][assetPair].total =
+        userTotalAmountForAsset[senderPublicKey][assetPair].assetA +
+        userTotalAmountForAsset[senderPublicKey][assetPair].assetB;
+
+      // Add the record to the sender's grouped records
+      groupedBySender[senderPublicKey][assetPair].push(record);
+
+      // Add the amounts of assetA and assetB to the total amount for this asset pair
+      totalPoolPerPairAmount[assetPair].assetA += assetAValue;
+      totalPoolPerPairAmount[assetPair].assetB += assetBValue;
+    });
+
+    // Calculate the total pool amount for each asset pair (sum of assetA + assetB)
+    Object.keys(totalPoolPerPairAmount).forEach((pair) => {
+      const { assetA, assetB } = totalPoolPerPairAmount[pair];
+      const sum = assetA + assetB;
+
+      totalPoolAmountForAllAssets += sum;
+
+      totalPoolPerPairAmount[pair] = sum.toFixed(7);
+    });
+
+    // Log outputs for verification
+    console.log('Grouped by Sender:', groupedBySender);
+    console.log('User Total Amount for Asset:', userTotalAmountForAsset);
+    console.log('Total Pool Amount per Pair:', totalPoolPerPairAmount);
+
+    //[x] Ensure AQUA pools can claim rewards
+    //[x] fetch all lp_balances for the pool
+    //[x] calculate each user percentage
+    //[x] get pool aqua reward
+    //[x] swap pool reward to JWLAQUA
+    //[x] withdraw to sponsor wallet
+    //[x] distribute rewards based on user percentage(s)
+    // this.logger.debug('Distributed locked AQUA/WHLAQUA pool rewards');
   }
+
+  async redeemRewardPoolRewards() {
+    // try {
+    //   const account = await this.server.loadAccount(
+    //     redeemRewardDto.senderPublicKey,
+    //   );
+    //   const summarizedAssets = redeemRewardDto.summarizedAssets;
+    //   const extractedAssets = {};
+    //   for (const assetCode in summarizedAssets) {
+    //     if (stellarAssets[assetCode]) {
+    //       extractedAssets[assetCode] = stellarAssets[assetCode];
+    //     }
+    //   }
+    //   const assets = Object.values(extractedAssets) as Asset[];
+    //   await this.sorobanService.claimReward(
+    //     assets,
+    //     redeemRewardDto.senderPublicKey,
+    //   );
+    // } catch (err) {
+    //   console.log('Error redeeming: ', err);
+    // }
+  }
+
+  async fetchStakedForTwoAssets(poolRecords: PoolsEntity[]) {}
 }
