@@ -523,8 +523,6 @@ export class StellarService {
   //@Cron(CronExpression.EVERY_WEEK)
   @Cron(CronExpression.EVERY_10_SECONDS)
   async redeemAquaRewardsForICE() {
-    // Ensure AQUA pools can claim rewards
-
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
       select: [
@@ -540,8 +538,9 @@ export class StellarService {
 
     if (poolRecords.length === 0) return;
 
+    // this.signerKeypair.publicKey(),
     const account = await this.server.loadAccount(
-      this.signerKeypair.publicKey(),
+      'GDMFFHVJQZSDXM4SRU2W6KFLWV62BKXNNJVC4GT25NMQK2LENFUVO44I',
     );
 
     this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
@@ -550,8 +549,10 @@ export class StellarService {
     let totalPoolPerPairAmount = {};
     let userTotalAmountForAsset = {};
     let totalPoolAmountForAllAssets = 0;
-    let to_claim = 0;
+    let totalAquaPoolRewardAmount;
+    let lastPoolKey;
 
+    // Iterate over pool records to group data
     for (const record of poolRecords) {
       const {
         senderPublicKey,
@@ -563,20 +564,18 @@ export class StellarService {
 
       const assetA = new Asset(a.code, a.issuer);
       const assetB = new Asset(b.code, b.issuer);
-      const assets = [Asset.native(), assetB].sort();
+      const assets = [assetA, assetB].sort();
       const poolKey = getPoolKey(assets[0], assets[1]);
+      lastPoolKey = poolKey;
 
       const aquaPool = await this.sorobanService.getPools(assets);
       if (aquaPool.length <= 0) continue; // skip if no pool
 
       const poolAddresses = aquaPools[poolKey];
-      const totalAquaPoolRewardAmount =
-        await this.sorobanService.getPoolRewards(
-          account.accountId(),
-          poolAddresses.poolHash,
-        );
-
-      to_claim = totalAquaPoolRewardAmount.to_claim;
+      totalAquaPoolRewardAmount = (await this.sorobanService.getPoolRewards(
+        account.accountId(),
+        poolAddresses.poolHash,
+      )) as any;
 
       const assetAValue = parseFloat(assetAAmount);
       const assetBValue = parseFloat(assetBAmount);
@@ -618,39 +617,218 @@ export class StellarService {
       totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
     });
 
-    this.logger.log(totalPoolPerPairAmount);
-
+    // Claim rewards for the pool (once)
+    const to_claim = totalAquaPoolRewardAmount.to_claim; // Assume this was fetched earlier
     // if (to_claim < 25000) return;
 
-    // Execute all reward claims in parallel and wait for completion
-    const rewardPromises = Object.entries(userTotalAmountForAsset).map(
-      ([userPublicKey, assetPairs]) =>
-        Promise.all(
-          Object.entries(assetPairs).map(async ([pair, userPairData]) => {
-            const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
-            if (totalPoolForPair === 0) return;
-
-            const userClaimAmount = userPairData.total;
-
-            const poolAddresses = aquaPools[pair];
-
-            await this.sorobanService.claimReward(
-              [Asset.native(), new Asset(AQUA_CODE, AQUA_ISSUER)],
-              account.accountId(),
-            );
-
-            //[x] swap aqua to WHLAQUA
-
-            console.log(userClaimAmount);
-          }),
-        ),
+    await this.sorobanService.claimReward(
+      [Asset.native(), new Asset(AQUA_CODE, AQUA_ISSUER)],
+      account.accountId(),
     );
 
-    // Wait for all reward claims to complete
-    await Promise.all(rewardPromises);
+    this.logger.debug('Rewards claimed, proceeding with swap');
+    const poolAddresses = aquaPools[lastPoolKey];
+
+    // Swap AQUA to WHLAQUA (mock function)
+    const swappedAmount = await this.swapToWhlaqua(4, poolAddresses.poolHash);
+
+    this.logger.debug(
+      `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
+    );
+
+    // Distribute rewards to users based on their pool shares
+    // await this.distributeRewardsToUsers(groupedBySender, totalPoolPerPairAmount, swappedAmount);
 
     this.logger.log('All transactions have been processed');
   }
+
+  async swapToWhlaqua(amount: number, poolId: string): Promise<number> {
+    // new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey()),
+    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whlAqua];
+
+    // get pool reserves
+    const poolReserves = await this.sorobanService.getPoolReserves(
+      assets,
+      poolId,
+    );
+
+    const reserveAqua = parseFloat(poolReserves.get('AQUA'));
+    const reserveWhlaqua = parseFloat(poolReserves.get('WHLAQUA'));
+
+    // const ab = await this.sorobanService.estimateSwap(
+    //   assets[0],
+    //   assets[1],
+    //   `${10}`,
+    // );
+
+    //estimate swap
+    const estimateAmount = await this.estimateSwap(
+      reserveAqua,
+      reserveWhlaqua,
+      Number(amount),
+    );
+
+    const aquaAddress = this.sorobanService.getAssetContractId(
+      new Asset(AQUA_CODE, AQUA_ISSUER),
+    );
+
+    const whlAddress = this.sorobanService.getAssetContractId(this.whlAqua);
+
+    this.logger.debug(`AQUA token address: ${aquaAddress}`);
+    this.logger.debug(`WHLAQUA token address: ${whlAddress}`);
+
+    const swapAmount = await this.sorobanService.getSwapTx(poolId);
+
+    this.logger.debug(`Swapping ${amount} AQUA to WHLAQUA`);
+    return 4;
+  }
+
+  async estimateSwap(
+    reserveAqua: number,
+    reserveWhlaqua: number,
+    amountInAqua: number = 10,
+  ) {
+    if (reserveAqua <= 0 || reserveWhlaqua <= 0 || amountInAqua <= 0) {
+      throw new Error('Invalid reserve or input amounts');
+    }
+
+    const amountOutWhlaqua =
+      (reserveWhlaqua * amountInAqua) / (reserveAqua + amountInAqua);
+
+    return amountOutWhlaqua;
+  }
+
+  //@Cron(CronExpression.EVERY_WEEK)
+  // @Cron(CronExpression.EVERY_10_SECONDS)
+  // async redeemAquaRewardsForICE() {
+  //   // Ensure AQUA pools can claim rewards
+
+  //   // Fetch all staked whlaqua and aqua records
+  //   const poolRecords = await this.poolRepository.find({
+  //     select: [
+  //       'assetA',
+  //       'assetB',
+  //       'assetAAmount',
+  //       'assetBAmount',
+  //       'poolHash',
+  //       'senderPublicKey',
+  //     ],
+  //     where: { depositType: DepositType.LOCKER },
+  //   });
+
+  //   if (poolRecords.length === 0) return;
+
+  //   const account = await this.server.loadAccount(
+  //     this.signerKeypair.publicKey(),
+  //   );
+
+  //   this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
+
+  //   let groupedBySender = {};
+  //   let totalPoolPerPairAmount = {};
+  //   let userTotalAmountForAsset = {};
+  //   let totalPoolAmountForAllAssets = 0;
+  //   let to_claim = 0;
+
+  //   for (const record of poolRecords) {
+  //     const {
+  //       senderPublicKey,
+  //       assetA: a,
+  //       assetB: b,
+  //       assetAAmount,
+  //       assetBAmount,
+  //     } = record;
+
+  //     const assetA = new Asset(a.code, a.issuer);
+  //     const assetB = new Asset(b.code, b.issuer);
+  //     const assets = [Asset.native(), assetB].sort();
+  //     const poolKey = getPoolKey(assets[0], assets[1]);
+
+  //     const aquaPool = await this.sorobanService.getPools(assets);
+  //     if (aquaPool.length <= 0) continue; // skip if no pool
+
+  //     const poolAddresses = aquaPools[poolKey];
+  //     const totalAquaPoolRewardAmount =
+  //       await this.sorobanService.getPoolRewards(
+  //         account.accountId(),
+  //         poolAddresses.poolHash,
+  //       );
+
+  //     to_claim = totalAquaPoolRewardAmount.to_claim;
+
+  //     const assetAValue = parseFloat(assetAAmount);
+  //     const assetBValue = parseFloat(assetBAmount);
+
+  //     // Update totals
+  //     totalPoolPerPairAmount[poolKey] = totalPoolPerPairAmount[poolKey] || {
+  //       assetA: 0,
+  //       assetB: 0,
+  //     };
+  //     groupedBySender[senderPublicKey] = groupedBySender[senderPublicKey] || {};
+  //     groupedBySender[senderPublicKey][poolKey] =
+  //       groupedBySender[senderPublicKey][poolKey] || [];
+  //     userTotalAmountForAsset[senderPublicKey] =
+  //       userTotalAmountForAsset[senderPublicKey] || {};
+  //     userTotalAmountForAsset[senderPublicKey][poolKey] =
+  //       userTotalAmountForAsset[senderPublicKey][poolKey] || {
+  //         assetA: 0,
+  //         assetB: 0,
+  //         total: 0,
+  //       };
+
+  //     userTotalAmountForAsset[senderPublicKey][poolKey].assetA += assetAValue;
+  //     userTotalAmountForAsset[senderPublicKey][poolKey].assetB += assetBValue;
+  //     userTotalAmountForAsset[senderPublicKey][poolKey].total = (
+  //       userTotalAmountForAsset[senderPublicKey][poolKey].assetA +
+  //       userTotalAmountForAsset[senderPublicKey][poolKey].assetB
+  //     ).toFixed(7);
+
+  //     groupedBySender[senderPublicKey][poolKey].push(record);
+
+  //     totalPoolPerPairAmount[poolKey].assetA += assetAValue;
+  //     totalPoolPerPairAmount[poolKey].assetB += assetBValue;
+  //   }
+
+  //   // Calculate total pool for each pair
+  //   Object.keys(totalPoolPerPairAmount).forEach((pair) => {
+  //     const { assetA, assetB } = totalPoolPerPairAmount[pair];
+  //     totalPoolAmountForAllAssets += assetA + assetB;
+  //     totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
+  //   });
+
+  //   // if (to_claim < 25000) return;
+
+  //   // Execute all reward claims in parallel and wait for completion
+  //   const rewardPromises = Object.entries(userTotalAmountForAsset).map(
+  //     ([userPublicKey, assetPairs]) =>
+  //       Promise.all(
+  //         Object.entries(assetPairs).map(async ([pair, userPairData]) => {
+  //           const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+  //           if (totalPoolForPair === 0) return;
+
+  //           const userClaimAmount = userPairData.total;
+
+  //           const poolAddresses = aquaPools[pair];
+
+  //           await this.sorobanService.claimReward(
+  //             [Asset.native(), new Asset(AQUA_CODE, AQUA_ISSUER)],
+  //             account.accountId(),
+  //           );
+
+  //           console.log(userPublicKey, 'user that receives');
+
+  //           //[x] swap aqua to WHLAQUA
+
+  //           console.log(userClaimAmount);
+  //         }),
+  //       ),
+  //   );
+
+  //   // Wait for all reward claims to complete
+  //   await Promise.all(rewardPromises);
+
+  //   this.logger.log('All transactions have been processed');
+  // }
 
   //[x] fetch all lp_balances for the pool
   //[x] get pool aqua reward

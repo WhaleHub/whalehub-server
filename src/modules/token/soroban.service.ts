@@ -475,12 +475,67 @@ export class SorobanService {
   getAssetContractId(asset: Asset): string {
     const hash = this.getAssetContractHash(asset);
 
-    console.log(
-      'contract address of asset : ',
-      this.getContactIdFromHash(hash),
-    );
+    // console.log(
+    //   'contract address of asset : ',
+    //   this.getContactIdFromHash(hash),
+    // );
 
     return this.getContactIdFromHash(hash);
+  }
+
+  getPoolReserves(assets: Asset[], poolId: string) {
+    return this.buildSmartContactTx(
+      ACCOUNT_FOR_SIMULATE,
+      poolId,
+      AMM_CONTRACT_METHOD.GET_RESERVES,
+    )
+      .then((tx) => {
+        return this.simulateTx(
+          tx,
+        ) as Promise<SimulateTransactionSuccessResponse>;
+      })
+      .then(({ result }) => {
+        if (result) {
+          return this.orderTokens(assets).reduce((acc, asset, index) => {
+            acc.set(
+              this.getAssetString(asset),
+              this.i128ToInt(result.retval.value()[index].value()),
+            );
+            return acc;
+          }, new Map());
+        }
+
+        throw new Error('getPoolPrice fail');
+      });
+  }
+
+  async estimateSwap(base: Asset, counter: Asset, amount: string) {
+    const idA = this.getAssetContractId(base);
+    const idB = this.getAssetContractId(counter);
+
+    const [a, b] = idA > idB ? [counter, base] : [base, counter];
+
+    return this.buildSmartContactTx(
+      ACCOUNT_FOR_SIMULATE,
+      AMM_SMART_CONTACT_ID,
+      AMM_CONTRACT_METHOD.ESTIMATE_SWAP_ROUTED,
+      this.scValToArray([this.assetToScVal(a), this.assetToScVal(b)]),
+      this.assetToScVal(base),
+      this.assetToScVal(counter),
+      this.amountToUint128(amount),
+    )
+      .then((tx) => {
+        return this.server.simulateTransaction(
+          tx,
+        ) as Promise<SimulateTransactionSuccessResponse>;
+      })
+      .then(({ result }) => {
+        if (result) {
+          // @ts-ignore
+          return result.retval.value();
+        }
+        return 0;
+      });
   }
 
   getContactIdFromHash(hash) {
@@ -690,6 +745,69 @@ export class SorobanService {
       this.amountToUint128(minCounterAmount),
     ).then((tx) => this.prepareTransaction(tx));
   }
+
+  async getSwapTx(poolId): Promise<number> {
+    const contract = new StellarSdk.Contract(AMM_SMART_CONTACT_ID);
+
+    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), Asset.native()];
+
+    const assetAAddress = this.getAssetContractId(assets[0]);
+    const assetBAddress = this.getAssetContractId(assets[1]);
+
+    console.log(poolId);
+
+    const call = contract.call(
+      AMM_CONTRACT_METHOD.SWAP,
+      StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
+      this.scValToArray(
+        this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
+      ),
+      StellarSdk.Address.fromString(assetAAddress).toScVal(),
+      StellarSdk.Address.fromString(assetBAddress).toScVal(),
+      xdr.ScVal.scvBytes(
+        Buffer.from('CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV'),
+      ),
+      xdr.ScVal.scvU128(this.bigintToInt128Parts(BigInt(2))),
+      xdr.ScVal.scvU128(this.bigintToInt128Parts(BigInt(0))),
+    );
+
+    const account = await this.server.getAccount(
+      this.signerKeypair.publicKey(),
+    );
+
+    const transactionBuilder = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: StellarSdk.Networks.PUBLIC,
+    })
+      .addOperation(call)
+      .setTimeout(30)
+      .build();
+
+    const tx = await this.prepareTransaction(transactionBuilder);
+    console.log(tx);
+
+    // tx.sign(this.signerKeypair);
+
+    return 5;
+  }
+
+  //   bigintToUint128Parts(value) {
+  //     // Ensure value is a bigint
+  //     if (typeof value !== 'bigint') {
+  //         throw new Error('Value must be a bigint');
+  //     }
+
+  //     // 64 bits = 2^64
+  //     const HIGH_MASK = 0xffffffffffffffffn;
+
+  //     const high = Number(value >> 64n);
+  //     const low = Number(value & HIGH_MASK);
+
+  //     return new StellarSdk.xdr.UInt128Parts({
+  //         hi: new StellarSdk.xdr.Uint64(high),
+  //         lo: new StellarSdk.xdr.Uint64(low),
+  //     });
+  // }
 
   getClaimRewardsTx(accountId: string, poolId: string) {
     return this.buildSmartContactTx(
