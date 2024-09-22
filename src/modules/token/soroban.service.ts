@@ -741,4 +741,35 @@ export class SorobanService {
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
   }
+
+  getPoolInfo(accountId: string, poolId: string) {
+    return this.buildSmartContactTx(
+      accountId,
+      poolId,
+      AMM_CONTRACT_METHOD.GET_INFO,
+    )
+      .then(
+        (tx) =>
+          this.server.simulateTransaction(
+            tx,
+          ) as Promise<SimulateTransactionSuccessResponse>,
+      )
+      .then(({ result }) => {
+        if (result) {
+          // @ts-ignore
+          return result.retval.value().reduce((acc, val) => {
+            acc[val.key().value().toString()] =
+              typeof val.val().value() === 'number'
+                ? val.val().value()
+                : val.val().value().hi
+                  ? this.i128ToInt(val.val().value())
+                  : val.val().value().toString();
+
+            return acc;
+          }, {});
+        }
+
+        throw new Error('getPoolRewards error');
+      });
+  }
 }

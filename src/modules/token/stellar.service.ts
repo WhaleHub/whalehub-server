@@ -31,6 +31,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
+import { aquaPools, getPoolKey, parseBufferString } from '@/utils/constants';
 
 const WHLAQUA_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
@@ -522,7 +523,9 @@ export class StellarService {
   //[x] UPDATE TO RUN WEEKLY
   @Cron(CronExpression.EVERY_10_SECONDS)
   async redeemAquaRewardsForICE() {
-    //[x] fetch all staked whlaqua and aqua records
+    //[x] Ensure AQUA pools can claim rewards
+
+    // fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
       select: [
         'assetA',
@@ -536,28 +539,63 @@ export class StellarService {
     });
 
     if (poolRecords.length === 0) return;
+
     //[x] so far a user still has ice locked this will run every week.
     this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
 
-    const totalPoolPerPairAmount = {};
-    const groupedBySender = {};
-    const userTotalAmountForAsset = {};
+    let groupedBySender = {};
+    let totalPoolPerPairAmount = {};
+    let userTotalAmountForAsset = {};
     let totalPoolAmountForAllAssets = 0;
+    let to_claim = 0;
 
-    poolRecords.forEach((record) => {
-      const { senderPublicKey, assetA, assetB, assetAAmount, assetBAmount } =
-        record;
+    for (const record of poolRecords) {
+      const {
+        senderPublicKey,
+        assetA: a,
+        assetB: b,
+        assetAAmount,
+        assetBAmount,
+      } = record;
 
-      // Create a unique asset pair key, regardless of the order of assetA and assetB
-      const assetPair = [assetA.code, assetB.code].sort().join(':');
+      const assetA = new Asset(a.code, a.issuer);
+      const assetB = new Asset(b.code, b.issuer);
 
-      // Ensure assets values are changed to numbers
+      const account = await this.server.loadAccount(
+        this.signerKeypair.publicKey(),
+      );
+
+      const assets = [Asset.native(), assetB].sort();
+
+      const poolKey = getPoolKey(assets[0], assets[1]);
+
+      // Ensure pool exists
+      const aquaPool = await this.sorobanService.getPools(assets);
+
+      if (aquaPool.length <= 0) continue; // TODO: throw and log error
+
+      const poolAddresses = aquaPools[poolKey];
+      const bufferObject = parseBufferString(poolAddresses.binary);
+
+      await this.sorobanService.getPoolInfo(
+        account.accountId(),
+        poolAddresses.poolHash,
+      );
+
+      const totalAquaPoolRewardAmount =
+        await this.sorobanService.getPoolRewards(
+          'GDMFFHVJQZSDXM4SRU2W6KFLWV62BKXNNJVC4GT25NMQK2LENFUVO44I',
+          poolAddresses.poolHash,
+        );
+
+      to_claim = totalAquaPoolRewardAmount.to_claim;
+
       const assetAValue = parseFloat(assetAAmount);
       const assetBValue = parseFloat(assetBAmount);
 
-      // Initialize the total amount for the asset pair if it doesn't exist
-      if (!totalPoolPerPairAmount[assetPair]) {
-        totalPoolPerPairAmount[assetPair] = { assetA: 0, assetB: 0 };
+      // Initialize total amount for the asset pair if it doesn't exist
+      if (!totalPoolPerPairAmount[poolKey]) {
+        totalPoolPerPairAmount[poolKey] = { assetA: 0, assetB: 0 };
       }
 
       // Initialize the sender's record if it doesn't exist
@@ -566,8 +604,8 @@ export class StellarService {
       }
 
       // Initialize the sender's asset pair if it doesn't exist
-      if (!groupedBySender[senderPublicKey][assetPair]) {
-        groupedBySender[senderPublicKey][assetPair] = [];
+      if (!groupedBySender[senderPublicKey][poolKey]) {
+        groupedBySender[senderPublicKey][poolKey] = [];
       }
 
       // Initialize userTotalAmountForAsset if it doesn't exist for this sender
@@ -575,8 +613,8 @@ export class StellarService {
         userTotalAmountForAsset[senderPublicKey] = {};
       }
 
-      if (!userTotalAmountForAsset[senderPublicKey][assetPair]) {
-        userTotalAmountForAsset[senderPublicKey][assetPair] = {
+      if (!userTotalAmountForAsset[senderPublicKey][poolKey]) {
+        userTotalAmountForAsset[senderPublicKey][poolKey] = {
           assetA: 0,
           assetB: 0,
           total: 0,
@@ -584,21 +622,22 @@ export class StellarService {
       }
 
       // Update user's total amount for the asset pair
-      userTotalAmountForAsset[senderPublicKey][assetPair].assetA += assetAValue;
-      userTotalAmountForAsset[senderPublicKey][assetPair].assetB += assetAValue;
+      userTotalAmountForAsset[senderPublicKey][poolKey].assetA += assetAValue;
+      userTotalAmountForAsset[senderPublicKey][poolKey].assetB += assetBValue;
 
       // Calculate the total (sum of assetA and assetB) for the user
-      userTotalAmountForAsset[senderPublicKey][assetPair].total =
-        userTotalAmountForAsset[senderPublicKey][assetPair].assetA +
-        userTotalAmountForAsset[senderPublicKey][assetPair].assetB;
+      userTotalAmountForAsset[senderPublicKey][poolKey].total = (
+        userTotalAmountForAsset[senderPublicKey][poolKey].assetA +
+        userTotalAmountForAsset[senderPublicKey][poolKey].assetB
+      ).toFixed(7);
 
       // Add the record to the sender's grouped records
-      groupedBySender[senderPublicKey][assetPair].push(record);
+      groupedBySender[senderPublicKey][poolKey].push(record);
 
       // Add the amounts of assetA and assetB to the total amount for this asset pair
-      totalPoolPerPairAmount[assetPair].assetA += assetAValue;
-      totalPoolPerPairAmount[assetPair].assetB += assetBValue;
-    });
+      totalPoolPerPairAmount[poolKey].assetA += assetAValue;
+      totalPoolPerPairAmount[poolKey].assetB += assetBValue;
+    }
 
     // Calculate the total pool amount for each asset pair (sum of assetA + assetB)
     Object.keys(totalPoolPerPairAmount).forEach((pair) => {
@@ -611,13 +650,35 @@ export class StellarService {
     });
 
     // Log outputs for verification
-    console.log('Grouped by Sender:', groupedBySender);
-    console.log('User Total Amount for Asset:', userTotalAmountForAsset);
-    console.log('Total Pool Amount per Pair:', totalPoolPerPairAmount);
+    // console.log('Grouped by Sender:', groupedBySender);
+    // console.log('User Total Amount for Asset:', userTotalAmountForAsset);
+    // console.log('Total Pool Amount per Pair:', totalPoolPerPairAmount);
 
-    //[x] Ensure AQUA pools can claim rewards
+    Object.entries(userTotalAmountForAsset).forEach(
+      ([userPublicKey, assetPairs]) => {
+        console.log(`User: ${userPublicKey}`);
+
+        Object.entries(assetPairs).forEach(([pair, userPairData]) => {
+          const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+
+          console.log(`Pair: ${pair}`);
+          console.log(`User Pair Data:`, userPairData);
+          console.log(`Total Pool Amount for Pair: ${totalPoolForPair}`);
+
+          const userPoolPercentageAmount =
+            (userPairData.total / totalPoolForPair) * 100;
+
+          // const userClaimAmount = (userPoolPercentageAmount / 100) * totalPoolForPair;
+          const userClaimAmount =
+            (userPairData.total / totalPoolForPair) * totalPoolForPair;
+
+          // calculate each user percentage
+          console.log({ userClaimAmount, to_claim, userPoolPercentageAmount });
+        });
+      },
+    );
+
     //[x] fetch all lp_balances for the pool
-    //[x] calculate each user percentage
     //[x] get pool aqua reward
     //[x] swap pool reward to JWLAQUA
     //[x] withdraw to sponsor wallet
