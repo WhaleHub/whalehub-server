@@ -650,9 +650,7 @@ export class SorobanService {
   }
 
   async claimReward(assets: Asset[], senderPublicKey: string) {
-    const account = await this.server.getAccount(
-      this.signerKeypair.publicKey(),
-    );
+    const account = await this.server.getAccount(senderPublicKey);
 
     const poolAddresses = await this.getPools(assets);
 
@@ -663,6 +661,7 @@ export class SorobanService {
 
     const to_claim = totalPoolRewardAmount.to_claim;
 
+    return;
     const tx = await this.getClaimRewardsTx(
       account.accountId(),
       poolAddresses[1][0],
@@ -670,38 +669,26 @@ export class SorobanService {
     tx.sign(this.signerKeypair);
     const transaction = await this.server.sendTransaction(tx);
     console.log('claim transaction hash: ', transaction.hash);
+    //TODO: create the db records
+  }
 
-    return;
-    // const contract = new StellarSdk.Contract(AMM_SMART_CONTACT_ID);
-
-    // const call = contract.call(
-    //   'claim',
-    //   StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
-    //   this.scValToArray(
-    //     this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
-    //   ),
-    //   xdr.ScVal.scvBytes(poolAddress[1][1]),
-    // );
-
-    // const transactionBuilder = new StellarSdk.TransactionBuilder(account, {
-    //   fee: StellarSdk.BASE_FEE,
-    //   networkPassphrase: StellarSdk.Networks.PUBLIC,
-    // })
-    //   .addOperation(call)
-    //   .setTimeout(30)
-    //   .build();
-
-    // const tx = await this.prepareTransaction(transactionBuilder);
-    // tx.sign(this.signerKeypair);
-
-    // const transaction = await this.server.sendTransaction(tx);
-    // console.log(transaction.hash);
-
-    // const { results } = await this.checkTransactionStatus(
-    //   this.server,
-    //   transaction.hash,
-    // );
-    // console.log(results);
+  getSwapChainedTx(
+    accountId: string,
+    base: Asset,
+    chainedXDR: string,
+    amount: string,
+    minCounterAmount: string,
+  ) {
+    return this.buildSmartContactTx(
+      accountId,
+      AMM_SMART_CONTACT_ID,
+      AMM_CONTRACT_METHOD.SWAP_CHAINED,
+      this.publicKeyToScVal(accountId),
+      xdr.ScVal.fromXDR(chainedXDR, 'base64'),
+      this.assetToScVal(base),
+      this.amountToUint128(amount),
+      this.amountToUint128(minCounterAmount),
+    ).then((tx) => this.prepareTransaction(tx));
   }
 
   getClaimRewardsTx(accountId: string, poolId: string) {

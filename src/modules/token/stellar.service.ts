@@ -520,12 +520,12 @@ export class StellarService {
     console.log(assets);
   }
 
-  //[x] UPDATE TO RUN WEEKLY
+  //@Cron(CronExpression.EVERY_WEEK)
   @Cron(CronExpression.EVERY_10_SECONDS)
   async redeemAquaRewardsForICE() {
-    //[x] Ensure AQUA pools can claim rewards
+    // Ensure AQUA pools can claim rewards
 
-    // fetch all staked whlaqua and aqua records
+    // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
       select: [
         'assetA',
@@ -540,7 +540,10 @@ export class StellarService {
 
     if (poolRecords.length === 0) return;
 
-    //[x] so far a user still has ice locked this will run every week.
+    const account = await this.server.loadAccount(
+      this.signerKeypair.publicKey(),
+    );
+
     this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
 
     let groupedBySender = {};
@@ -560,31 +563,16 @@ export class StellarService {
 
       const assetA = new Asset(a.code, a.issuer);
       const assetB = new Asset(b.code, b.issuer);
-
-      const account = await this.server.loadAccount(
-        this.signerKeypair.publicKey(),
-      );
-
       const assets = [Asset.native(), assetB].sort();
-
       const poolKey = getPoolKey(assets[0], assets[1]);
 
-      // Ensure pool exists
       const aquaPool = await this.sorobanService.getPools(assets);
-
-      if (aquaPool.length <= 0) continue; // TODO: throw and log error
+      if (aquaPool.length <= 0) continue; // skip if no pool
 
       const poolAddresses = aquaPools[poolKey];
-      const bufferObject = parseBufferString(poolAddresses.binary);
-
-      await this.sorobanService.getPoolInfo(
-        account.accountId(),
-        poolAddresses.poolHash,
-      );
-
       const totalAquaPoolRewardAmount =
         await this.sorobanService.getPoolRewards(
-          'GDMFFHVJQZSDXM4SRU2W6KFLWV62BKXNNJVC4GT25NMQK2LENFUVO44I',
+          account.accountId(),
           poolAddresses.poolHash,
         );
 
@@ -593,100 +581,85 @@ export class StellarService {
       const assetAValue = parseFloat(assetAAmount);
       const assetBValue = parseFloat(assetBAmount);
 
-      // Initialize total amount for the asset pair if it doesn't exist
-      if (!totalPoolPerPairAmount[poolKey]) {
-        totalPoolPerPairAmount[poolKey] = { assetA: 0, assetB: 0 };
-      }
-
-      // Initialize the sender's record if it doesn't exist
-      if (!groupedBySender[senderPublicKey]) {
-        groupedBySender[senderPublicKey] = {};
-      }
-
-      // Initialize the sender's asset pair if it doesn't exist
-      if (!groupedBySender[senderPublicKey][poolKey]) {
-        groupedBySender[senderPublicKey][poolKey] = [];
-      }
-
-      // Initialize userTotalAmountForAsset if it doesn't exist for this sender
-      if (!userTotalAmountForAsset[senderPublicKey]) {
-        userTotalAmountForAsset[senderPublicKey] = {};
-      }
-
-      if (!userTotalAmountForAsset[senderPublicKey][poolKey]) {
-        userTotalAmountForAsset[senderPublicKey][poolKey] = {
+      // Update totals
+      totalPoolPerPairAmount[poolKey] = totalPoolPerPairAmount[poolKey] || {
+        assetA: 0,
+        assetB: 0,
+      };
+      groupedBySender[senderPublicKey] = groupedBySender[senderPublicKey] || {};
+      groupedBySender[senderPublicKey][poolKey] =
+        groupedBySender[senderPublicKey][poolKey] || [];
+      userTotalAmountForAsset[senderPublicKey] =
+        userTotalAmountForAsset[senderPublicKey] || {};
+      userTotalAmountForAsset[senderPublicKey][poolKey] =
+        userTotalAmountForAsset[senderPublicKey][poolKey] || {
           assetA: 0,
           assetB: 0,
           total: 0,
         };
-      }
 
-      // Update user's total amount for the asset pair
       userTotalAmountForAsset[senderPublicKey][poolKey].assetA += assetAValue;
       userTotalAmountForAsset[senderPublicKey][poolKey].assetB += assetBValue;
-
-      // Calculate the total (sum of assetA and assetB) for the user
       userTotalAmountForAsset[senderPublicKey][poolKey].total = (
         userTotalAmountForAsset[senderPublicKey][poolKey].assetA +
         userTotalAmountForAsset[senderPublicKey][poolKey].assetB
       ).toFixed(7);
 
-      // Add the record to the sender's grouped records
       groupedBySender[senderPublicKey][poolKey].push(record);
 
-      // Add the amounts of assetA and assetB to the total amount for this asset pair
       totalPoolPerPairAmount[poolKey].assetA += assetAValue;
       totalPoolPerPairAmount[poolKey].assetB += assetBValue;
     }
 
-    // Calculate the total pool amount for each asset pair (sum of assetA + assetB)
+    // Calculate total pool for each pair
     Object.keys(totalPoolPerPairAmount).forEach((pair) => {
       const { assetA, assetB } = totalPoolPerPairAmount[pair];
-      const sum = assetA + assetB;
-
-      totalPoolAmountForAllAssets += sum;
-
-      totalPoolPerPairAmount[pair] = sum.toFixed(7);
+      totalPoolAmountForAllAssets += assetA + assetB;
+      totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
     });
 
-    // Log outputs for verification
-    // console.log('Grouped by Sender:', groupedBySender);
-    // console.log('User Total Amount for Asset:', userTotalAmountForAsset);
-    // console.log('Total Pool Amount per Pair:', totalPoolPerPairAmount);
+    this.logger.log(totalPoolPerPairAmount);
 
-    Object.entries(userTotalAmountForAsset).forEach(
-      ([userPublicKey, assetPairs]) => {
-        console.log(`User: ${userPublicKey}`);
+    // if (to_claim < 25000) return;
 
-        Object.entries(assetPairs).forEach(([pair, userPairData]) => {
-          const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+    // Execute all reward claims in parallel and wait for completion
+    const rewardPromises = Object.entries(userTotalAmountForAsset).map(
+      ([userPublicKey, assetPairs]) =>
+        Promise.all(
+          Object.entries(assetPairs).map(async ([pair, userPairData]) => {
+            const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+            if (totalPoolForPair === 0) return;
 
-          console.log(`Pair: ${pair}`);
-          console.log(`User Pair Data:`, userPairData);
-          console.log(`Total Pool Amount for Pair: ${totalPoolForPair}`);
+            const userClaimAmount = userPairData.total;
 
-          const userPoolPercentageAmount =
-            (userPairData.total / totalPoolForPair) * 100;
+            const poolAddresses = aquaPools[pair];
 
-          // const userClaimAmount = (userPoolPercentageAmount / 100) * totalPoolForPair;
-          const userClaimAmount =
-            (userPairData.total / totalPoolForPair) * totalPoolForPair;
+            await this.sorobanService.claimReward(
+              [Asset.native(), new Asset(AQUA_CODE, AQUA_ISSUER)],
+              account.accountId(),
+            );
 
-          // calculate each user percentage
-          console.log({ userClaimAmount, to_claim, userPoolPercentageAmount });
-        });
-      },
+            //[x] swap aqua to WHLAQUA
+
+            console.log(userClaimAmount);
+          }),
+        ),
     );
 
-    //[x] fetch all lp_balances for the pool
-    //[x] get pool aqua reward
-    //[x] swap pool reward to JWLAQUA
-    //[x] withdraw to sponsor wallet
-    //[x] distribute rewards based on user percentage(s)
-    // this.logger.debug('Distributed locked AQUA/WHLAQUA pool rewards');
+    // Wait for all reward claims to complete
+    await Promise.all(rewardPromises);
+
+    this.logger.log('All transactions have been processed');
   }
 
-  async redeemRewardPoolRewards() {
+  //[x] fetch all lp_balances for the pool
+  //[x] get pool aqua reward
+  //[x] swap pool reward to JWLAQUA
+  //[x] withdraw to sponsor wallet
+  //[x] distribute rewards based on user percentage(s)
+  // this.logger.debug('Distributed locked AQUA/WHLAQUA pool rewards');
+
+  async redeemRewardPoolRewards(redeemRewardDto) {
     // try {
     //   const account = await this.server.loadAccount(
     //     redeemRewardDto.senderPublicKey,

@@ -5,6 +5,7 @@ import { CreateStakeDto } from './dto/create-stake.dto';
 import { StellarService } from './stellar.service';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { CreateRemoveLiquidityDto } from './dto/create-remove-lp.dto';
+import { CreateRedeemLiquidityDto } from './dto/create-redeem-lp.dto';
 
 @ApiTags('Token')
 @Controller('token')
@@ -90,7 +91,7 @@ export class TokenController {
   // })
   // @ApiResponse({
   //   status: 201,
-  //   description: 'Rewards redeemed succesfully',
+  //   description: 'Rewards redeemed successfully',
   // })
   // @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   // redeemReward(@Body() createRemoveLiquidityDto: CreateRemoveLiquidityDto) {
