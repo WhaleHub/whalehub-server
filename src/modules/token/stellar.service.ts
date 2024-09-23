@@ -572,10 +572,11 @@ export class StellarService {
       if (aquaPool.length <= 0) continue; // skip if no pool
 
       const poolAddresses = aquaPools[poolKey];
-      totalAquaPoolRewardAmount = (await this.sorobanService.getPoolRewards(
+      totalAquaPoolRewardAmount = await this.sorobanService.getPoolRewards(
         account.accountId(),
         poolAddresses.poolHash,
-      )) as any;
+      );
+      totalAquaPoolRewardAmount.to_claim = 4;
 
       const assetAValue = parseFloat(assetAAmount);
       const assetBValue = parseFloat(assetBAmount);
@@ -636,8 +637,38 @@ export class StellarService {
       `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
     );
 
-    // Distribute rewards to users based on their pool shares
-    // await this.distributeRewardsToUsers(groupedBySender, totalPoolPerPairAmount, swappedAmount);
+    Object.entries(userTotalAmountForAsset).map(([userPublicKey, assetPairs]) =>
+      Promise.all(
+        Object.entries(assetPairs).map(async ([pair, userPairData]) => {
+          const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+          if (totalPoolForPair === 0) return;
+
+          const userClaimAmount = parseFloat(userPairData.total);
+          if (swappedAmount === 0) return; // Avoid division by zero
+
+          const poolAddresses = aquaPools[pair];
+
+          // Calculate the user's percentage of the total claimable amount
+          const userPercentage = (userClaimAmount / swappedAmount) * 100;
+
+          // Convert percentage to decimal
+          const userPercentageDecimal = userPercentage / 100;
+
+          const userShare = (userPercentageDecimal * swappedAmount).toFixed(7);
+
+          console.log({ userShare, swappedAmount, userPercentage });
+
+          // [x] Swap AQUA to WHLAQUA (you can add the swap logic here)
+          await this.transferAsset(
+            this.signerKeypair,
+            userPublicKey,
+            userShare,
+            this.whlAqua,
+          );
+          // console.log(userClaimAmount);
+        }),
+      ),
+    );
 
     this.logger.log('All transactions have been processed');
   }
@@ -661,12 +692,12 @@ export class StellarService {
     //   `${10}`,
     // );
 
-    //estimate swap
-    const estimateAmount = await this.estimateSwap(
-      reserveAqua,
-      reserveWhlaqua,
-      Number(amount),
-    );
+    // //estimate swap
+    // const estimateAmount = await this.estimateSwap(
+    //   reserveAqua,
+    //   reserveWhlaqua,
+    //   Number(amount),
+    // );
 
     const aquaAddress = this.sorobanService.getAssetContractId(
       new Asset(AQUA_CODE, AQUA_ISSUER),
@@ -680,7 +711,7 @@ export class StellarService {
     const swapAmount = await this.sorobanService.getSwapTx(poolId);
 
     this.logger.debug(`Swapping ${amount} AQUA to WHLAQUA`);
-    return 4;
+    return swapAmount;
   }
 
   async estimateSwap(

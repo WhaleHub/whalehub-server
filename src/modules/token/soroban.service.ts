@@ -727,6 +727,30 @@ export class SorobanService {
     //TODO: create the db records
   }
 
+  async distributeRewardsToUsers(
+    groupedBySender: Record<string, any>,
+    totalPoolPerPairAmount: Record<string, any>,
+    swappedAmount: number,
+  ): Promise<void> {
+    // Distribute based on user share in the pool
+    for (const [userPublicKey, assetPairs] of Object.entries(groupedBySender)) {
+      for (const [pair, userPairData] of Object.entries(assetPairs)) {
+        const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+        if (totalPoolForPair === 0) continue;
+
+        console.log(userPairData);
+
+        // @ts-ignore
+        const userShare = userPairData.total;
+        const userReward = (swappedAmount * userShare) / totalPoolForPair;
+
+        // Mock transfer function
+        // await this.transferReward(userPublicKey, userReward);
+        // this.logger.debug(`Transferred ${userReward} WHLAQUA to ${userPublicKey}`);
+      }
+    }
+  }
+
   getSwapChainedTx(
     accountId: string,
     base: Asset,
@@ -747,63 +771,74 @@ export class SorobanService {
   }
 
   async getSwapTx(poolId): Promise<number> {
-    const contract = new StellarSdk.Contract(AMM_SMART_CONTACT_ID);
+    this.logger.log(poolId);
 
-    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), Asset.native()];
+    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whaleAcqua];
 
     const assetAAddress = this.getAssetContractId(assets[0]);
     const assetBAddress = this.getAssetContractId(assets[1]);
 
-    // const call = contract.call(
-    //   AMM_CONTRACT_METHOD.SWAP,
-    //   StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
-    //   this.scValToArray(
-    //     this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
-    //   ),
-    //   StellarSdk.Address.fromString(assetAAddress).toScVal(),
-    //   StellarSdk.Address.fromString(assetBAddress).toScVal(),
-    //   xdr.ScVal.scvBytes(
-    //     Buffer.from('CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV'),
-    //   ),
-    //   xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(2))),
-    //   xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(0))),
-    // );
+    // 'CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV',
+    const contract = new StellarSdk.Contract(poolId); // pool id
+
+    const value = BigInt(20000000);
+
+    const call = contract.call(
+      AMM_CONTRACT_METHOD.SWAP,
+      StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
+      xdr.ScVal.scvU32(
+        this.orderTokens(assets).findIndex(
+          (asset) => this.getAssetContractId(asset) === assetAAddress,
+        ),
+      ), // asset_in index u32
+      xdr.ScVal.scvU32(
+        this.orderTokens(assets).findIndex(
+          (asset) => this.getAssetContractId(asset) === assetBAddress,
+        ),
+      ), // asset_out index u32
+      xdr.ScVal.scvU128(this.bigintToIntU28Parts(value)),
+      xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(0))),
+    );
 
     const account = await this.server.getAccount(
       this.signerKeypair.publicKey(),
     );
 
-    const transaction = await this.buildSmartContactTx(
-      account.accountId(),
-      AMM_SMART_CONTACT_ID,
-      AMM_CONTRACT_METHOD.SWAP,
-      StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
-      this.scValToArray(
-        this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
-      ),
-      StellarSdk.Address.fromString(assetAAddress).toScVal(),
-      StellarSdk.Address.fromString(assetBAddress).toScVal(),
-      xdr.ScVal.scvBytes(Buffer.from(poolId)),
-      xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(1))),
-      xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(0))),
-    );
-    const sim = await this.simulateTx(transaction);
-    console.log(sim);
+    const transactionBuilder = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: StellarSdk.Networks.PUBLIC,
+    })
+      .addOperation(call)
+      .setTimeout(30)
+      .build();
 
-    // const transactionBuilder = new StellarSdk.TransactionBuilder(account, {
-    //   fee: StellarSdk.BASE_FEE,
-    //   networkPassphrase: StellarSdk.Networks.PUBLIC,
-    // })
-    //   .addOperation(call)
-    //   .setTimeout(30)
-    //   .build();
+    const tx = await this.prepareTransaction(transactionBuilder);
+    tx.sign(this.signerKeypair);
+    // const response = await this.server.sendTransaction(tx);
+    // console.log(response.hash);
 
-    // const tx = await this.prepareTransaction(transactionBuilder);
-    // console.log(tx);
+    const { results, successful, returnValue } =
+      await this.checkTransactionStatus(
+        this.server,
+        'd13ebc5f6e2874c6ec8bf9048a60d22797234a945d9a43d811e58f0b8766980c',
+      );
 
-    // tx.sign(this.signerKeypair);
+    const returnValues = returnValue.value();
 
-    return 5;
+    const hi = returnValues.hi().toBigInt();
+    const lo = returnValues.lo().toBigInt();
+
+    const combinedValue = (hi << BigInt(64)) + lo;
+    const precisionFactor = BigInt(10 ** 7);
+
+    const humanReadableDecimal = (combinedValue / precisionFactor).toString();
+    const fractionalPart = (combinedValue % precisionFactor)
+      .toString()
+      .padStart(7, '0');
+
+    const finalReadableValue = `${humanReadableDecimal}.${fractionalPart}`;
+
+    return Number(finalReadableValue);
   }
 
   getClaimRewardsTx(accountId: string, poolId: string) {
@@ -821,6 +856,7 @@ export class SorobanService {
   ): Promise<{
     successful: boolean;
     results?: xdr.TransactionResult;
+    returnValue: any;
   }> {
     while (true) {
       try {
@@ -829,7 +865,11 @@ export class SorobanService {
         if (transactionResult.status === 'SUCCESS') {
           console.log('Transaction success:', transactionResult.status);
           let resultXdr = transactionResult.resultXdr;
-          return { successful: true, results: resultXdr };
+          return {
+            successful: true,
+            results: resultXdr,
+            returnValue: transactionResult.returnValue,
+          };
         } else {
           console.error(
             'Transaction failed. Retrying... Status:',
