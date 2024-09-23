@@ -357,7 +357,7 @@ export class SorobanService {
     return xdr.ScVal.scvBytes(buffer);
   }
 
-  bigintToInt128Parts(value: BigInt): xdr.UInt128Parts {
+  bigintToIntU28Parts(value: BigInt): xdr.UInt128Parts {
     // Ensure value is a bigint
     if (typeof value !== 'bigint') {
       throw new Error('Value must be a bigint');
@@ -754,9 +754,28 @@ export class SorobanService {
     const assetAAddress = this.getAssetContractId(assets[0]);
     const assetBAddress = this.getAssetContractId(assets[1]);
 
-    console.log(poolId);
+    // const call = contract.call(
+    //   AMM_CONTRACT_METHOD.SWAP,
+    //   StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
+    //   this.scValToArray(
+    //     this.orderTokens(assets).map((asset) => this.assetToScVal(asset)),
+    //   ),
+    //   StellarSdk.Address.fromString(assetAAddress).toScVal(),
+    //   StellarSdk.Address.fromString(assetBAddress).toScVal(),
+    //   xdr.ScVal.scvBytes(
+    //     Buffer.from('CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV'),
+    //   ),
+    //   xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(2))),
+    //   xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(0))),
+    // );
 
-    const call = contract.call(
+    const account = await this.server.getAccount(
+      this.signerKeypair.publicKey(),
+    );
+
+    const transaction = await this.buildSmartContactTx(
+      account.accountId(),
+      AMM_SMART_CONTACT_ID,
       AMM_CONTRACT_METHOD.SWAP,
       StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
       this.scValToArray(
@@ -764,50 +783,28 @@ export class SorobanService {
       ),
       StellarSdk.Address.fromString(assetAAddress).toScVal(),
       StellarSdk.Address.fromString(assetBAddress).toScVal(),
-      xdr.ScVal.scvBytes(
-        Buffer.from('CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV'),
-      ),
-      xdr.ScVal.scvU128(this.bigintToInt128Parts(BigInt(2))),
-      xdr.ScVal.scvU128(this.bigintToInt128Parts(BigInt(0))),
+      xdr.ScVal.scvBytes(Buffer.from(poolId)),
+      xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(1))),
+      xdr.ScVal.scvU128(this.bigintToIntU28Parts(BigInt(0))),
     );
+    const sim = await this.simulateTx(transaction);
+    console.log(sim);
 
-    const account = await this.server.getAccount(
-      this.signerKeypair.publicKey(),
-    );
+    // const transactionBuilder = new StellarSdk.TransactionBuilder(account, {
+    //   fee: StellarSdk.BASE_FEE,
+    //   networkPassphrase: StellarSdk.Networks.PUBLIC,
+    // })
+    //   .addOperation(call)
+    //   .setTimeout(30)
+    //   .build();
 
-    const transactionBuilder = new StellarSdk.TransactionBuilder(account, {
-      fee: StellarSdk.BASE_FEE,
-      networkPassphrase: StellarSdk.Networks.PUBLIC,
-    })
-      .addOperation(call)
-      .setTimeout(30)
-      .build();
-
-    const tx = await this.prepareTransaction(transactionBuilder);
-    console.log(tx);
+    // const tx = await this.prepareTransaction(transactionBuilder);
+    // console.log(tx);
 
     // tx.sign(this.signerKeypair);
 
     return 5;
   }
-
-  //   bigintToUint128Parts(value) {
-  //     // Ensure value is a bigint
-  //     if (typeof value !== 'bigint') {
-  //         throw new Error('Value must be a bigint');
-  //     }
-
-  //     // 64 bits = 2^64
-  //     const HIGH_MASK = 0xffffffffffffffffn;
-
-  //     const high = Number(value >> 64n);
-  //     const low = Number(value & HIGH_MASK);
-
-  //     return new StellarSdk.xdr.UInt128Parts({
-  //         hi: new StellarSdk.xdr.Uint64(high),
-  //         lo: new StellarSdk.xdr.Uint64(low),
-  //     });
-  // }
 
   getClaimRewardsTx(accountId: string, poolId: string) {
     return this.buildSmartContactTx(
