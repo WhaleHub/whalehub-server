@@ -800,13 +800,57 @@ export class StellarService {
 
     //TODO: update with the the rewardAmount
     const distributionAmount = Number(10 * 0.7).toFixed(7);
+    const treasuryAmount = Number(10 * 0.3).toFixed(7);
 
     // Swap AQUA(Rewards) to WHLAQUA
     const swappedAmount = await this.swapToWhlaqua(1);
 
-    // this.logger.debug(
-    //   `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
-    // );
+    this.logger.debug(
+      `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
+    );
+
+    Object.entries(userTotalAmountForAsset).map(([userPublicKey, assetPairs]) =>
+      Promise.all(
+        Object.entries(assetPairs).map(async ([pair, userPairData]) => {
+          const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+          if (totalPoolForPair === 0) return;
+
+          const userClaimAmount = parseFloat(userPairData.total);
+          if (swappedAmount === 0) return; // Avoid division by zero
+
+          const poolAddresses = aquaPools[pair];
+
+          // Calculate the user's percentage of the total claimable amount
+          const userPercentage = (userClaimAmount / swappedAmount) * 100;
+
+          // Convert percentage to decimal
+          const userPercentageDecimal = userPercentage / 100;
+
+          const userShare = (userPercentageDecimal * swappedAmount).toFixed(7);
+
+          console.log({ userShare, swappedAmount, userPercentage });
+
+          // [x] Swap AQUA to WHLAQUA (you can add the swap logic here)
+          // await this.transferAsset(
+          //   this.signerKeypair,
+          //   userPublicKey,
+          //   userShare,
+          //   this.whlAqua,
+          // );
+        }),
+      ),
+    );
+
+    //TODO: transfer amount to treasury
+    return;
+    await this.transferAsset(
+      this.signerKeypair,
+      this.signerKeypair.publicKey(),
+      treasuryAmount,
+      new Asset(AQUA_CODE, AQUA_ISSUER),
+    );
+
+    this.logger.log('All transactions have been processed');
   }
 
   async swapToWhlaqua(amount: number): Promise<number> {

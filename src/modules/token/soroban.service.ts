@@ -802,16 +802,30 @@ export class SorobanService {
     assets: Asset[],
   ): Promise<number> {
     this.logger.debug(`Pool id for swap: ${poolId}`);
-    // const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whaleAqua];
 
     const assetAAddress = this.getAssetContractId(assets[0]);
     const assetBAddress = this.getAssetContractId(assets[1]);
 
     const contract = new StellarSdk.Contract(poolId);
 
+    // const assetAIndex = this.orderTokens(assets).findIndex(
+    //   (asset) => this.getAssetContractId(asset) === assetAAddress,
+    // );
+
+    // const assetBIndex = this.orderTokens(assets).findIndex(
+    //   (asset) => this.getAssetContractId(asset) === assetBAddress,
+    // );
+
+    // console.log({
+    //   poolId,
+    //   assetAAddress,
+    //   assetBAddress,
+    //   assetAIndex,
+    //   assetBIndex,
+    // });
+
     const value = BigInt(`${amount}0000000`);
 
-    return;
     const call = contract.call(
       AMM_CONTRACT_METHOD.SWAP,
       StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
@@ -864,19 +878,11 @@ export class SorobanService {
     // const hi = returnValues.hi().toBigInt();
     // const lo = returnValues.lo().toBigInt();
 
-    const combinedValue = (hi << BigInt(64)) + lo;
-    const precisionFactor = BigInt(10 ** 7);
+    let integerValue = Number(hi) / 10 ** 7;
 
-    const humanReadableDecimal = (combinedValue / precisionFactor).toString();
-    const fractionalPart = (combinedValue % precisionFactor)
-      .toString()
-      .padStart(7, '0');
+    //TODO: create db records
 
-    const finalReadableValue = `${humanReadableDecimal}.${fractionalPart}`;
-
-    console.log({ finalReadableValue });
-
-    return Number(finalReadableValue);
+    return integerValue;
   }
 
   getClaimRewardsTx(accountId: string, poolId: string) {
