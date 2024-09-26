@@ -79,7 +79,7 @@ export class SorobanService {
   private issuingKeypair: Keypair;
   private signerKeypair: Keypair;
   private rpcUrl: string;
-  whaleAcqua: Asset;
+  whaleAqua: Asset;
   assetsCache = new Map<string, Asset>();
   logger = new Logger(SorobanService.name);
 
@@ -106,7 +106,7 @@ export class SorobanService {
     this.issuingKeypair = Keypair.fromSecret(this.issuingSecret);
     this.signerKeypair = Keypair.fromSecret(this.signerSecret);
 
-    this.whaleAcqua = new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey());
+    this.whaleAqua = new Asset(WHLAQUA_CODE, this.issuingKeypair.publicKey());
   }
 
   async depositAQUAWHLHUB(
@@ -640,6 +640,14 @@ export class SorobanService {
     });
   }
 
+  u128ToDecimal(hi, lo) {
+    let hiBigInt = BigInt(hi); // Convert hi to BigInt
+    let loBigInt = BigInt(lo); // Convert lo to BigInt
+
+    let decimalValue = (hiBigInt << 64n) + loBigInt;
+    return decimalValue.toString();
+  }
+
   getPools(assets: Asset[]): Promise<null | Array<any>> {
     return this.buildSmartContactTx(
       ACCOUNT_FOR_SIMULATE,
@@ -704,6 +712,48 @@ export class SorobanService {
       });
   }
 
+  async claimLPReward(
+    assets: Asset[],
+    senderPublicKey: string,
+  ): Promise<number> {
+    const account = await this.server.getAccount(senderPublicKey);
+
+    const poolAddresses = await this.getPools(assets);
+
+    const totalPoolRewardAmount = await this.getPoolRewards(
+      account.accountId(),
+      poolAddresses[1][0],
+    );
+
+    const tx = await this.getClaimRewardsTx(
+      account.accountId(),
+      poolAddresses[1][0],
+    );
+    tx.sign(this.signerKeypair);
+
+    const ab = (await this.simulateTx(tx)) as any;
+
+    const hi = ab.result.retval.value().hi().toBigInt();
+    const lo = ab.result.retval.value().lo().toBigInt();
+
+    const combinedValue = (hi << BigInt(64)) + lo;
+    const precisionFactor = BigInt(10 ** 7);
+
+    const humanReadableDecimal = (combinedValue / precisionFactor).toString();
+    const fractionalPart = (combinedValue % precisionFactor)
+      .toString()
+      .padStart(7, '0');
+
+    const finalReadableValue = `${humanReadableDecimal}.${fractionalPart}`;
+
+    //TODO: use the swapped amount later
+    // const transaction = await this.server.sendTransaction(tx);
+    // console.log('claim transaction hash: ', transaction.hash);
+
+    //TODO: create the db records
+    return Number(finalReadableValue);
+  }
+
   async claimReward(assets: Asset[], senderPublicKey: string) {
     const account = await this.server.getAccount(senderPublicKey);
 
@@ -716,7 +766,7 @@ export class SorobanService {
 
     const to_claim = totalPoolRewardAmount.to_claim;
 
-    return;
+    return 4;
     const tx = await this.getClaimRewardsTx(
       account.accountId(),
       poolAddresses[1][0],
@@ -725,30 +775,6 @@ export class SorobanService {
     const transaction = await this.server.sendTransaction(tx);
     console.log('claim transaction hash: ', transaction.hash);
     //TODO: create the db records
-  }
-
-  async distributeRewardsToUsers(
-    groupedBySender: Record<string, any>,
-    totalPoolPerPairAmount: Record<string, any>,
-    swappedAmount: number,
-  ): Promise<void> {
-    // Distribute based on user share in the pool
-    for (const [userPublicKey, assetPairs] of Object.entries(groupedBySender)) {
-      for (const [pair, userPairData] of Object.entries(assetPairs)) {
-        const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
-        if (totalPoolForPair === 0) continue;
-
-        console.log(userPairData);
-
-        // @ts-ignore
-        const userShare = userPairData.total;
-        const userReward = (swappedAmount * userShare) / totalPoolForPair;
-
-        // Mock transfer function
-        // await this.transferReward(userPublicKey, userReward);
-        // this.logger.debug(`Transferred ${userReward} WHLAQUA to ${userPublicKey}`);
-      }
-    }
   }
 
   getSwapChainedTx(
@@ -770,19 +796,22 @@ export class SorobanService {
     ).then((tx) => this.prepareTransaction(tx));
   }
 
-  async getSwapTx(poolId): Promise<number> {
-    this.logger.log(poolId);
-
-    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whaleAcqua];
+  async getSwapTx(
+    amount: number,
+    poolId: string,
+    assets: Asset[],
+  ): Promise<number> {
+    this.logger.debug(`Pool id for swap: ${poolId}`);
+    // const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whaleAqua];
 
     const assetAAddress = this.getAssetContractId(assets[0]);
     const assetBAddress = this.getAssetContractId(assets[1]);
 
-    // 'CCY2PXGMKNQHO7WNYXEWX76L2C5BH3JUW3RCATGUYKY7QQTRILBZIFWV',
-    const contract = new StellarSdk.Contract(poolId); // pool id
+    const contract = new StellarSdk.Contract(poolId);
 
-    const value = BigInt(20000000);
+    const value = BigInt(`${amount}0000000`);
 
+    return;
     const call = contract.call(
       AMM_CONTRACT_METHOD.SWAP,
       StellarSdk.Address.fromString(this.signerKeypair.publicKey()).toScVal(),
@@ -814,19 +843,26 @@ export class SorobanService {
 
     const tx = await this.prepareTransaction(transactionBuilder);
     tx.sign(this.signerKeypair);
+
+    const sim = (await this.simulateTx(tx)) as any;
+
     // const response = await this.server.sendTransaction(tx);
     // console.log(response.hash);
 
-    const { results, successful, returnValue } =
-      await this.checkTransactionStatus(
-        this.server,
-        'd13ebc5f6e2874c6ec8bf9048a60d22797234a945d9a43d811e58f0b8766980c',
-      );
+    // // [x] uncomment later
+    // const { returnValue } = await this.checkTransactionStatus(
+    //   this.server,
+    //   response.hash,
+    // );
 
-    const returnValues = returnValue.value();
+    // const returnValues = returnValue.value();
 
-    const hi = returnValues.hi().toBigInt();
-    const lo = returnValues.lo().toBigInt();
+    const lo = sim.result.retval.value().hi().toBigInt();
+    const hi = sim.result.retval.value().lo().toBigInt();
+
+    //[x] USE LATER
+    // const hi = returnValues.hi().toBigInt();
+    // const lo = returnValues.lo().toBigInt();
 
     const combinedValue = (hi << BigInt(64)) + lo;
     const precisionFactor = BigInt(10 ** 7);
@@ -837,6 +873,8 @@ export class SorobanService {
       .padStart(7, '0');
 
     const finalReadableValue = `${humanReadableDecimal}.${fractionalPart}`;
+
+    console.log({ finalReadableValue });
 
     return Number(finalReadableValue);
   }
