@@ -713,7 +713,7 @@ export class StellarService {
 
           console.log({ userShare, swappedAmount, userPercentage });
 
-          // [x] Swap AQUA to WHLAQUA (you can add the swap logic here)
+          return;
           await this.transferAsset(
             this.lpSignerKeypair,
             userPublicKey,
@@ -727,7 +727,7 @@ export class StellarService {
     this.logger.log('All transactions have been processed');
   }
 
-  // @Cron(CronExpression.EVERY_10_SECONDS)
+  @Cron(CronExpression.EVERY_10_SECONDS)
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
@@ -845,11 +845,11 @@ export class StellarService {
     const poolAddresses = aquaPools[lastPoolKey];
 
     //TODO: update with the the rewardAmount
-    const distributionAmount = Number(10 * 0.7).toFixed(7);
-    const treasuryAmount = Number(10 * 0.3).toFixed(7);
+    const distributionAmount = Math.round(Number(rewardAmount * 0.7));
+    const treasuryAmount = Number((rewardAmount * 0.3).toFixed(7));
 
     // Swap AQUA(Rewards) to WHLAQUA
-    const swappedAmount = await this.swapToWhlaqua(1);
+    const swappedAmount = await this.swapToWhlaqua(distributionAmount);
 
     this.logger.debug(
       `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
@@ -862,7 +862,7 @@ export class StellarService {
           if (totalPoolForPair === 0) return;
 
           const userClaimAmount = parseFloat(userPairData.total);
-          if (swappedAmount === 0) return; // Avoid division by zero
+          if (swappedAmount === 0) return;
 
           const poolAddresses = aquaPools[pair];
 
@@ -876,12 +876,13 @@ export class StellarService {
 
           console.log({ userShare, swappedAmount, userPercentage });
 
-          // await this.transferAsset(
-          //   this.signerKeypair,
-          //   userPublicKey,
-          //   userShare,
-          //   this.whlAqua,
-          // );
+          return;
+          await this.transferAsset(
+            this.lpSignerKeypair,
+            userPublicKey,
+            userShare,
+            this.whlAqua,
+          );
         }),
       ),
     );
@@ -891,7 +892,7 @@ export class StellarService {
     await this.transferAsset(
       this.lpSignerKeypair,
       this.lpSignerKeypair.publicKey(),
-      treasuryAmount,
+      treasuryAmount.toString(),
       new Asset(AQUA_CODE, AQUA_ISSUER),
     );
 
