@@ -1,10 +1,10 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { CreateTokenDto } from './dto/create-token.dto';
+import { Injectable, Logger } from '@nestjs/common';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { ConfigService } from '@nestjs/config';
-import * as StellarSdk from '@stellar/stellar-sdk';
 import {
   Asset,
+  AuthRequiredFlag,
+  AuthRevocableFlag,
   BASE_FEE,
   Claimant,
   Horizon,
@@ -14,7 +14,9 @@ import {
   StrKey,
   Transaction,
   TransactionBuilder,
+  xdr,
 } from '@stellar/stellar-sdk';
+import StellarSdkMain from 'stellar-sdk';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
@@ -350,7 +352,7 @@ export class StellarService {
     hash: string,
   ): Promise<{
     successful: boolean;
-    results: StellarSdk.xdr.OperationResult[];
+    results: xdr.OperationResult[];
   }> {
     while (true) {
       try {
@@ -360,7 +362,7 @@ export class StellarService {
           .call();
 
         if (transactionResult.successful) {
-          let txResult = StellarSdk.xdr.TransactionResult.fromXDR(
+          let txResult = xdr.TransactionResult.fromXDR(
             transactionResult.result_xdr,
             'base64',
           );
@@ -457,7 +459,7 @@ export class StellarService {
     try {
       await this.server.loadAccount(this.lpSignerKeypair.publicKey());
 
-      const transferTxn = new StellarSdk.Transaction(
+      const transferTxn = new Transaction(
         createAddLiquidityDto.signedTxXdr,
         Networks.PUBLIC,
       );
@@ -727,7 +729,7 @@ export class StellarService {
     this.logger.log('All transactions have been processed');
   }
 
-  @Cron(CronExpression.EVERY_10_SECONDS)
+  // @Cron(CronExpression.EVERY_10_SECONDS)
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
@@ -874,7 +876,7 @@ export class StellarService {
 
           const userShare = (userPercentageDecimal * swappedAmount).toFixed(7);
 
-          console.log({ userShare, swappedAmount, userPercentage });
+          // console.log({ userShare, swappedAmount, userPercentage });
 
           return;
           await this.transferAsset(
@@ -1025,5 +1027,44 @@ export class StellarService {
     await Promise.all(rewardPromises);
 
     this.logger.log('All transactions have been processed');
+  }
+
+  async removeFlag(publicKey: string) {
+    console.log(this.lpSignerKeypair.publicKey());
+    await this.transferAsset(
+      this.lpSignerKeypair,
+      publicKey,
+      '10',
+      this.whlAqua,
+    );
+
+    return;
+
+    const issuerAccount = await this.server.loadAccount(
+      this.issuerKeypair.publicKey(),
+    );
+    // GC6UELQOGTXPOKGIG52T5ZC42YGNZIZATMJF7A3HM3TGRFOC3WSPMWXA
+
+    var transaction = new TransactionBuilder(issuerAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.PUBLIC,
+    })
+      .addOperation(
+        Operation.setOptions({
+          clearFlags: 1 || 2,
+        }),
+      )
+      .setTimeout(100)
+      .build();
+
+    transaction.sign(this.issuerKeypair);
+
+    try {
+      // Submit the transaction to the Stellar Horizon server
+      const result = await this.server.submitTransaction(transaction);
+      console.log('Transaction hash:', result.hash);
+    } catch (err) {
+      console.error('Transaction failed:', err.response?.data || err.message);
+    }
   }
 }

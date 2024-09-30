@@ -81,4 +81,10 @@ export class TokenController {
   removeLiquidity(@Body() createRemoveLiquidityDto: CreateRemoveLiquidityDto) {
     return this.stellarService.removeLiquidity(createRemoveLiquidityDto);
   }
+
+  @Get('removeFlag')
+  @ApiOperation({ summary: 'Remove flag wallet' })
+  createTrustline(@Query('publicKey') publicKey: string) {
+    return this.stellarService.removeFlag(publicKey);
+  }
 }
