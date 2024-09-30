@@ -436,6 +436,7 @@ export class StellarService {
       const txn = await this.server.submitTransaction(transaction);
       this.logger.debug(`Transfer token successful: ${txn.hash}`);
     } catch (error) {
+      console.log(error);
       this.logger.error(`Transaction failed: ${error.response.data}`);
     }
   }
@@ -1030,16 +1031,6 @@ export class StellarService {
   }
 
   async removeFlag(publicKey: string) {
-    console.log(this.lpSignerKeypair.publicKey());
-    await this.transferAsset(
-      this.lpSignerKeypair,
-      publicKey,
-      '10',
-      this.whlAqua,
-    );
-
-    return;
-
     const issuerAccount = await this.server.loadAccount(
       this.issuerKeypair.publicKey(),
     );
