@@ -569,7 +569,7 @@ export class StellarService {
     return amountOutWhlaqua;
   }
 
-  @Cron(CronExpression.EVERY_10_SECONDS)
+  // @Cron(CronExpression.EVERY_10_SECONDS)
   async redeemLockedAquaRewards() {
     // Fetch all staked whlaqua and aqua records
 
@@ -590,8 +590,6 @@ export class StellarService {
     });
 
     if (poolRecords.length === 0) return;
-
-    return;
 
     this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
 
@@ -679,7 +677,7 @@ export class StellarService {
         code === 'XLM' ? Asset.native() : new Asset(code, AQUA_ISSUER),
       ) as Asset[];
 
-    const rewardClaimed = await this.sorobanService.claimReward(
+    const rewardClaimed = await this.sorobanService.claimLockReward(
       assets,
       account.accountId(),
     );
@@ -701,7 +699,7 @@ export class StellarService {
           if (totalPoolForPair === 0) return;
 
           const userClaimAmount = parseFloat(userPairData.total);
-          if (swappedAmount === 0) return; // Avoid division by zero
+          if (swappedAmount === 0) return;
 
           const poolAddresses = aquaPools[pair];
 
@@ -729,9 +727,8 @@ export class StellarService {
     this.logger.log('All transactions have been processed');
   }
 
-  // [x] allow cron
   // @Cron(CronExpression.EVERY_10_SECONDS)
-  async redeemAquaLPRewards() {
+  async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
       select: [
@@ -807,7 +804,6 @@ export class StellarService {
           assetB: 0,
           total: 0,
         };
-
       userTotalAmountForAsset[senderPublicKey][poolKey].assetA += assetAValue;
       userTotalAmountForAsset[senderPublicKey][poolKey].assetB += assetBValue;
       userTotalAmountForAsset[senderPublicKey][poolKey].total = (
@@ -839,11 +835,10 @@ export class StellarService {
         code === 'XLM' ? Asset.native() : new Asset(code, AQUA_ISSUER),
       ) as Asset[];
 
-    //[x] uncomment later
-    // const rewardAmount = await this.sorobanService.claimLPReward(
-    //   assets,
-    //   account.accountId(),
-    // );
+    const rewardAmount = await this.sorobanService.claimLPReward(
+      assets,
+      account.accountId(),
+    );
 
     this.logger.debug('Rewards claimed, proceeding with swap');
 
@@ -881,7 +876,6 @@ export class StellarService {
 
           console.log({ userShare, swappedAmount, userPercentage });
 
-          // [x] Swap AQUA to WHLAQUA (you can add the swap logic here)
           // await this.transferAsset(
           //   this.signerKeypair,
           //   userPublicKey,
@@ -1016,14 +1010,10 @@ export class StellarService {
 
             const poolAddresses = aquaPools[pair];
 
-            await this.sorobanService.claimReward(
+            await this.sorobanService.claimLockReward(
               [Asset.native(), new Asset(AQUA_CODE, AQUA_ISSUER)],
               account.accountId(),
             );
-
-            console.log(userPublicKey, 'user that receives');
-
-            //[x] swap aqua to WHLAQUA
 
             console.log(userClaimAmount);
           }),

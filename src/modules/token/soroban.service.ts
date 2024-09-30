@@ -755,7 +755,7 @@ export class SorobanService {
     return Number(finalReadableValue);
   }
 
-  async claimReward(assets: Asset[], senderPublicKey: string) {
+  async claimLockReward(assets: Asset[], senderPublicKey: string) {
     const account = await this.server.getAccount(senderPublicKey);
 
     const poolAddresses = await this.getPools(assets);
