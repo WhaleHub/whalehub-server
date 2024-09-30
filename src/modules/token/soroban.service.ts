@@ -233,8 +233,9 @@ export class SorobanService {
 
   async addLiquidityTxn(createAddLiquidityDto: CreateAddLiquidityDto) {
     try {
+      //[x] update account
       const account = await this.server.getAccount(
-        this.lpSignerKeypair.publicKey(),
+        this.issuerKeypair.publicKey(),
       );
 
       const assets = [
@@ -272,10 +273,10 @@ export class SorobanService {
       );
 
       const tx = await this.prepareTransaction(depositTxn);
-      tx.sign(this.lpSignerKeypair);
+      tx.sign(this.issuerKeypair);
 
       const transaction = await this.server.sendTransaction(tx);
-      this.logger.log('deposit into pool hash: ', transaction.hash);
+      this.logger.debug(`deposit into pool hash:  ${transaction.hash}`);
 
       const { successful } = await this.checkTransactionStatus(
         this.server,

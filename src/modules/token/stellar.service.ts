@@ -1035,35 +1035,4 @@ export class StellarService {
 
     this.logger.log('All transactions have been processed');
   }
-
-  //[x] fetch all lp_balances for the pool
-  //[x] get pool aqua reward
-  //[x] swap pool reward to JWLAQUA
-  //[x] withdraw to sponsor wallet
-  //[x] distribute rewards based on user percentage(s)
-  // this.logger.debug('Distributed locked AQUA/WHLAQUA pool rewards');
-
-  async redeemRewardPoolRewards(redeemRewardDto) {
-    // try {
-    //   const account = await this.server.loadAccount(
-    //     redeemRewardDto.senderPublicKey,
-    //   );
-    //   const summarizedAssets = redeemRewardDto.summarizedAssets;
-    //   const extractedAssets = {};
-    //   for (const assetCode in summarizedAssets) {
-    //     if (stellarAssets[assetCode]) {
-    //       extractedAssets[assetCode] = stellarAssets[assetCode];
-    //     }
-    //   }
-    //   const assets = Object.values(extractedAssets) as Asset[];
-    //   await this.sorobanService.claimReward(
-    //     assets,
-    //     redeemRewardDto.senderPublicKey,
-    //   );
-    // } catch (err) {
-    //   console.log('Error redeeming: ', err);
-    // }
-  }
-
-  async fetchStakedForTwoAssets(poolRecords: PoolsEntity[]) {}
 }
