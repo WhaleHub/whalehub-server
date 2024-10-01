@@ -34,7 +34,7 @@ async function bootstrap() {
   app.enableCors();
   app.useGlobalInterceptors(new ErrorInterceptor());
 
-  await app.listen(serverPort, serverIp);
+  await app.listen(3000, '0.0.0.0');
 
   console.log(`Application is now running on: ${await app.getUrl()}`);
 }
