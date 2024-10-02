@@ -32,7 +32,7 @@ export const typeOrmConfig = async (
       charset: 'utf8mb4_unicode_ci',
     },
     synchronize:
-      configService.get<string>('NODE_ENV') === 'development' ? true : false,
+      configService.get<string>('NODE_ENV') === 'development' ? true : true,
     autoLoadEntities: true,
     logging: false,
     ssl: configService.get<string>('NODE_ENV') === 'development' ? false : true,
