@@ -182,7 +182,7 @@ export class SorobanService {
         });
       });
     } else {
-      this.logger.log('trying to deposit into pool');
+      this.logger.debug('trying to deposit into pool');
       const tx = await this.getDepositTx(
         account.accountId(),
         poolsForAsset[0][1],

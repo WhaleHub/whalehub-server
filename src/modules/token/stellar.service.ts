@@ -313,6 +313,9 @@ export class StellarService {
         additionalAmountForLiquidity.toString(),
         this.whlAqua,
       );
+      this.logger.debug(
+        `Successfully transferred asset to lp public key: ${this.lpSignerKeypair.publicKey}`,
+      );
 
       await this.checkBalance(this.lpSignerKeypair.publicKey(), this.whlAqua);
 
