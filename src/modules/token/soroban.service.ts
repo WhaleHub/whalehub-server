@@ -280,13 +280,12 @@ export class SorobanService {
 
       const transaction = await this.server.sendTransaction(tx);
       this.logger.debug(`deposit into pool hash:  ${transaction.hash}`);
+      this.logger.debug(`Signer keypair :${this.lpSignerKeypair.publicKey()}`);
 
       const { successful } = await this.checkTransactionStatus(
         this.server,
         transaction.hash,
       );
-
-      console.log(this.lpSignerKeypair.publicKey());
 
       if (successful) {
         const user = await this.userRepository.findOneBy({
