@@ -11,22 +11,6 @@ import { CreateRemoveLiquidityDto } from './dto/create-remove-lp.dto';
 export class TokenController {
   constructor(private readonly stellarService: StellarService) {}
 
-  @Post('create')
-  @ApiOperation({ summary: 'Create a new token' })
-  @ApiBody({
-    type: CreateTokenDto,
-    description:
-      'Data required to create a new token and deploy to stellar network',
-  })
-  @ApiResponse({
-    status: 201,
-    description: 'The token has been successfully created.',
-  })
-  @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  create(@Body() createTokenDto: CreateTokenDto) {
-    // return this.stellarService.create(createTokenDto);
-  }
-
   @Post('lock')
   @ApiOperation({ summary: 'Lock AQUA tokens' })
   @ApiBody({

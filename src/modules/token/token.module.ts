@@ -9,7 +9,6 @@ import { SorobanService } from './soroban.service';
 import { ConfigModule } from '@nestjs/config';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
-import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposits.entity';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity';
 
@@ -23,7 +22,6 @@ import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity
       LpBalanceEntity,
       RewardClaimsEntity,
       ClaimableRecordsEntity,
-      TreasuryDepositsEntity,
     ]),
     ConfigModule,
   ],

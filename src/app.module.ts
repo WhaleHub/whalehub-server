@@ -7,7 +7,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserEntity } from './utils/typeorm/entities/user.entity';
 import { TokenEntity } from './utils/typeorm/entities/token.entity';
 import { typeOrmConfig } from './config/typeOrm.config';
-import { TreasuryDepositsEntity } from './utils/typeorm/entities/treasuryDeposits.entity';
 import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecords.entity';
 import { PoolsEntity } from './utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
@@ -18,10 +17,9 @@ import { ScheduleModule } from '@nestjs/schedule';
     TypeOrmModule.forFeature([
       UserEntity,
       TokenEntity,
-      TreasuryDepositsEntity,
-      ClaimableRecordsEntity,
       PoolsEntity,
       LpBalanceEntity,
+      ClaimableRecordsEntity,
     ]),
     TypeOrmModule.forRootAsync({
       useFactory: async (configService: ConfigService) =>

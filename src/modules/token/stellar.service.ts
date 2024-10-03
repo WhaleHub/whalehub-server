@@ -3,15 +3,12 @@ import { CreateStakeDto } from './dto/create-stake.dto';
 import { ConfigService } from '@nestjs/config';
 import {
   Asset,
-  AuthRequiredFlag,
-  AuthRevocableFlag,
   BASE_FEE,
   Claimant,
   Horizon,
   Keypair,
   Networks,
   Operation,
-  StrKey,
   Transaction,
   TransactionBuilder,
   xdr,
@@ -25,7 +22,6 @@ import { Balance } from '@/utils/models/interfaces';
 import { SorobanService } from './soroban.service';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
-import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposits.entity';
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 import { CreateRemoveLiquidityDto } from './dto/create-remove-lp.dto';
 import { stellarAssets } from '@/utils/stellarAssets';
@@ -146,17 +142,11 @@ export class StellarService {
       const aquaAmountForPool = Number(createStakeDto.amount) * 0.1;
       const whlAquaAmountForPool = additionalAmountForLiquidity * 0.1;
 
-      //TODO: store this to DB
-      const tokenRepresentativeAmountForUser =
-        additionalAmountForLiquidity - whlAquaAmountForPool;
-
       // Create and submit the first transaction for transferring AQUA
       const transferAquaTxn = new Transaction(
         createStakeDto.signedTxXdr,
         Networks.PUBLIC,
       );
-
-      transferAquaTxn.sign(this.issuerKeypair);
 
       const transferAquaResponse =
         await this.server.submitTransaction(transferAquaTxn);
@@ -188,20 +178,11 @@ export class StellarService {
       const stake = new StakeEntity();
       stake.account = user;
       stake.amount = createStakeDto.amount.toString();
-      await stake.save();
-
-      // Record the treasury amount in the database
-      // const treasury = new TreasuryDepositsEntity();
-      // treasury.account = user;
-      // treasury.amount = createStakeDto.treasuryAmount.toString();
-      // await treasury
-      //   .save()
-      //   .then(() =>
-      //     this.logger.debug(
-      //       `Records saved to treasury address: ${treasury.account}`,
-      //     ),
-      //   )
-      //   .catch((err) => this.logger.error(err));
+      await stake
+        .save()
+        .then(() =>
+          this.logger.debug(`Saved stake amount: ${stake.amount} to db`),
+        );
 
       // Check existing trustlines
       const existingTrustlines = account.balances.map(
@@ -279,9 +260,9 @@ export class StellarService {
       // const claimableResponse =
       //   await this.server.submitTransaction(claimableTransaction);
       // const claimableHash = claimableResponse.hash;
-      // console.log('Claimable balance transaction hash:', claimableHash);
+      // this.logger.debug(`Claimable balance transaction hash: ${claimableHash}`);
 
-      // Check the status of the claimable balance transaction
+      // // Check the status of the claimable balance transaction
       // const claimableResult = await this.checkTransactionStatus(
       //   this.server,
       //   claimableHash,
@@ -314,7 +295,7 @@ export class StellarService {
         this.whlAqua,
       );
       this.logger.debug(
-        `Successfully transferred asset to lp public key: ${this.lpSignerKeypair.publicKey}`,
+        `Successfully transferred asset to lp public key: ${this.lpSignerKeypair.publicKey()}`,
       );
 
       await this.checkBalance(this.lpSignerKeypair.publicKey(), this.whlAqua);
@@ -342,7 +323,7 @@ export class StellarService {
       await this.transferAsset(
         this.issuerKeypair,
         createStakeDto.senderPublicKey,
-        `${tokenRepresentativeAmountForUser}`,
+        `${createStakeDto.amount}`,
         this.whlAqua,
       );
     } catch (err) {
@@ -486,7 +467,6 @@ export class StellarService {
       const userRecord = await this.userRepository
         .createQueryBuilder('user')
         .leftJoinAndSelect('user.stakes', 'stakes')
-        .leftJoinAndSelect('user.treasurydeposits', 'treasurydeposits')
         .leftJoinAndSelect('user.claimableRecords', 'claimableRecords')
         .leftJoinAndSelect('user.pools', 'pools')
         .leftJoinAndSelect('user.lpBalances', 'lp_balance')

@@ -4,7 +4,6 @@ import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
-import { TreasuryDepositsEntity } from '@/utils/typeorm/entities/treasuryDeposits.entity';
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity';
 
@@ -24,7 +23,6 @@ export const typeOrmConfig = async (
       PoolsEntity,
       LpBalanceEntity,
       RewardClaimsEntity,
-      TreasuryDepositsEntity,
       ClaimableRecordsEntity,
     ],
     migrations: [__dirname + '/../database/migrations/*{.ts,.js}'],

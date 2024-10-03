@@ -1,7 +1,6 @@
 import { Column, Entity, JoinColumn, OneToMany, OneToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { StakeEntity } from './stake.entity';
-import { TreasuryDepositsEntity } from './treasuryDeposits.entity';
 import { ClaimableRecordsEntity } from './claimableRecords.entity';
 import { PoolsEntity } from './pools.entity';
 import { LpBalanceEntity } from './lp-balances.entity';
@@ -13,9 +12,6 @@ export class UserEntity extends BaseEntity {
 
   @OneToMany(() => StakeEntity, (stake) => stake.account)
   stakes: StakeEntity[];
-
-  @OneToMany(() => TreasuryDepositsEntity, (treasury) => treasury.account)
-  treasurydeposits: TreasuryDepositsEntity[];
 
   @OneToMany(
     () => ClaimableRecordsEntity,
