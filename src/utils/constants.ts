@@ -40,6 +40,12 @@ function getPoolKey(assetA, assetB) {
   return `${codes[0]}:${codes[1]}`;
 }
 
+function formatAmountToBigInt(amount) {
+  const formattedAmount = Number(amount).toFixed(7);
+  const value = BigInt(`${formattedAmount.replace('.', '')}`);
+  return value;
+}
+
 addPool('WHLAQUA:AQUA', {
   poolHash: 'CD4ASKG2XVZRAUXSXPCGUSBIX4JOC2TNA2FDBAPUNJB7RSUG5YGRQRSF',
   binary:
@@ -52,4 +58,4 @@ addPool('XLM:AQUA', {
     ' <Buffer 9a c7 a9 cd e2 3a c2 ad a1 11 05 ee aa 42 e4 3c 2e a8 33 2c a0 aa 8f 41 f5 8d 71 60 27 4d 71 8e>',
 });
 
-export { aquaPools, getPoolKey, parseBufferString };
+export { aquaPools, getPoolKey, parseBufferString, formatAmountToBigInt };

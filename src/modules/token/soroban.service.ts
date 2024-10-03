@@ -17,6 +17,7 @@ import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecord
 import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 import { DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
+import { formatAmountToBigInt } from '@/utils/constants';
 
 export const AMM_SMART_CONTACT_ID =
   'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK';
@@ -759,7 +760,10 @@ export class SorobanService {
     return Number(finalReadableValue);
   }
 
-  async claimLockReward(assets: Asset[], senderPublicKey: string) {
+  async claimLockReward(
+    assets: Asset[],
+    senderPublicKey: string,
+  ): Promise<number> {
     const account = await this.server.getAccount(senderPublicKey);
 
     const poolAddresses = await this.getPools(assets);
@@ -771,15 +775,52 @@ export class SorobanService {
 
     const to_claim = totalPoolRewardAmount.to_claim;
 
-    return 4;
+    this.logger.debug(`Claiming locked reward amount ${to_claim}`);
+
     const tx = await this.getClaimRewardsTx(
       account.accountId(),
       poolAddresses[1][0],
     );
     tx.sign(this.lpSignerKeypair);
-    const transaction = await this.server.sendTransaction(tx);
-    console.log('claim transaction hash: ', transaction.hash);
-    //TODO: create the db records
+
+    // const ab = (await this.simulateTx(tx)) as any;
+
+    // const hi = ab.result.retval.value().hi().toBigInt();
+    // const lo = ab.result.retval.value().lo().toBigInt();
+
+    // const combinedValue = (hi << BigInt(64)) + lo;
+    // const precisionFactor = BigInt(10 ** 7);
+
+    // const humanReadableDecimal = (combinedValue / precisionFactor).toString();
+    // const fractionalPart = (combinedValue % precisionFactor)
+    //   .toString()
+    //   .padStart(7, '0');
+
+    // const finalReadableValue = `${humanReadableDecimal}.${fractionalPart}`;
+
+    //TODO: use the swapped amount later
+    const response = await this.server.sendTransaction(tx);
+    // console.log('claim transaction hash: ', transaction.hash);
+
+    const { returnValue } = await this.checkTransactionStatus(
+      this.server,
+      response.hash,
+    );
+
+    const returnValues = returnValue.value();
+
+    const hi = returnValues.hi().toBigInt();
+    const lo = returnValues.lo().toBigInt();
+
+    console.log({ hi, lo });
+
+    let integerValue = Number(lo) / 10 ** 7;
+
+    this.logger.debug(
+      `Claimed locked Amount from AQUA AMM: ${integerValue} txn hash: ${response.hash}`,
+    );
+
+    return Number(integerValue);
   }
 
   getSwapChainedTx(
@@ -810,26 +851,9 @@ export class SorobanService {
 
     const assetAAddress = this.getAssetContractId(assets[0]);
     const assetBAddress = this.getAssetContractId(assets[1]);
-
     const contract = new StellarSdk.Contract(poolId);
 
-    // const assetAIndex = this.orderTokens(assets).findIndex(
-    //   (asset) => this.getAssetContractId(asset) === assetAAddress,
-    // );
-
-    // const assetBIndex = this.orderTokens(assets).findIndex(
-    //   (asset) => this.getAssetContractId(asset) === assetBAddress,
-    // );
-
-    // console.log({
-    //   poolId,
-    //   assetAAddress,
-    //   assetBAddress,
-    //   assetAIndex,
-    //   assetBIndex,
-    // });
-
-    const value = BigInt(`${amount}0000000`);
+    const value = BigInt(`${formatAmountToBigInt(amount)}`);
 
     const call = contract.call(
       AMM_CONTRACT_METHOD.SWAP,
@@ -863,29 +887,23 @@ export class SorobanService {
     const tx = await this.prepareTransaction(transactionBuilder);
     tx.sign(this.lpSignerKeypair);
 
-    const sim = (await this.simulateTx(tx)) as any;
+    const response = await this.server.sendTransaction(tx);
 
-    // const response = await this.server.sendTransaction(tx);
-    // console.log(response.hash);
+    const { returnValue } = await this.checkTransactionStatus(
+      this.server,
+      response.hash,
+    );
 
-    // // [x] uncomment later
-    // const { returnValue } = await this.checkTransactionStatus(
-    //   this.server,
-    //   response.hash,
-    // );
+    const returnValues = returnValue.value();
 
-    // const returnValues = returnValue.value();
-
-    const lo = sim.result.retval.value().hi().toBigInt();
-    const hi = sim.result.retval.value().lo().toBigInt();
-
-    //[x] USE LATER
     // const hi = returnValues.hi().toBigInt();
-    // const lo = returnValues.lo().toBigInt();
+    const lo = returnValues.lo().toBigInt();
 
-    let integerValue = Number(hi) / 10 ** 7;
+    let integerValue = Number(lo) / 10 ** 7;
 
-    //TODO: create db records
+    this.logger.debug(
+      `Swapped AQUA to WHLAQUA, amount: ${integerValue} txn:${response.hash}`,
+    );
 
     return integerValue;
   }
