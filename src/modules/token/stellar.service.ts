@@ -60,6 +60,7 @@ export class StellarService {
   private issuerKeypair: Keypair;
   private lpSignerKeypair: Keypair;
   private rpcUrl: string;
+  private signerKeyPair: Keypair;
   private treasureAddress: string;
   private whlAqua: Asset;
   private readonly logger = new Logger(StellarService.name);
@@ -91,48 +92,18 @@ export class StellarService {
     this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
     this.whlAqua = new Asset(WHLAQUA_CODE, this.issuerKeypair.publicKey());
     this.treasureAddress = this.configService.get<string>('TREASURE_ADDRESS');
+    this.signerKeyPair = Keypair.fromSecret(
+      this.configService.get('SIGNER_SECRET_KEY'),
+    );
   }
-
-  // async create(createTokenDto: CreateTokenDto): Promise<string> {
-  //   try {
-  //     const asset = new Asset(createTokenDto.code, createTokenDto.issuer);
-
-  //     const tokenData = await this.tokenRepository.findOneBy({
-  //       code: createTokenDto.code,
-  //       issuer: createTokenDto.issuer,
-  //     });
-
-  //     if (tokenData)
-  //       throw new HttpException(
-  //         'Asset already created',
-  //         HttpStatus.BAD_REQUEST,
-  //       );
-
-  //     const user = new UserEntity();
-  //     user.account = asset.issuer;
-  //     await user.save();
-
-  //     const token = new TokenEntity();
-  //     token.code = createTokenDto.code;
-  //     token.issuer = this.issuingKeypair.publicKey();
-  //     //[x] ensure to deploy token asset contract
-  //     token.sacAddress = 'token address';
-
-  //     console.log('token created');
-
-  //     await token.save();
-
-  //     return 'token created';
-  //   } catch (err) {
-  //     console.log(err);
-  //   }
-  // }
 
   async lock(createStakeDto: CreateStakeDto): Promise<void> {
     try {
       // Load the account details
-      const account = await this.server.loadAccount(
-        this.issuerKeypair.publicKey(),
+      await this.server.loadAccount(this.issuerKeypair.publicKey());
+
+      const signerAccount = await this.server.loadAccount(
+        this.signerKeyPair.publicKey(),
       );
 
       // Calculate the amounts to stake and for liquidity
@@ -185,12 +156,12 @@ export class StellarService {
         );
 
       // Check existing trustlines
-      const existingTrustlines = account.balances.map(
+      const existingTrustlines = signerAccount.balances.map(
         (balance: Balance) => balance.asset_code,
       );
 
       //transaction
-      const trustlineTransaction = new TransactionBuilder(account, {
+      const trustlineTransaction = new TransactionBuilder(signerAccount, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
       });
@@ -223,7 +194,7 @@ export class StellarService {
 
       if (trustlineOperationAdded) {
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
-        builtTrustlineTxn.sign(this.issuerKeypair);
+        builtTrustlineTxn.sign(this.signerKeyPair);
 
         const trustlineResponse =
           await this.server.submitTransaction(builtTrustlineTxn);
@@ -256,7 +227,7 @@ export class StellarService {
       //   .setTimeout(1000)
       //   .build();
 
-      // claimableTransaction.sign(this.issuerKeypair);
+      // claimableTransaction.sign(this.signerKeyPair);
       // const claimableResponse =
       //   await this.server.submitTransaction(claimableTransaction);
       // const claimableHash = claimableResponse.hash;
@@ -290,15 +261,16 @@ export class StellarService {
 
       await this.transferAsset(
         this.issuerKeypair,
-        this.lpSignerKeypair.publicKey(),
+        this.signerKeyPair.publicKey(),
         additionalAmountForLiquidity.toString(),
         this.whlAqua,
       );
+
       this.logger.debug(
-        `Successfully transferred asset to lp public key: ${this.lpSignerKeypair.publicKey()}`,
+        `Successfully transferred asset to lp public key: ${this.signerKeyPair.publicKey()}`,
       );
 
-      await this.checkBalance(this.lpSignerKeypair.publicKey(), this.whlAqua);
+      await this.checkBalance(this.signerKeyPair.publicKey(), this.whlAqua);
 
       const assets = [this.whlAqua, new Asset(AQUA_CODE, AQUA_ISSUER)];
 
@@ -449,6 +421,7 @@ export class StellarService {
         Networks.PUBLIC,
       );
 
+      //must sign with issuer
       transferTxn.sign(this.issuerKeypair);
 
       const txn = await this.server.submitTransaction(transferTxn);

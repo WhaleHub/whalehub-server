@@ -78,6 +78,7 @@ export class SorobanService {
   private signerSecret: string;
   private issuerKeypair: Keypair;
   private lpSignerKeypair: Keypair;
+  private signerKeyPair: Keypair;
   private rpcUrl: string;
   whlAqua: Asset;
 
@@ -97,9 +98,6 @@ export class SorobanService {
     this.issuingSecret = this.configService.get<string>(
       'SOROBAN_ISSUER_SECRET_KEY',
     );
-    this.signerSecret = this.configService.get<string>(
-      'SOROBAN_SIGNER_SECRET_KEY',
-    );
 
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl, { allowHttp: true });
@@ -107,8 +105,13 @@ export class SorobanService {
     this.issuerKeypair = Keypair.fromSecret(
       this.configService.get('ISSUER_SECRET_KEY'),
     );
+
     this.lpSignerKeypair = Keypair.fromSecret(
       this.configService.get('LP_SIGNER_SECRET_KEY'),
+    );
+
+    this.signerKeyPair = Keypair.fromSecret(
+      this.configService.get('SIGNER_SECRET_KEY'),
     );
 
     this.whlAqua = new Asset(WHLAQUA_CODE, this.issuerKeypair.publicKey());
@@ -121,14 +124,14 @@ export class SorobanService {
     depositType: DepositType,
   ) {
     const account = await this.server.getAccount(
-      this.lpSignerKeypair.publicKey(),
+      this.signerKeyPair.publicKey(),
     );
 
     let poolsForAsset = await this.getPools(assets);
 
     if (poolsForAsset.length === 0) {
       const account = await this.server.getAccount(
-        this.lpSignerKeypair.publicKey(),
+        this.signerKeyPair.publicKey(),
       );
       this.getInitConstantPoolTx(
         account.accountId(),
@@ -141,7 +144,7 @@ export class SorobanService {
           xdr,
           StellarSdk.Networks.PUBLIC,
         );
-        initPoolTxn.sign(this.lpSignerKeypair);
+        initPoolTxn.sign(this.signerKeyPair);
 
         this.server.sendTransaction(initPoolTxn).then(async (res) => {
           if (!res) {
@@ -189,7 +192,7 @@ export class SorobanService {
         assets,
         amounts,
       );
-      tx.sign(this.lpSignerKeypair);
+      tx.sign(this.signerKeyPair);
       const mainTx = await this.server.sendTransaction(tx);
       this.logger.debug(`deposit into pool hash: ${mainTx.hash}`);
       const result = await this.checkTransactionStatus(
@@ -235,7 +238,7 @@ export class SorobanService {
     try {
       //[x] update account
       const account = await this.server.getAccount(
-        this.issuerKeypair.publicKey(),
+        this.lpSignerKeypair.publicKey(),
       );
 
       const assets = [
@@ -267,13 +270,13 @@ export class SorobanService {
 
       const depositTxn = await this.getDepositTx(
         account.accountId(),
-        poolsForAsset[1][1],
+        poolsForAsset[0][1],
         assets,
         amounts,
       );
 
       const tx = await this.prepareTransaction(depositTxn);
-      tx.sign(this.issuerKeypair);
+      tx.sign(this.lpSignerKeypair);
 
       const transaction = await this.server.sendTransaction(tx);
       this.logger.debug(`deposit into pool hash:  ${transaction.hash}`);
@@ -282,6 +285,8 @@ export class SorobanService {
         this.server,
         transaction.hash,
       );
+
+      console.log(this.lpSignerKeypair.publicKey());
 
       if (successful) {
         const user = await this.userRepository.findOneBy({
@@ -294,7 +299,7 @@ export class SorobanService {
         newPoolRecord.assetAAmount = amounts.get(assets[0].code);
         newPoolRecord.assetBAmount = amounts.get(assets[1].code);
         newPoolRecord.txnHash = transaction.hash;
-        newPoolRecord.poolHash = poolsForAsset[1][0];
+        newPoolRecord.poolHash = poolsForAsset[0][0];
         newPoolRecord.senderPublicKey = createAddLiquidityDto.senderPublicKey;
         newPoolRecord.depositType = DepositType.LIQUIDITY_PROVISION;
         await newPoolRecord.save().then(() => this.logger.log(`Saved deposit`));
