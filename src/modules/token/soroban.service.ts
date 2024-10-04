@@ -823,6 +823,50 @@ export class SorobanService {
     return Number(integerValue);
   }
 
+  async userRewardEstimation(
+    assets: Asset[],
+    senderPublicKey: string,
+  ): Promise<number> {
+    const account = await this.server.getAccount(senderPublicKey);
+
+    const poolAddresses = await this.getPools(assets);
+
+    const totalPoolRewardAmount = await this.getPoolRewards(
+      account.accountId(),
+      poolAddresses[0][0],
+    );
+
+    const to_claim = totalPoolRewardAmount.to_claim;
+
+    if (to_claim === '0') return 0;
+
+    const tx = await this.getClaimRewardsTx(
+      account.accountId(),
+      poolAddresses[1][0],
+    );
+
+    const sim = (await this.simulateTx(tx)) as any;
+
+    const hi = sim.result.retval.value().hi().toBigInt();
+    const lo = sim.result.retval.value().lo().toBigInt();
+
+    const combinedValue = (hi << BigInt(64)) + lo;
+    const precisionFactor = BigInt(10 ** 7);
+
+    const humanReadableDecimal = (combinedValue / precisionFactor).toString();
+    const fractionalPart = (combinedValue % precisionFactor)
+      .toString()
+      .padStart(7, '0');
+
+    const finalReadableValue = `${humanReadableDecimal}.${fractionalPart}`;
+
+    this.logger.debug(
+      `Reward simulation from Locked AQUA: ${finalReadableValue}`,
+    );
+
+    return Number(finalReadableValue);
+  }
+
   getSwapChainedTx(
     accountId: string,
     base: Asset,

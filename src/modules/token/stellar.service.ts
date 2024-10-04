@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -464,14 +464,86 @@ export class StellarService {
     }
   }
 
-  async removeLiquidity(removeLiquidityDto: CreateRemoveLiquidityDto) {
+  async getPublicKeyLockedRewards(userPublicKey: string): Promise<any> {
+    const user = await this.userRepository.findOneBy({
+      account: userPublicKey,
+    });
+
+    if (!user)
+      return new HttpException('Public key not found', HttpStatus.NOT_FOUND);
+
+    const userLockedRecords = await this.poolRepository.findOne({
+      where: {
+        senderPublicKey: user.account,
+        depositType: DepositType.LOCKER,
+      },
+    });
+
+    if (!userLockedRecords)
+      return new HttpException(
+        'You rewards yet to be unlocked',
+        HttpStatus.NOT_FOUND,
+      );
+
+    const locks = await this.poolRepository.find({
+      where: {
+        depositType: DepositType.LOCKER,
+      },
+    });
+
+    const userLocks = locks.filter(
+      (lock) => lock.senderPublicKey === userPublicKey,
+    );
+
+    let totalAssetA = 0;
+    let totalAssetB = 0;
+
+    locks.forEach((pool) => {
+      const assetAAmount = parseFloat(pool.assetAAmount);
+      const assetBAmount = parseFloat(pool.assetBAmount);
+
+      if (!isNaN(assetAAmount)) totalAssetA += assetAAmount;
+      if (!isNaN(assetBAmount)) totalAssetB += assetBAmount;
+    });
+
+    const lockTotalAmount = totalAssetA + totalAssetB;
+
+    // Initialize user total amounts for assets
+    let userTotalAAmount = 0;
+    let userTotalBAmount = 0;
+
+    userLocks.forEach((pool) => {
+      const userAssetAAmount = parseFloat(pool.assetAAmount);
+      const userAssetBAmount = parseFloat(pool.assetBAmount);
+
+      if (!isNaN(userAssetAAmount)) userTotalAAmount += userAssetAAmount;
+      if (!isNaN(userAssetBAmount)) userTotalBAmount += userAssetBAmount;
+    });
+
+    const userTotalDepositAmount = userTotalAAmount + userTotalBAmount;
+    const userPercentage =
+      lockTotalAmount > 0 ? userTotalDepositAmount / lockTotalAmount : 0;
+
+    const assets = [this.whlAqua, new Asset(AQUA_CODE, AQUA_ISSUER)].sort();
+
+    const rewardEstimation = await this.sorobanService.userRewardEstimation(
+      assets,
+      this.lpSignerKeypair.publicKey(),
+    );
+
+    return {
+      lockedAquaRewardEstimation: (rewardEstimation * userPercentage).toFixed(
+        7,
+      ),
+    };
+  }
+
+  async removeLiquidity(
+    removeLiquidityDto: CreateRemoveLiquidityDto,
+  ): Promise<void> {
     const account = await this.userRepository.findOneBy({
       account: removeLiquidityDto.senderPublicKey,
     });
-
-    const assets = removeLiquidityDto?.summarizedAssets;
-
-    console.log(assets);
   }
 
   async swapToWhlaqua(amount: number): Promise<number> {
@@ -521,169 +593,9 @@ export class StellarService {
     return amountOutWhlaqua;
   }
 
-  // @Cron(CronExpression.EVERY_10_SECONDS)
-  // async redeemLockedAquaRewards() {
-  //   // Fetch all staked whlaqua and aqua records
-
-  //   const account = await this.server.loadAccount(
-  //     this.lpSignerKeypair.publicKey(),
-  //   );
-
-  //   const poolRecords = await this.poolRepository.find({
-  //     select: [
-  //       'assetA',
-  //       'assetB',
-  //       'assetAAmount',
-  //       'assetBAmount',
-  //       'poolHash',
-  //       'senderPublicKey',
-  //     ],
-  //     where: { depositType: DepositType.LOCKER },
-  //   });
-
-  //   if (poolRecords.length === 0) return;
-
-  //   this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
-
-  //   let groupedBySender = {};
-  //   let totalPoolPerPairAmount = {};
-  //   let userTotalAmountForAsset = {};
-  //   let totalPoolAmountForAllAssets = 0;
-  //   let totalAquaPoolRewardAmount;
-  //   let lastPoolKey: string;
-
-  //   // Iterate over pool records to group data
-  //   for (const record of poolRecords) {
-  //     const {
-  //       senderPublicKey,
-  //       assetA: a,
-  //       assetB: b,
-  //       assetAAmount,
-  //       assetBAmount,
-  //     } = record;
-
-  //     const assetA = new Asset(a.code, a.issuer);
-  //     const assetB = new Asset(b.code, b.issuer);
-  //     const assets = [assetA, assetB].sort();
-  //     const poolKey = getPoolKey(assets[0], assets[1]);
-  //     lastPoolKey = poolKey;
-
-  //     const aquaPool = await this.sorobanService.getPools(assets);
-  //     if (aquaPool.length <= 0) continue; // skip if no pool
-
-  //     const poolAddresses = aquaPools[poolKey];
-  //     totalAquaPoolRewardAmount = await this.sorobanService.getPoolRewards(
-  //       account.accountId(),
-  //       poolAddresses.poolHash,
-  //     );
-  //     totalAquaPoolRewardAmount.to_claim = 4;
-
-  //     const assetAValue = parseFloat(assetAAmount);
-  //     const assetBValue = parseFloat(assetBAmount);
-
-  //     // Update totals
-  //     totalPoolPerPairAmount[poolKey] = totalPoolPerPairAmount[poolKey] || {
-  //       assetA: 0,
-  //       assetB: 0,
-  //     };
-  //     groupedBySender[senderPublicKey] = groupedBySender[senderPublicKey] || {};
-  //     groupedBySender[senderPublicKey][poolKey] =
-  //       groupedBySender[senderPublicKey][poolKey] || [];
-  //     userTotalAmountForAsset[senderPublicKey] =
-  //       userTotalAmountForAsset[senderPublicKey] || {};
-  //     userTotalAmountForAsset[senderPublicKey][poolKey] =
-  //       userTotalAmountForAsset[senderPublicKey][poolKey] || {
-  //         assetA: 0,
-  //         assetB: 0,
-  //         total: 0,
-  //       };
-
-  //     userTotalAmountForAsset[senderPublicKey][poolKey].assetA += assetAValue;
-  //     userTotalAmountForAsset[senderPublicKey][poolKey].assetB += assetBValue;
-  //     userTotalAmountForAsset[senderPublicKey][poolKey].total = (
-  //       userTotalAmountForAsset[senderPublicKey][poolKey].assetA +
-  //       userTotalAmountForAsset[senderPublicKey][poolKey].assetB
-  //     ).toFixed(7);
-
-  //     groupedBySender[senderPublicKey][poolKey].push(record);
-
-  //     totalPoolPerPairAmount[poolKey].assetA += assetAValue;
-  //     totalPoolPerPairAmount[poolKey].assetB += assetBValue;
-  //   }
-
-  //   // Calculate total pool for each pair
-  //   Object.keys(totalPoolPerPairAmount).forEach((pair) => {
-  //     const { assetA, assetB } = totalPoolPerPairAmount[pair];
-  //     totalPoolAmountForAllAssets += assetA + assetB;
-  //     totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
-  //   });
-
-  //   // Claim rewards for the pool (once)
-  //   const to_claim = totalAquaPoolRewardAmount.to_claim; // Assume this was fetched earlier
-  //   // if (to_claim < 25000) return;
-  //   // return;
-  //   //TODO: get asset using the code
-  //   const assets = lastPoolKey
-  //     .split(':')
-  //     .map((code) =>
-  //       code === 'XLM' ? Asset.native() : new Asset(code, AQUA_ISSUER),
-  //     ) as Asset[];
-
-  //   const rewardClaimed = await this.sorobanService.claimLockReward(
-  //     assets,
-  //     account.accountId(),
-  //   );
-
-  //   this.logger.debug('Rewards claimed, proceeding with swap');
-  //   const poolAddresses = aquaPools[lastPoolKey];
-
-  //   // Swap AQUA to WHLAQUA
-  //   const swappedAmount = await this.swapToWhlaqua(rewardClaimed);
-
-  //   this.logger.debug(
-  //     `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
-  //   );
-
-  //   return;
-  //   Object.entries(userTotalAmountForAsset).map(([userPublicKey, assetPairs]) =>
-  //     Promise.all(
-  //       Object.entries(assetPairs).map(async ([pair, userPairData]) => {
-  //         const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
-  //         if (totalPoolForPair === 0) return;
-
-  //         const userClaimAmount = parseFloat(userPairData.total);
-  //         if (swappedAmount === 0) return;
-
-  //         const poolAddresses = aquaPools[pair];
-
-  //         // Calculate the user's percentage of the total claimable amount
-  //         const userPercentage = (userClaimAmount / swappedAmount) * 100;
-
-  //         // Convert percentage to decimal
-  //         const userPercentageDecimal = userPercentage / 100;
-
-  //         const userShare = (userPercentageDecimal * swappedAmount).toFixed(7);
-
-  //         console.log({ userShare, swappedAmount, userPercentage });
-
-  //         return;
-  //         await this.transferAsset(
-  //           this.lpSignerKeypair,
-  //           userPublicKey,
-  //           userShare,
-  //           this.whlAqua,
-  //         );
-  //       }),
-  //     ),
-  //   );
-
-  //   this.logger.log('All transactions have been processed');
-  // }
-
-  @Cron(CronExpression.EVERY_10_SECONDS)
+  @Cron('0 7 */7 * *')
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
-    return;
     const poolRecords = await this.poolRepository.find({
       select: [
         'assetA',
@@ -698,12 +610,11 @@ export class StellarService {
 
     if (poolRecords.length === 0) return;
 
-    // this.signerKeypair.publicKey(),
     const account = await this.server.loadAccount(
       this.lpSignerKeypair.publicKey(),
     );
 
-    this.logger.debug('Trying to distribute locked AQUA/WHLAQUA LP rewards');
+    this.logger.debug('Trying to distribute LP AQUA/WHLAQUA LP rewards');
 
     let groupedBySender = {};
     let totalPoolPerPairAmount = {};
@@ -780,7 +691,7 @@ export class StellarService {
 
     // Claim rewards for the pool (once)
     const to_claim = totalAquaPoolRewardAmount.to_claim;
-    // if (to_claim < 25000) return;
+    if (to_claim < 25000) return;
 
     //TODO: get asset using the code
     const assets = lastPoolKey
@@ -794,11 +705,6 @@ export class StellarService {
       account.accountId(),
     );
 
-    this.logger.debug('Rewards claimed, proceeding with swap');
-
-    const poolAddresses = aquaPools[lastPoolKey];
-
-    //TODO: update with the the rewardAmount
     const distributionAmount = Math.round(Number(rewardAmount * 0.7));
     const treasuryAmount = Number((rewardAmount * 0.3).toFixed(7));
 
@@ -809,43 +715,62 @@ export class StellarService {
       `Swapped AQUA to WHLAQUA, total swapped amount: ${swappedAmount}`,
     );
 
-    Object.entries(userTotalAmountForAsset).map(([userPublicKey, assetPairs]) =>
-      Promise.all(
-        Object.entries(assetPairs).map(async ([pair, userPairData]) => {
-          const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
-          if (totalPoolForPair === 0) return;
+    // Ensure all user transfers are completed before proceeding
+    await Promise.all(
+      Object.entries(userTotalAmountForAsset).map(
+        ([userPublicKey, assetPairs]) =>
+          Promise.all(
+            Object.entries(assetPairs).map(async ([pair, userPairData]) => {
+              const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
+              if (totalPoolForPair === 0) return;
 
-          const userClaimAmount = parseFloat(userPairData.total);
+              const userClaimAmount = parseFloat(userPairData.total);
 
-          // Calculate the user's percentage of the total claimable amount
-          const userPercentage = (userClaimAmount / swappedAmount) * 100;
+              // Calculate the user's percentage of the total claimable amount
+              const userPercentage = userClaimAmount / swappedAmount;
+              const userShare = (userPercentage * swappedAmount).toFixed(7);
 
-          // Convert percentage to decimal
-          const userPercentageDecimal = userPercentage / 100;
-
-          const userShare = (userPercentageDecimal * swappedAmount).toFixed(7);
-
-          await this.transferAsset(
-            this.lpSignerKeypair,
-            userPublicKey,
-            userShare,
-            this.whlAqua,
-          );
-        }),
+              try {
+                // Transfer assets to the user
+                await this.transferAsset(
+                  this.lpSignerKeypair,
+                  userPublicKey,
+                  userShare,
+                  this.whlAqua,
+                );
+                this.logger.log(
+                  `LP reward sent to ${userPublicKey} with share: ${userShare}`,
+                );
+              } catch (error) {
+                this.logger.error(
+                  `Failed to send LP reward to ${userPublicKey}, error: ${error.message}`,
+                );
+              }
+            }),
+          ),
       ),
     );
 
-    await this.transferAsset(
-      this.lpSignerKeypair,
-      this.lpSignerKeypair.publicKey(),
-      treasuryAmount.toString(),
-      new Asset(AQUA_CODE, AQUA_ISSUER),
-    );
+    try {
+      await this.transferAsset(
+        this.lpSignerKeypair,
+        this.lpSignerKeypair.publicKey(),
+        treasuryAmount.toString(),
+        new Asset(AQUA_CODE, AQUA_ISSUER),
+      );
+      this.logger.log('Treasury transfer successful');
+    } catch (error) {
+      this.logger.error(
+        `Failed to transfer treasury amount: ${error.message}`,
+        { treasuryAmount },
+      );
+    }
 
-    this.logger.log('All transactions have been processed');
+    this.logger.log('All transactions have been processed successfully');
   }
 
-  @Cron('*/2 * * * *')
+  // @Cron('*/2 * * * *')
+  @Cron(CronExpression.EVERY_WEEK)
   async redeemAquaRewardsForICE() {
     // Ensure AQUA pools can claim rewards
 
@@ -903,6 +828,7 @@ export class StellarService {
         );
 
       to_claim = totalAquaPoolRewardAmount.to_claim;
+      if (to_claim < 25000) return;
 
       const assetAValue = parseFloat(assetAAmount);
       const assetBValue = parseFloat(assetBAmount);
@@ -944,7 +870,7 @@ export class StellarService {
       totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
     });
 
-    // if (to_claim < 25000) return;
+    if (to_claim < 25000) return;
 
     const assets = lastPoolKey
       .split(':')
@@ -952,12 +878,10 @@ export class StellarService {
         code === 'XLM' ? Asset.native() : new Asset(code, AQUA_ISSUER),
       ) as Asset[];
 
-    // const rewardAmount = await this.sorobanService.claimLockReward(
-    //   [Asset.native(), new Asset(AQUA_CODE, AQUA_ISSUER)],
-    //   account.accountId(),
-    // );
-
-    const rewardAmount = 3;
+    const rewardAmount = await this.sorobanService.claimLockReward(
+      assets,
+      account.accountId(),
+    );
 
     const distributionAmount = Number(rewardAmount * 0.7);
     const treasuryAmount = Number((rewardAmount * 0.3).toFixed(7));
@@ -975,7 +899,7 @@ export class StellarService {
             const totalPoolForPair = totalPoolPerPairAmount[pair] || 0;
             if (totalPoolForPair === 0) return;
 
-            const userClaimAmount = userPairData.total;
+            const userClaimAmount = parseFloat(userPairData.total);
 
             // Calculate the user's percentage of the total claimable amount
             const userPercentage = (userClaimAmount / swappedAmount) * 100;
@@ -988,7 +912,6 @@ export class StellarService {
             );
 
             try {
-              // Transfer the calculated reward to the user's address
               await this.transferAsset(
                 this.lpSignerKeypair,
                 userPublicKey,

@@ -51,6 +51,16 @@ export class TokenController {
     return this.stellarService.getUser(userPublicKey);
   }
 
+  @Get('getLockedReward')
+  @ApiOperation({ summary: 'Get public key locked rewards' })
+  @ApiResponse({
+    status: 201,
+    description: 'Public key locked rewards not available',
+  })
+  getPublicKeyLockedRewards(@Query('userPublicKey') userPublicKey: string) {
+    return this.stellarService.getPublicKeyLockedRewards(userPublicKey);
+  }
+
   @Post('remove-liquidity')
   @ApiOperation({ summary: 'Remove liquidity to pool' })
   @ApiBody({
