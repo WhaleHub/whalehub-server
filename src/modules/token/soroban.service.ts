@@ -833,16 +833,17 @@ export class SorobanService {
 
     const totalPoolRewardAmount = await this.getPoolRewards(
       account.accountId(),
-      poolAddresses[0][0],
+      poolAddresses[1][0],
     );
 
     const to_claim = totalPoolRewardAmount.to_claim;
+    this.logger.debug(`To claim ${to_claim}`);
 
-    if (to_claim === '0') return 0;
+    // if (to_claim === '0') return 0;
 
     const tx = await this.getClaimRewardsTx(
       account.accountId(),
-      poolAddresses[1][0],
+      poolAddresses[0][0],
     );
 
     const sim = (await this.simulateTx(tx)) as any;
