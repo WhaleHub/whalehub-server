@@ -1,7 +1,7 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
-import { PoolsEntity } from './pools.entity';
+import { CLAIMS } from '@/utils/models/enums';
 
 @Entity({ name: 'claimablerecords' })
 export class ClaimableRecordsEntity extends BaseEntity {
@@ -15,7 +15,10 @@ export class ClaimableRecordsEntity extends BaseEntity {
   @Column()
   amount: string;
 
-  // @OneToOne(() => PoolsEntity, (pool) => pool.stakes)
-  // @JoinColumn()
-  // pool: PoolsEntity;
+  @Column({
+    type: 'enum',
+    enum: CLAIMS,
+    default: CLAIMS.UNCLAIMED,
+  })
+  claimed: CLAIMS;
 }

@@ -3,7 +3,7 @@ import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
 import { StakeEntity } from './stake.entity';
 import { ClaimableRecordsEntity } from './claimableRecords.entity';
-import { DepositType } from '@/utils/models/enums';
+import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from './lp-balances.entity';
 
 @Entity({ name: 'pools' })
@@ -51,4 +51,11 @@ export class PoolsEntity extends BaseEntity {
 
   @OneToMany(() => LpBalanceEntity, (lpBalance) => lpBalance.account)
   lpBalances: LpBalanceEntity[];
+
+  @Column({
+    type: 'enum',
+    enum: CLAIMS,
+    default: CLAIMS.UNCLAIMED,
+  })
+  claimed: CLAIMS;
 }

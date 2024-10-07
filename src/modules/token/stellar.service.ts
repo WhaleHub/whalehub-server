@@ -27,7 +27,7 @@ import { UnlockAquaDto } from './dto/create-remove-lp.dto';
 import { stellarAssets } from '@/utils/stellarAssets';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
-import { DepositType } from '@/utils/models/enums';
+import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { aquaPools, getPoolKey, parseBufferString } from '@/utils/constants';
 
@@ -568,14 +568,51 @@ export class StellarService {
       unlockAquaDto.senderPublicKey,
     );
 
-    const user = await this.userRepository.findOne({
-      where: { account: account.accountId() },
-      relations: ['claimableRecords', 'pools'],
-    });
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.claimableRecords', 'claimableRecords')
+      .leftJoinAndSelect('user.pools', 'pools')
+      .where('user.account = :accountId', { accountId: account.accountId() })
+      .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
+      .andWhere('pools.depositType = :locker', { locker: DepositType.LOCKER })
+      .getOne();
 
     if (!user) return new HttpException('User not found', HttpStatus.NOT_FOUND);
 
-    console.log(user);
+    // Calculate total amount
+    const totalAmount = user.claimableRecords
+      .filter((record) => record.claimed === CLAIMS.UNCLAIMED)
+      .reduce((total, record) => total + parseFloat(record.amount), 0);
+
+    if (totalAmount <= 0)
+      new HttpException('Nothing to claim', HttpStatus.FORBIDDEN);
+
+    this.logger.debug(
+      `Sending ${totalAmount} blub to ${unlockAquaDto.senderPublicKey}`,
+    );
+
+    await this.transferAsset(
+      this.issuerKeypair,
+      unlockAquaDto.senderPublicKey,
+      totalAmount.toFixed(7),
+      this.whlAqua,
+    );
+
+    const claimableRecords = user.claimableRecords;
+    const poolRecords = user.pools;
+
+    claimableRecords.forEach((record) => {
+      record.claimed = CLAIMS.CLAIMED;
+    });
+
+    poolRecords.forEach((record) => {
+      record.claimed = CLAIMS.CLAIMED;
+    });
+
+    await this.claimableRecords.save(claimableRecords);
+    await this.poolRepository.save(poolRecords);
+
+    this.logger.debug(`Successfully sent ${totalAmount}`);
   }
 
   // @Cron('0 7 */7 * *')
@@ -590,7 +627,10 @@ export class StellarService {
         'poolHash',
         'senderPublicKey',
       ],
-      where: { depositType: DepositType.LIQUIDITY_PROVISION },
+      where: {
+        depositType: DepositType.LIQUIDITY_PROVISION,
+        claimed: CLAIMS.UNCLAIMED,
+      },
     });
 
     if (poolRecords.length === 0) return;
@@ -757,8 +797,6 @@ export class StellarService {
   // @Cron('*/2 * * * *')
   // @Cron(CronExpression.EVERY_WEEK)
   async redeemAquaRewardsForICE() {
-    //[x] Ensure AQUA pools can claim rewards
-
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
       select: [
@@ -769,7 +807,7 @@ export class StellarService {
         'poolHash',
         'senderPublicKey',
       ],
-      where: { depositType: DepositType.LOCKER },
+      where: { depositType: DepositType.LOCKER, claimed: CLAIMS.UNCLAIMED },
     });
 
     if (poolRecords.length === 0) return;

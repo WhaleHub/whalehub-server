@@ -58,7 +58,7 @@ export class TokenController {
     description: 'Public key locked rewards not available',
   })
   getPublicKeyLockedRewards(@Query('userPublicKey') userPublicKey: string) {
-    // return this.stellarService.getPublicKeyLockedRewards(userPublicKey);
+    return this.stellarService.getPublicKeyLockedRewards(userPublicKey);
   }
 
   @Post('unlock-aqua')
