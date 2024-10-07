@@ -1,7 +1,3 @@
-import { SummarizedAssets } from '@/utils/models/interfaces';
-
-export class CreateRemoveLiquidityDto {
+export class UnlockAquaDto {
   senderPublicKey: string;
-  userPoolPercentage: number;
-  summarizedAssets: SummarizedAssets | null;
 }

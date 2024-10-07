@@ -4,7 +4,7 @@ import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { StellarService } from './stellar.service';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
-import { CreateRemoveLiquidityDto } from './dto/create-remove-lp.dto';
+import { UnlockAquaDto } from './dto/create-remove-lp.dto';
 
 @ApiTags('Token')
 @Controller('token')
@@ -58,27 +58,21 @@ export class TokenController {
     description: 'Public key locked rewards not available',
   })
   getPublicKeyLockedRewards(@Query('userPublicKey') userPublicKey: string) {
-    return this.stellarService.getPublicKeyLockedRewards(userPublicKey);
+    // return this.stellarService.getPublicKeyLockedRewards(userPublicKey);
   }
 
-  @Post('remove-liquidity')
-  @ApiOperation({ summary: 'Remove liquidity to pool' })
+  @Post('unlock-aqua')
+  @ApiOperation({ summary: 'Unlock AQUA to Public Key' })
   @ApiBody({
-    type: CreateRemoveLiquidityDto,
-    description: 'Data required to remove user tokens from pools',
+    type: UnlockAquaDto,
+    description: 'Data required to unlock AQUA stakes',
   })
   @ApiResponse({
     status: 201,
     description: 'Liquidity successfully removed',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  removeLiquidity(@Body() createRemoveLiquidityDto: CreateRemoveLiquidityDto) {
-    return this.stellarService.removeLiquidity(createRemoveLiquidityDto);
-  }
-
-  @Get('removeFlag')
-  @ApiOperation({ summary: 'Remove flag wallet' })
-  createTrustline(@Query('publicKey') publicKey: string) {
-    return this.stellarService.removeFlag(publicKey);
+  removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto) {
+    return this.stellarService.unlockAqua(unlockAquaDto);
   }
 }

@@ -23,7 +23,7 @@ import { SorobanService } from './soroban.service';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
-import { CreateRemoveLiquidityDto } from './dto/create-remove-lp.dto';
+import { UnlockAquaDto } from './dto/create-remove-lp.dto';
 import { stellarAssets } from '@/utils/stellarAssets';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
@@ -73,14 +73,11 @@ export class StellarService {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
 
-    @InjectRepository(TokenEntity)
-    private tokenRepository: Repository<TokenEntity>,
-
     @InjectRepository(PoolsEntity)
     private poolRepository: Repository<PoolsEntity>,
 
-    @InjectRepository(LpBalanceEntity)
-    private lpBalances: Repository<LpBalanceEntity>,
+    @InjectRepository(ClaimableRecordsEntity)
+    private claimableRecords: Repository<ClaimableRecordsEntity>,
   ) {
     this.issuerKeypair = Keypair.fromSecret(
       this.configService.get('ISSUER_SECRET_KEY'),
@@ -107,7 +104,7 @@ export class StellarService {
       );
 
       // Calculate the amounts to stake and for liquidity
-      const amountToLock = createStakeDto.amount * 0.9;
+      const amountToLock = (createStakeDto.amount * 0.9).toFixed(7);
       const additionalAmountForLiquidity = Number(createStakeDto.amount) * 1.1;
 
       const aquaAmountForPool = Number(createStakeDto.amount) * 0.1;
@@ -204,60 +201,58 @@ export class StellarService {
         console.log('No new trustline was added.');
       }
 
-      //[x] will be used later
       const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; // 2 years in seconds
 
-      // const claimableTransaction = new TransactionBuilder(account, {
-      //   fee: BASE_FEE,
-      //   networkPassphrase: Networks.PUBLIC,
-      // })
-      //   .addOperation(
-      //     Operation.createClaimableBalance({
-      //       claimants: [
-      //         new Claimant(
-      //           account.accountId(),
-      //           //TODO: Ensure to use the correct predicate
-      //           Claimant.predicateNot(Claimant.predicateUnconditional()),
-      //         ),
-      //       ],
-      //       asset: new Asset(AQUA_CODE, AQUA_ISSUER),
-      //       amount: `${amountToLock}`,
-      //     }),
-      //   )
-      //   .setTimeout(1000)
-      //   .build();
+      const claimableTransaction = new TransactionBuilder(signerAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.createClaimableBalance({
+            claimants: [
+              new Claimant(
+                signerAccount.accountId(),
+                Claimant.predicateNot(Claimant.predicateUnconditional()), //TODO: Ensure to use the correct predicate
+              ),
+            ],
+            asset: new Asset(AQUA_CODE, AQUA_ISSUER),
+            amount: `${amountToLock}`,
+          }),
+        )
+        .setTimeout(1000)
+        .build();
 
-      // claimableTransaction.sign(this.signerKeyPair);
-      // const claimableResponse =
-      //   await this.server.submitTransaction(claimableTransaction);
-      // const claimableHash = claimableResponse.hash;
-      // this.logger.debug(`Claimable balance transaction hash: ${claimableHash}`);
+      claimableTransaction.sign(this.signerKeyPair);
+      const claimableResponse =
+        await this.server.submitTransaction(claimableTransaction);
+      const claimableHash = claimableResponse.hash;
+      this.logger.debug(`Claimable balance transaction hash: ${claimableHash}`);
 
-      // // Check the status of the claimable balance transaction
-      // const claimableResult = await this.checkTransactionStatus(
-      //   this.server,
-      //   claimableHash,
-      // );
+      // Check the status of the claimable balance transaction
+      const claimableResult = await this.checkTransactionStatus(
+        this.server,
+        claimableHash,
+      );
 
-      // if (!claimableResult.successful) {
-      //   throw new Error('Claimable balance transaction failed.');
-      // }
+      if (!claimableResult.successful) {
+        throw new Error('Claimable balance transaction failed.');
+      }
 
-      // const operationResult = claimableResult.results[0].value() as any;
-      // const createClaimableBalanceResult =
-      //   operationResult.createClaimableBalanceResult();
+      const operationResult = claimableResult.results[0].value() as any;
+      const createClaimableBalanceResult =
+        operationResult.createClaimableBalanceResult();
 
-      // let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
+      let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
 
-      // this.logger.debug(
-      //   `Claimable balance transaction was successful ID: ${balanceId}`,
-      // );
+      this.logger.debug(
+        `Claimable balance transaction was successful ID: ${balanceId}`,
+      );
 
-      // const claimableRecord = new ClaimableRecordsEntity();
-      // claimableRecord.account = user;
-      // claimableRecord.balanceId = balanceId;
-      // claimableRecord.amount = createStakeDto.amount.toString();
-      // await claimableRecord.save();
+      const claimableRecord = new ClaimableRecordsEntity();
+      claimableRecord.account = user;
+      claimableRecord.balanceId = balanceId;
+      claimableRecord.amount = amountToLock;
+      await claimableRecord.save();
 
       await this.transferAsset(
         this.issuerKeypair,
@@ -299,6 +294,7 @@ export class StellarService {
         this.whlAqua,
       );
     } catch (err) {
+      console.log(err);
       this.logger.error('Error during staking process:', err.data.extras);
     }
   }
@@ -538,14 +534,6 @@ export class StellarService {
     };
   }
 
-  async removeLiquidity(
-    removeLiquidityDto: CreateRemoveLiquidityDto,
-  ): Promise<void> {
-    const account = await this.userRepository.findOneBy({
-      account: removeLiquidityDto.senderPublicKey,
-    });
-  }
-
   async swapToWhlaqua(amount: number): Promise<number> {
     const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whlAqua];
     const poolId = 'CD4ASKG2XVZRAUXSXPCGUSBIX4JOC2TNA2FDBAPUNJB7RSUG5YGRQRSF';
@@ -555,9 +543,6 @@ export class StellarService {
       assets,
       poolId,
     );
-
-    const reserveAqua = parseFloat(poolReserves.get('AQUA'));
-    const reserveWhlaqua = parseFloat(poolReserves.get('WHLAQUA'));
 
     const aquaAddress = this.sorobanService.getAssetContractId(
       new Asset(AQUA_CODE, AQUA_ISSUER),
@@ -578,22 +563,22 @@ export class StellarService {
     return swapAmount;
   }
 
-  async estimateSwap(
-    reserveAqua: number,
-    reserveWhlaqua: number,
-    amountInAqua: number = 10,
-  ) {
-    if (reserveAqua <= 0 || reserveWhlaqua <= 0 || amountInAqua <= 0) {
-      throw new Error('Invalid reserve or input amounts');
-    }
+  async unlockAqua(unlockAquaDto: UnlockAquaDto) {
+    const account = await this.server.loadAccount(
+      unlockAquaDto.senderPublicKey,
+    );
 
-    const amountOutWhlaqua =
-      (reserveWhlaqua * amountInAqua) / (reserveAqua + amountInAqua);
+    const user = await this.userRepository.findOne({
+      where: { account: account.accountId() },
+      relations: ['claimableRecords', 'pools'],
+    });
 
-    return amountOutWhlaqua;
+    if (!user) return new HttpException('User not found', HttpStatus.NOT_FOUND);
+
+    console.log(user);
   }
 
-  @Cron('0 7 */7 * *')
+  // @Cron('0 7 */7 * *')
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
@@ -770,9 +755,9 @@ export class StellarService {
   }
 
   // @Cron('*/2 * * * *')
-  @Cron(CronExpression.EVERY_WEEK)
+  // @Cron(CronExpression.EVERY_WEEK)
   async redeemAquaRewardsForICE() {
-    // Ensure AQUA pools can claim rewards
+    //[x] Ensure AQUA pools can claim rewards
 
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
@@ -952,35 +937,6 @@ export class StellarService {
       this.logger.error(
         `Error processing reward transactions: ${error.message}`,
       );
-    }
-  }
-
-  async removeFlag(publicKey: string) {
-    const issuerAccount = await this.server.loadAccount(
-      this.issuerKeypair.publicKey(),
-    );
-    // GC6UELQOGTXPOKGIG52T5ZC42YGNZIZATMJF7A3HM3TGRFOC3WSPMWXA
-
-    var transaction = new TransactionBuilder(issuerAccount, {
-      fee: BASE_FEE,
-      networkPassphrase: Networks.PUBLIC,
-    })
-      .addOperation(
-        Operation.setOptions({
-          clearFlags: 1 || 2,
-        }),
-      )
-      .setTimeout(100)
-      .build();
-
-    transaction.sign(this.issuerKeypair);
-
-    try {
-      // Submit the transaction to the Stellar Horizon server
-      const result = await this.server.submitTransaction(transaction);
-      console.log('Transaction hash:', result.hash);
-    } catch (err) {
-      console.error('Transaction failed:', err.response?.data || err.message);
     }
   }
 }
