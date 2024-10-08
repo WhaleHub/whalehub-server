@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Res } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateStakeDto } from './dto/create-stake.dto';
@@ -72,7 +72,7 @@ export class TokenController {
     description: 'Liquidity successfully removed',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto) {
+  removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
     return this.stellarService.unlockAqua(unlockAquaDto);
   }
 }

@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { ErrorInterceptor } from '@/middleware/error.interceptor';
+import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -32,6 +33,7 @@ async function bootstrap() {
   const serverIp = configService.get<string>('SERVER_IP');
 
   app.enableCors();
+  app.useGlobalPipes(new ValidationPipe());
   app.useGlobalInterceptors(new ErrorInterceptor());
 
   await app.listen(serverPort, serverIp);

@@ -9,16 +9,11 @@ export class CreateStakeDto {
   assetIssuer: string;
 
   @ApiProperty({ description: 'Amount to lock', minimum: 1 })
-  @IsNumber()
+  @IsString()
   amount: number;
 
   @ApiProperty({ description: 'Treasury Amount', minimum: 1 })
-  @IsNumber()
   treasuryAmount: number;
-
-  @ApiProperty({ description: 'The total duration to be locked' })
-  @IsString()
-  timeline: string;
 
   @ApiProperty({ description: 'The signed transaction from user' })
   @IsString()

@@ -13,7 +13,6 @@ import {
   TransactionBuilder,
   xdr,
 } from '@stellar/stellar-sdk';
-import StellarSdkMain from 'stellar-sdk';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
@@ -254,13 +253,6 @@ export class StellarService {
       claimableRecord.amount = amountToLock;
       await claimableRecord.save();
 
-      await this.transferAsset(
-        this.issuerKeypair,
-        this.signerKeyPair.publicKey(),
-        additionalAmountForLiquidity.toString(),
-        this.whlAqua,
-      );
-
       this.logger.debug(
         `Successfully transferred asset to lp public key: ${this.signerKeyPair.publicKey()}`,
       );
@@ -287,12 +279,12 @@ export class StellarService {
         DepositType.LOCKER,
       );
 
-      await this.transferAsset(
-        this.issuerKeypair,
-        createStakeDto.senderPublicKey,
-        `${createStakeDto.amount}`,
-        this.whlAqua,
-      );
+      // await this.transferAsset(
+      //   this.issuerKeypair,
+      //   createStakeDto.senderPublicKey,
+      //   `${createStakeDto.amount}`,
+      //   this.whlAqua,
+      // );
     } catch (err) {
       console.log(err);
       this.logger.error('Error during staking process:', err.data.extras);
@@ -466,7 +458,7 @@ export class StellarService {
     });
 
     if (!user)
-      return new HttpException('Public key not found', HttpStatus.NOT_FOUND);
+      throw new HttpException('Public key not found', HttpStatus.NOT_FOUND);
 
     const userLockedRecords = await this.poolRepository.findOne({
       where: {
@@ -476,7 +468,7 @@ export class StellarService {
     });
 
     if (!userLockedRecords)
-      return new HttpException(
+      throw new HttpException(
         'You rewards yet to be unlocked',
         HttpStatus.NOT_FOUND,
       );
@@ -577,15 +569,22 @@ export class StellarService {
       .andWhere('pools.depositType = :locker', { locker: DepositType.LOCKER })
       .getOne();
 
-    if (!user) return new HttpException('User not found', HttpStatus.NOT_FOUND);
+    if (!user) throw new HttpException('User not found', HttpStatus.NOT_FOUND);
 
+    let totalAmount: number;
     // Calculate total amount
-    const totalAmount = user.claimableRecords
+    totalAmount = user.claimableRecords
       .filter((record) => record.claimed === CLAIMS.UNCLAIMED)
       .reduce((total, record) => total + parseFloat(record.amount), 0);
 
+    const userLPAquaAmounts = user.pools
+      .map((pool) => pool.assetBAmount)
+      .reduce((total, record) => total + parseFloat(record), 0);
+
+    totalAmount += userLPAquaAmounts;
+
     if (totalAmount <= 0)
-      new HttpException('Nothing to claim', HttpStatus.FORBIDDEN);
+      throw new HttpException('Nothing to claim', HttpStatus.FORBIDDEN);
 
     this.logger.debug(
       `Sending ${totalAmount} blub to ${unlockAquaDto.senderPublicKey}`,
@@ -613,6 +612,13 @@ export class StellarService {
     await this.poolRepository.save(poolRecords);
 
     this.logger.debug(`Successfully sent ${totalAmount}`);
+
+    await this.transferAsset(
+      this.issuerKeypair,
+      this.signerKeyPair.publicKey(),
+      totalAmount.toFixed(7),
+      this.whlAqua,
+    );
   }
 
   // @Cron('0 7 */7 * *')
@@ -779,7 +785,7 @@ export class StellarService {
     try {
       await this.transferAsset(
         this.lpSignerKeypair,
-        this.lpSignerKeypair.publicKey(),
+        this.treasureAddress,
         treasuryAmount.toString(),
         new Asset(AQUA_CODE, AQUA_ISSUER),
       );
