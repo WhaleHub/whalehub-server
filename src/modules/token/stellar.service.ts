@@ -446,6 +446,8 @@ export class StellarService {
         .where('user.account = :userPublicKey', { userPublicKey })
         .getOne();
 
+      console.log(userRecord.pools);
+
       return userRecord;
     } catch (err) {
       console.log(err);
