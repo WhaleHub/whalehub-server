@@ -590,13 +590,6 @@ export class StellarService {
       `Sending ${totalAmount} blub to ${unlockAquaDto.senderPublicKey}`,
     );
 
-    await this.transferAsset(
-      this.issuerKeypair,
-      unlockAquaDto.senderPublicKey,
-      totalAmount.toFixed(7),
-      this.whlAqua,
-    );
-
     const claimableRecords = user.claimableRecords;
     const poolRecords = user.pools;
 
@@ -611,14 +604,14 @@ export class StellarService {
     await this.claimableRecords.save(claimableRecords);
     await this.poolRepository.save(poolRecords);
 
-    this.logger.debug(`Successfully sent ${totalAmount}`);
-
     await this.transferAsset(
       this.issuerKeypair,
-      this.signerKeyPair.publicKey(),
+      unlockAquaDto.senderPublicKey,
       totalAmount.toFixed(7),
       this.whlAqua,
     );
+
+    this.logger.debug(`Successfully sent ${totalAmount}`);
   }
 
   // @Cron('0 7 */7 * *')
