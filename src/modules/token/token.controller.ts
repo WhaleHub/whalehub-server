@@ -72,7 +72,8 @@ export class TokenController {
     description: 'Liquidity successfully removed',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
-    return this.stellarService.unlockAqua(unlockAquaDto);
+  async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
+    await this.stellarService.unlockAqua(unlockAquaDto);
+    res.send().status(200);
   }
 }
