@@ -571,47 +571,99 @@ export class StellarService {
 
     if (!user) throw new HttpException('User not found', HttpStatus.NOT_FOUND);
 
-    let totalAmount: number;
-    // Calculate total amount
-    totalAmount = user.claimableRecords
+    // Calculate total unclaimed amount from claimable records and pool amounts
+    let totalClaimableRecordsAmount = user.claimableRecords
       .filter((record) => record.claimed === CLAIMS.UNCLAIMED)
       .reduce((total, record) => total + parseFloat(record.amount), 0);
 
-    const userLPAquaAmounts = user.pools
-      .map((pool) => pool.assetBAmount)
-      .reduce((total, record) => total + parseFloat(record), 0);
+    let totalPoolAssetBAmount = user.pools
+      .filter((pool) => pool.claimed === CLAIMS.UNCLAIMED)
+      .reduce((total, pool) => total + parseFloat(pool.assetBAmount), 0);
 
-    totalAmount += userLPAquaAmounts;
+    let totalAmount = totalClaimableRecordsAmount + totalPoolAssetBAmount;
+
+    console.log({ totalAmount });
 
     if (totalAmount <= 0)
       throw new HttpException('Nothing to claim', HttpStatus.FORBIDDEN);
 
-    this.logger.debug(
-      `Sending ${totalAmount} blub to ${unlockAquaDto.senderPublicKey}`,
-    );
+    const { amountToUnstake } = unlockAquaDto;
+    if (amountToUnstake > totalAmount)
+      throw new HttpException('Insufficient balance', HttpStatus.FORBIDDEN);
 
-    const claimableRecords = user.claimableRecords;
-    const poolRecords = user.pools;
+    // Calculate proportional amounts to adjust
+    let amountToDeductFromClaimableRecords = amountToUnstake * 0.9;
+    let amountToDeductFromPool = amountToUnstake * 0.1;
 
-    claimableRecords.forEach((record) => {
-      record.claimed = CLAIMS.CLAIMED;
-    });
+    let remainingClaimableAdjustment = amountToDeductFromClaimableRecords;
+    let remainingPoolAdjustment = amountToDeductFromPool;
 
-    poolRecords.forEach((record) => {
-      record.claimed = CLAIMS.CLAIMED;
-    });
+    // Adjust claimable records (90%)
+    for (const record of user.claimableRecords) {
+      if (
+        record.claimed === CLAIMS.UNCLAIMED &&
+        remainingClaimableAdjustment > 0
+      ) {
+        let recordAmount = parseFloat(record.amount);
+        if (remainingClaimableAdjustment >= recordAmount) {
+          // Fully consume this record
+          remainingClaimableAdjustment -= recordAmount;
+          record.amount = '0.0000000'; // This record is fully used
+          record.claimed = CLAIMS.CLAIMED; // Mark it as claimed
+        } else {
+          // Partially adjust this record
+          record.amount = (recordAmount - remainingClaimableAdjustment).toFixed(
+            7,
+          );
+          remainingClaimableAdjustment = 0;
+          break;
+        }
+      }
+    }
 
-    await this.claimableRecords.save(claimableRecords);
-    await this.poolRepository.save(poolRecords);
+    // Adjust pool amounts (10%)
+    for (const pool of user.pools) {
+      if (pool.claimed === CLAIMS.UNCLAIMED && remainingPoolAdjustment > 0) {
+        let poolAmount = parseFloat(pool.assetBAmount);
+        if (remainingPoolAdjustment >= poolAmount) {
+          // Fully consume this pool amount
+          remainingPoolAdjustment -= poolAmount;
+          pool.assetBAmount = '0.0000000'; // This pool is fully used
+          pool.claimed = CLAIMS.CLAIMED; // Mark it as claimed
+        } else {
+          // Partially adjust this pool amount
+          pool.assetBAmount = (poolAmount - remainingPoolAdjustment).toFixed(7);
+          remainingPoolAdjustment = 0;
+          break;
+        }
+      }
+    }
+
+    // Final check to ensure all adjustments were made
+    if (remainingClaimableAdjustment > 0 || remainingPoolAdjustment > 0) {
+      throw new HttpException(
+        'Unable to adjust all amounts',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+
+    // Save the adjusted claimable records and pools
+    await this.claimableRecords.save(user.claimableRecords);
+    await this.poolRepository.save(user.pools);
+
+    await this.claimableRecords.save(user.claimableRecords);
+    await this.poolRepository.save(user.pools);
 
     await this.transferAsset(
       this.issuerKeypair,
       unlockAquaDto.senderPublicKey,
-      totalAmount.toFixed(7),
+      `${amountToUnstake}`,
       this.whlAqua,
     );
 
-    this.logger.debug(`Successfully sent ${totalAmount}`);
+    this.logger.debug(
+      `Successfully sent: ${amountToUnstake} to ${unlockAquaDto.senderPublicKey}`,
+    );
   }
 
   // @Cron('0 7 */7 * *')

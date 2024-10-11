@@ -33,6 +33,6 @@ export const typeOrmConfig = async (
       configService.get<string>('NODE_ENV') === 'development' ? true : true,
     autoLoadEntities: true,
     logging: false,
-    ssl: configService.get<string>('NODE_ENV') === 'development' ? false : true,
+    ssl: configService.get<string>('NODE_ENV') === 'development' ? true : true,
   };
 };

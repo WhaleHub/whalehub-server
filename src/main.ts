@@ -4,9 +4,22 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { ErrorInterceptor } from '@/middleware/error.interceptor';
 import { ValidationPipe } from '@nestjs/common';
+import * as fs from 'fs';
+import * as https from 'https';
+import * as path from 'path';
+
+const certFolder = path.join(__dirname, '../cert');
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const keyFile = fs.readFileSync(path.join(certFolder, 'server.key'));
+  const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
+
+  const app = await NestFactory.create(AppModule, {
+    httpsOptions: {
+      key: keyFile,
+      cert: certFile,
+    },
+  });
 
   const config = new DocumentBuilder()
     .setTitle('Whalehub Server')
