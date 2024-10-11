@@ -13,7 +13,7 @@ const certFolder = path.join(__dirname, '../cert');
 async function bootstrap() {
   let httpsOptions: any;
 
-  if (process.env.NODE_ENV !== 'development') {
+  if (process.env.NODE_ENV === 'development') {
     const keyFile = fs.readFileSync(path.join(certFolder, 'server.key'));
     const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
 
