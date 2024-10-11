@@ -5,7 +5,6 @@ import { ConfigService } from '@nestjs/config';
 import { ErrorInterceptor } from '@/middleware/error.interceptor';
 import { ValidationPipe } from '@nestjs/common';
 import * as fs from 'fs';
-import * as https from 'https';
 import * as path from 'path';
 
 const certFolder = path.join(__dirname, '../cert');
@@ -13,19 +12,17 @@ const certFolder = path.join(__dirname, '../cert');
 async function bootstrap() {
   let httpsOptions: any;
 
-  if (process.env.NODE_ENV === 'development') {
-    const keyFile = fs.readFileSync(path.join(certFolder, 'server.key'));
-    const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
+  // if (process.env.NODE_ENV === 'development') {
+  //   const keyFile = fs.readFileSync(path.join(certFolder, 'server.key'));
+  //   const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
 
-    httpsOptions = {
-      key: keyFile,
-      cert: certFile,
-    };
-  }
+  //   httpsOptions = {
+  //     key: keyFile,
+  //     cert: certFile,
+  //   };
+  // }
 
-  const app = await NestFactory.create(AppModule, {
-    httpsOptions,
-  });
+  const app = await NestFactory.create(AppModule);
 
   const config = new DocumentBuilder()
     .setTitle('Whalehub Server')
