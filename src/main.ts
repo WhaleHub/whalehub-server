@@ -15,10 +15,13 @@ async function bootstrap() {
   const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
 
   const app = await NestFactory.create(AppModule, {
-    httpsOptions: {
-      key: keyFile,
-      cert: certFile,
-    },
+    httpsOptions:
+      process.env.NODE_ENV === 'development'
+        ? undefined
+        : {
+            key: keyFile,
+            cert: certFile,
+          },
   });
 
   const config = new DocumentBuilder()
