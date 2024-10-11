@@ -11,17 +11,20 @@ import * as path from 'path';
 const certFolder = path.join(__dirname, '../cert');
 
 async function bootstrap() {
-  const keyFile = fs.readFileSync(path.join(certFolder, 'server.key'));
-  const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
+  let httpsOptions: any;
+
+  if (process.env.NODE_ENV !== 'development') {
+    const keyFile = fs.readFileSync(path.join(certFolder, 'server.key'));
+    const certFile = fs.readFileSync(path.join(certFolder, 'server.cert'));
+
+    httpsOptions = {
+      key: keyFile,
+      cert: certFile,
+    };
+  }
 
   const app = await NestFactory.create(AppModule, {
-    httpsOptions:
-      process.env.NODE_ENV === 'development'
-        ? undefined
-        : {
-            key: keyFile,
-            cert: certFile,
-          },
+    httpsOptions,
   });
 
   const config = new DocumentBuilder()
