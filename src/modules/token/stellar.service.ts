@@ -325,7 +325,7 @@ export class StellarService {
       const currentAmount = Number(claimableRecord.amount);
       const updatedAmount = currentAmount + Number(stakeBlubDto.amount);
 
-      claimableRecord.amount = `${updatedAmount}`;
+      claimableRecord.amount = `${updatedAmount.toFixed(7)}`;
 
       console.log(claimableRecord.amount);
 
