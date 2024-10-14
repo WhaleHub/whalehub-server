@@ -318,12 +318,16 @@ export class StellarService {
         );
       }
 
+      console.log(claimableRecords);
+
       const claimableRecord = claimableRecords[0];
 
-      const currentAmount = parseFloat(claimableRecord.amount);
-      const updatedAmount = (currentAmount + 1.0);
+      const currentAmount = Number(claimableRecord.amount);
+      const updatedAmount = currentAmount + Number(stakeBlubDto.amount);
 
       claimableRecord.amount = `${updatedAmount}`;
+
+      console.log(claimableRecord.amount);
 
       await this.claimableRecords.save(claimableRecord);
 
