@@ -307,7 +307,11 @@ export class StellarService {
       this.logger.debug(`Transfer BLUB transaction hash: ${transferBlubHash}`);
 
       const claimableRecords = await this.claimableRecords.find({
-        where: { claimed: CLAIMS.UNCLAIMED },
+        where: {
+          claimed: CLAIMS.UNCLAIMED,
+          account: { account: stakeBlubDto.senderPublicKey },
+        },
+        relations: ['account'],
         take: 1,
       });
 
@@ -318,16 +322,14 @@ export class StellarService {
         );
       }
 
-      console.log(claimableRecords);
-
       const claimableRecord = claimableRecords[0];
+
+      console.log(claimableRecord);
 
       const currentAmount = Number(claimableRecord.amount);
       const updatedAmount = currentAmount + Number(stakeBlubDto.amount);
 
       claimableRecord.amount = `${updatedAmount.toFixed(7)}`;
-
-      console.log(claimableRecord.amount);
 
       await this.claimableRecords.save(claimableRecord);
 
