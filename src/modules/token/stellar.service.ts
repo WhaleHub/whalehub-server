@@ -718,6 +718,7 @@ export class StellarService {
   }
 
   // @Cron('0 7 */7 * *')
+  @Cron(CronExpression.EVERY_WEEK)
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
@@ -897,7 +898,7 @@ export class StellarService {
   }
 
   // @Cron('*/2 * * * *')
-  // @Cron(CronExpression.EVERY_WEEK)
+  @Cron(CronExpression.EVERY_WEEK)
   async redeemAquaRewardsForICE() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolRepository.find({
