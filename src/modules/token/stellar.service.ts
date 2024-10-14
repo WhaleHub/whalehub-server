@@ -321,9 +321,9 @@ export class StellarService {
       const claimableRecord = claimableRecords[0];
 
       const currentAmount = parseFloat(claimableRecord.amount);
-      const updatedAmount = (currentAmount + 1.0).toFixed(7);
+      const updatedAmount = (currentAmount + 1.0);
 
-      claimableRecord.amount = updatedAmount;
+      claimableRecord.amount = `${updatedAmount}`;
 
       await this.claimableRecords.save(claimableRecord);
 
