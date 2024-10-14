@@ -29,6 +29,7 @@ import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { aquaPools, getPoolKey, parseBufferString } from '@/utils/constants';
+import { StakeBlubDto } from './dto/stake-blub.dto';
 
 const WHLAQUA_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
@@ -278,16 +279,60 @@ export class StellarService {
         createStakeDto.senderPublicKey,
         DepositType.LOCKER,
       );
-
-      // await this.transferAsset(
-      //   this.issuerKeypair,
-      //   createStakeDto.senderPublicKey,
-      //   `${createStakeDto.amount}`,
-      //   this.whlAqua,
-      // );
     } catch (err) {
       console.log(err);
       this.logger.error('Error during staking process:', err.data.extras);
+    }
+  }
+
+  async stakeBlub(stakeBlubDto: StakeBlubDto): Promise<void> {
+    try {
+      await this.server.loadAccount(this.issuerKeypair.publicKey());
+
+      const signerAccount = await this.server.loadAccount(
+        this.issuerKeypair.publicKey(),
+      );
+
+      let user = await this.userRepository.findOneBy({
+        account: stakeBlubDto.senderPublicKey,
+      });
+
+      const transferBlubTxn = new Transaction(
+        stakeBlubDto.signedTxXdr,
+        Networks.PUBLIC,
+      );
+
+      const txn = await this.server.submitTransaction(transferBlubTxn);
+      const transferBlubHash = txn.hash;
+      this.logger.debug(`Transfer BLUB transaction hash: ${transferBlubHash}`);
+
+      const claimableRecords = await this.claimableRecords.find({
+        where: { claimed: CLAIMS.UNCLAIMED },
+        take: 1,
+      });
+
+      if (claimableRecords.length === 0) {
+        throw new HttpException(
+          'No unclaimed records found',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const claimableRecord = claimableRecords[0];
+
+      const currentAmount = parseFloat(claimableRecord.amount);
+      const updatedAmount = (currentAmount + 1.0).toFixed(7);
+
+      claimableRecord.amount = updatedAmount;
+
+      await this.claimableRecords.save(claimableRecord);
+
+      this.logger.debug(`Record updated. New amount: ${updatedAmount}`);
+
+      if (!user)
+        throw new HttpException('Account not found', HttpStatus.FORBIDDEN);
+    } catch (err) {
+      console.log(err);
     }
   }
 

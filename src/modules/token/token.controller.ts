@@ -5,6 +5,7 @@ import { CreateStakeDto } from './dto/create-stake.dto';
 import { StellarService } from './stellar.service';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { UnlockAquaDto } from './dto/create-remove-lp.dto';
+import { StakeBlubDto } from './dto/stake-blub.dto';
 
 @ApiTags('Token')
 @Controller('token')
@@ -74,6 +75,22 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
     await this.stellarService.unlockAqua(unlockAquaDto);
+    res.send().status(200);
+  }
+
+  @Post('restake-blub')
+  @ApiOperation({ summary: 'Stake Blub Tokens' })
+  @ApiBody({
+    type: UnlockAquaDto,
+    description: 'Data required to stake Blub tokens',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Staked Successfull',
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
+  async restakeBlub(@Body() stakeBlubDto: StakeBlubDto, @Res() res) {
+    await this.stellarService.stakeBlub(stakeBlubDto);
     res.send().status(200);
   }
 }
