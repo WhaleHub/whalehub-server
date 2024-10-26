@@ -201,7 +201,7 @@ export class StellarService {
         console.log('No new trustline was added.');
       }
 
-      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; // 2 years in seconds
+      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60;
 
       const claimableTransaction = new TransactionBuilder(signerAccount, {
         fee: BASE_FEE,
@@ -212,7 +212,10 @@ export class StellarService {
             claimants: [
               new Claimant(
                 signerAccount.accountId(),
-                Claimant.predicateNot(Claimant.predicateUnconditional()), //TODO: Ensure to use the correct predicate
+                Claimant.predicateAnd(
+                  Claimant.predicateNot(Claimant.predicateUnconditional()),
+                  Claimant.predicateBeforeAbsoluteTime(unlockTime.toString()),
+                ),
               ),
             ],
             asset: new Asset(AQUA_CODE, AQUA_ISSUER),
@@ -323,8 +326,6 @@ export class StellarService {
       }
 
       const claimableRecord = claimableRecords[0];
-
-      console.log(claimableRecord);
 
       const currentAmount = Number(claimableRecord.amount);
       const updatedAmount = currentAmount + Number(stakeBlubDto.amount);
