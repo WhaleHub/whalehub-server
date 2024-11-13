@@ -19,16 +19,13 @@ import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 import { Balance } from '@/utils/models/interfaces';
 import { SorobanService } from './soroban.service';
-import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 import { UnlockAquaDto } from './dto/create-remove-lp.dto';
-import { stellarAssets } from '@/utils/stellarAssets';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { CLAIMS, DepositType } from '@/utils/models/enums';
-import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
-import { aquaPools, getPoolKey, parseBufferString } from '@/utils/constants';
+import { aquaPools, getPoolKey } from '@/utils/constants';
 import { StakeBlubDto } from './dto/stake-blub.dto';
 
 const WHLAQUA_CODE = 'WHLAQUA';
@@ -1079,6 +1076,96 @@ export class StellarService {
       this.logger.error(
         `Error processing reward transactions: ${error.message}`,
       );
+    }
+  }
+
+  async assetIssuer() {
+    const blubToken = new Asset('BLUB', this.issuerKeypair.publicKey());
+    const receivingKeys = this.lpSignerKeypair.publicKey();
+    const totalSupply = '1000000000';
+
+    console.log(receivingKeys);
+
+    try {
+      // Step 1: Receiver establishes the trustline
+      const receiverAccount = await this.server.loadAccount(receivingKeys);
+
+      const trustTransaction = new TransactionBuilder(receiverAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.changeTrust({
+            asset: blubToken,
+            limit: totalSupply,
+          }),
+        )
+        .setTimeout(100)
+        .build();
+
+      // Sign with the receiver's secret key
+      trustTransaction.sign(this.lpSignerKeypair);
+
+      // Submit the trustline transaction
+      const trustResult = await this.server.submitTransaction(trustTransaction);
+      console.log(
+        `Trustline created successfully. Transaction hash: ${trustResult.hash}`,
+      );
+
+      // Step 2: Issuer sends the tokens to the receiver
+      const issuerAccount = await this.server.loadAccount(
+        this.issuerKeypair.publicKey(),
+      );
+
+      const paymentTransaction = new TransactionBuilder(issuerAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: receivingKeys,
+            asset: blubToken,
+            amount: '1000000000',
+          }),
+        )
+        .setTimeout(100)
+        .build();
+
+      // Sign with the issuer's keypair
+      paymentTransaction.sign(this.issuerKeypair);
+
+      // Submit the payment transaction
+      const paymentResult =
+        await this.server.submitTransaction(paymentTransaction);
+      console.log(
+        `Payment transaction successful. Transaction hash: ${paymentResult.hash}`,
+      );
+
+      const account = await this.sorobanService.server.getAccount(
+        this.issuerKeypair.publicKey(),
+      );
+      console.log(this.issuerKeypair.publicKey());
+      const assetTxn = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.createStellarAssetContract({
+            asset: blubToken,
+          }),
+        )
+        .setTimeout(30)
+        .build();
+
+      const uploadTx =
+        await this.sorobanService.server.prepareTransaction(assetTxn);
+      uploadTx.sign(this.issuerKeypair);
+      const result = await this.sorobanService.server.sendTransaction(uploadTx);
+      console.log(
+        `Payment transaction successful. Transaction hash: ${result.hash}`,
+      );
+    } catch (error) {
+      console.error('An error occurred:', error);
     }
   }
 }

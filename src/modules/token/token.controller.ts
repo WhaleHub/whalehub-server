@@ -93,4 +93,9 @@ export class TokenController {
     await this.stellarService.stakeBlub(stakeBlubDto);
     res.send().status(200);
   }
+
+  // @Post('issuer')
+  // async Issuer() {
+  //   return await this.stellarService.assetIssuer();
+  // }
 }
