@@ -28,7 +28,7 @@ import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { aquaPools, getPoolKey } from '@/utils/constants';
 import { StakeBlubDto } from './dto/stake-blub.dto';
 
-const WHLAQUA_CODE = 'WHLAQUA';
+const BLUB_CODE = 'WHLAQUA';
 export const AQUA_CODE = 'AQUA';
 export const AQUA_ISSUER =
   'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA';
@@ -54,12 +54,12 @@ export const ICE_ASSETS = [
 @Injectable()
 export class StellarService {
   private server: Horizon.Server;
-  private issuerKeypair: Keypair;
-  private lpSignerKeypair: Keypair;
+  public issuerKeypair: Keypair;
+  public lpSignerKeypair: Keypair;
   private rpcUrl: string;
   private signerKeyPair: Keypair;
   private treasureAddress: string;
-  private whlAqua: Asset;
+  private blub: Asset;
   private readonly logger = new Logger(StellarService.name);
 
   constructor(
@@ -84,7 +84,7 @@ export class StellarService {
     );
     this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
     this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
-    this.whlAqua = new Asset(WHLAQUA_CODE, this.issuerKeypair.publicKey());
+    this.blub = new Asset(BLUB_CODE, this.issuerKeypair.publicKey());
     this.treasureAddress = this.configService.get<string>('TREASURE_ADDRESS');
     this.signerKeyPair = Keypair.fromSecret(
       this.configService.get('SIGNER_SECRET_KEY'),
@@ -258,9 +258,9 @@ export class StellarService {
         `Successfully transferred asset to lp public key: ${this.signerKeyPair.publicKey()}`,
       );
 
-      await this.checkBalance(this.signerKeyPair.publicKey(), this.whlAqua);
+      await this.checkBalance(this.signerKeyPair.publicKey(), this.blub);
 
-      const assets = [this.whlAqua, new Asset(AQUA_CODE, AQUA_ISSUER)];
+      const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)];
 
       const amounts = new Map<string, string>();
       amounts.set(
@@ -561,7 +561,7 @@ export class StellarService {
     const userPercentage =
       lockTotalAmount > 0 ? userTotalDepositAmount / lockTotalAmount : 0;
 
-    const assets = [this.whlAqua, new Asset(AQUA_CODE, AQUA_ISSUER)].sort();
+    const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)].sort();
 
     const rewardEstimation = await this.sorobanService.userRewardEstimation(
       assets,
@@ -576,7 +576,7 @@ export class StellarService {
   }
 
   async swapToWhlaqua(amount: number): Promise<number> {
-    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.whlAqua];
+    const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.blub];
     const poolId = 'CD4ASKG2XVZRAUXSXPCGUSBIX4JOC2TNA2FDBAPUNJB7RSUG5YGRQRSF';
 
     // get pool reserves
@@ -589,7 +589,7 @@ export class StellarService {
       new Asset(AQUA_CODE, AQUA_ISSUER),
     );
 
-    const whlAddress = this.sorobanService.getAssetContractId(this.whlAqua);
+    const whlAddress = this.sorobanService.getAssetContractId(this.blub);
 
     this.logger.debug(`AQUA token address: ${aquaAddress}`);
     this.logger.debug(`WHLAQUA token address: ${whlAddress}`);
@@ -707,7 +707,7 @@ export class StellarService {
       this.issuerKeypair,
       unlockAquaDto.senderPublicKey,
       `${amountToUnstake}`,
-      this.whlAqua,
+      this.blub,
     );
 
     this.logger.debug(
@@ -862,7 +862,7 @@ export class StellarService {
                   this.lpSignerKeypair,
                   userPublicKey,
                   userShare,
-                  this.whlAqua,
+                  this.blub,
                 );
                 this.logger.log(
                   `LP reward sent to ${userPublicKey} with share: ${userShare}`,
@@ -1040,7 +1040,7 @@ export class StellarService {
                 this.lpSignerKeypair,
                 userPublicKey,
                 userShare,
-                this.whlAqua,
+                this.blub,
               );
 
               this.logger.debug(
@@ -1079,12 +1079,49 @@ export class StellarService {
     }
   }
 
+  async establishTrust() {
+    try {
+      console.log(this.issuerKeypair.publicKey());
+      // Step 1: Receiver establishes the trustline
+      const receiverAccount = await this.server.loadAccount(
+        this.issuerKeypair.publicKey(),
+      );
+      const usdcToken = new Asset(
+        'USDC',
+        'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      );
+      const totalSupply = '1000000000';
+
+      const trustTransaction = new TransactionBuilder(receiverAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.changeTrust({
+            asset: usdcToken,
+            limit: totalSupply,
+          }),
+        )
+        .setTimeout(100)
+        .build();
+
+      // Sign with the receiver's secret key
+      trustTransaction.sign(this.issuerKeypair);
+
+      // Submit the trustline transaction
+      const trustResult = await this.server.submitTransaction(trustTransaction);
+      console.log(
+        `Trustline created successfully. Transaction hash: ${trustResult.hash}`,
+      );
+    } catch (err) {
+      console.log(err);
+    }
+  }
+
   async assetIssuer() {
-    const blubToken = new Asset('BLUB', this.issuerKeypair.publicKey());
+    const blubToken = new Asset('u', this.issuerKeypair.publicKey());
     const receivingKeys = this.lpSignerKeypair.publicKey();
     const totalSupply = '1000000000';
-
-    console.log(receivingKeys);
 
     try {
       // Step 1: Receiver establishes the trustline
@@ -1164,6 +1201,33 @@ export class StellarService {
       console.log(
         `Payment transaction successful. Transaction hash: ${result.hash}`,
       );
+    } catch (error) {
+      console.error('An error occurred:', error);
+    }
+  }
+
+  async setStellarAddress() {
+    try {
+      const account = await this.server.loadAccount(
+        this.issuerKeypair.publicKey(),
+      );
+
+      var transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.setOptions({
+            homeDomain: 'whalehub.io',
+          }),
+        )
+        .setTimeout(100)
+        .build();
+
+      transaction.sign(this.issuerKeypair);
+
+      const issuingTx = await this.server.submitTransaction(transaction);
+      console.log(issuingTx.hash);
     } catch (error) {
       console.error('An error occurred:', error);
     }

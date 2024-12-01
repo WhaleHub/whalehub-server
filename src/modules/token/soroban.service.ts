@@ -53,12 +53,12 @@ enum AMM_CONTRACT_METHOD {
   GET_CREATION_FEE_TOKEN = 'get_init_pool_payment_token',
 }
 
-enum JEWEL_CONTRACT_METHOD {
-  GET_POOL = 'get_pool',
-  GET_POOLS = 'get_pools',
-  DEPOSIT = 'deposit',
-  HELLO = 'hello',
-}
+// enum JEWEL_CONTRACT_METHOD {
+//   GET_POOL = 'get_pool',
+//   GET_POOLS = 'get_pools',
+//   DEPOSIT = 'deposit',
+//   HELLO = 'hello',
+// }
 
 enum ASSET_CONTRACT_METHOD {
   GET_ALLOWANCE = 'allowance',
@@ -80,7 +80,6 @@ export class SorobanService {
   private issuerKeypair: Keypair;
   private lpSignerKeypair: Keypair;
   private signerKeyPair: Keypair;
-  private rpcUrl: string;
   whlAqua: Asset;
 
   assetsCache = new Map<string, Asset>();

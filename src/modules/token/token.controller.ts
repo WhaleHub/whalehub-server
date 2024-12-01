@@ -6,6 +6,7 @@ import { StellarService } from './stellar.service';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { UnlockAquaDto } from './dto/create-remove-lp.dto';
 import { StakeBlubDto } from './dto/stake-blub.dto';
+import { Asset } from '@stellar/stellar-sdk';
 
 @ApiTags('Token')
 @Controller('token')
@@ -86,7 +87,7 @@ export class TokenController {
   })
   @ApiResponse({
     status: 201,
-    description: 'Staked Successfull',
+    description: 'Staked Successful',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async restakeBlub(@Body() stakeBlubDto: StakeBlubDto, @Res() res) {
@@ -94,8 +95,24 @@ export class TokenController {
     res.send().status(200);
   }
 
-  // @Post('issuer')
-  // async Issuer() {
-  //   return await this.stellarService.assetIssuer();
+  @Post('issuer')
+  async Issuer() {
+    return await this.stellarService.assetIssuer();
+  }
+
+  @Post('establish-trust')
+  async establishTrust() {
+    return await this.stellarService.establishTrust();
+  }
+
+  // @Post('transfer')
+  // async transfer() {
+  //   console.log(this.stellarService.lpSignerKeypair.publicKey());
+  //   return await this.stellarService.transferAsset(
+  //     this.stellarService.issuerKeypair,
+  //     this.stellarService.lpSignerKeypair.publicKey(),
+  //     '1',
+  //     new Asset('BLUB', this.stellarService.issuerKeypair.publicKey()),
+  //   );
   // }
 }
