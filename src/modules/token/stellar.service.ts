@@ -105,7 +105,7 @@ export class StellarService {
       const additionalAmountForLiquidity = Number(createStakeDto.amount) * 1.1;
 
       const aquaAmountForPool = Number(createStakeDto.amount) * 0.1;
-      const whlAquaAmountForPool = additionalAmountForLiquidity * 0.1;
+      const BlubAmountForPool = additionalAmountForLiquidity * 0.1;
 
       // Create and submit the first transaction for transferring AQUA
       const transferAquaTxn = new Transaction(
@@ -198,7 +198,7 @@ export class StellarService {
         console.log('No new trustline was added.');
       }
 
-      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60;
+      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; //2 years
 
       const claimableTransaction = new TransactionBuilder(signerAccount, {
         fee: BASE_FEE,
@@ -265,7 +265,7 @@ export class StellarService {
       const amounts = new Map<string, string>();
       amounts.set(
         assets[0].code,
-        Number(whlAquaAmountForPool).toFixed(7).toString(),
+        Number(BlubAmountForPool).toFixed(7).toString(),
       );
       amounts.set(
         assets[1].code,
@@ -273,7 +273,7 @@ export class StellarService {
       );
 
       //send token to new signer for staking
-      await this.sorobanService.depositAQUAWHLHUB(
+      await this.sorobanService.depositAQUABlUB(
         assets,
         amounts,
         createStakeDto.senderPublicKey,
@@ -589,10 +589,10 @@ export class StellarService {
       new Asset(AQUA_CODE, AQUA_ISSUER),
     );
 
-    const whlAddress = this.sorobanService.getAssetContractId(this.blub);
+    const blubAddress = this.sorobanService.getAssetContractId(this.blub);
 
     this.logger.debug(`AQUA token address: ${aquaAddress}`);
-    this.logger.debug(`WHLAQUA token address: ${whlAddress}`);
+    this.logger.debug(`Blub token address: ${blubAddress}`);
 
     const swapAmount = await this.sorobanService.getSwapTx(
       amount,
@@ -1081,15 +1081,18 @@ export class StellarService {
 
   async establishTrust() {
     try {
-      console.log(this.issuerKeypair.publicKey());
-      // Step 1: Receiver establishes the trustline
-      const receiverAccount = await this.server.loadAccount(
-        this.issuerKeypair.publicKey(),
-      );
+      return;
+      const receiverAccount = await this.server.loadAccount('');
       const usdcToken = new Asset(
         'USDC',
         'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
       );
+
+      const aquaToken = new Asset(
+        'AQUA',
+        'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA',
+      );
+
       const totalSupply = '1000000000';
 
       const trustTransaction = new TransactionBuilder(receiverAccount, {
@@ -1099,6 +1102,12 @@ export class StellarService {
         .addOperation(
           Operation.changeTrust({
             asset: usdcToken,
+            limit: totalSupply,
+          }),
+        )
+        .addOperation(
+          Operation.changeTrust({
+            asset: aquaToken,
             limit: totalSupply,
           }),
         )

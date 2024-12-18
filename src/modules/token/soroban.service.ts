@@ -117,7 +117,7 @@ export class SorobanService {
     this.whlAqua = new Asset(WHLAQUA_CODE, this.issuerKeypair.publicKey());
   }
 
-  async depositAQUAWHLHUB(
+  async depositAQUABlUB(
     assets: Asset[],
     amounts: Map<string, string>,
     senderPublicKey: string,
