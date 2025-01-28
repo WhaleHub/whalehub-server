@@ -105,6 +105,11 @@ export class TokenController {
     return await this.stellarService.establishTrust();
   }
 
+  @Get('set-stellar')
+  async setStellar() {
+    return await this.stellarService.setStellarAddress();
+  }
+
   // @Post('transfer')
   // async transfer() {
   //   console.log(this.stellarService.lpSignerKeypair.publicKey());
