@@ -7,7 +7,7 @@ ORG_DESCRIPTION = "WhaleHub is a yield optimization platform that allows users t
 ORG_LOGO = "https://lavender-armed-termite-130.mypinata.cloud/ipfs/bafkreiciyg3jgwlsrw5m6auwmlwf7yhhxlzofafdwmoo3iimpjdt5nwqha"
 ORG_TWITTER = "@whalehubdefi"
 ORG_GITHUB = "WhaleHubDev"
-ORG_EMAIL = "contact@whalehub.io"
+ORG_OFFICIAL_EMAIL = "contact@whalehub.io"
 
 [[CURRENCIES]]
 code = "BLUB"
