@@ -28,7 +28,7 @@ import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { aquaPools, getPoolKey } from '@/utils/constants';
 import { StakeBlubDto } from './dto/stake-blub.dto';
 
-const BLUB_CODE = 'WHLAQUA';
+const BLUB_CODE = 'BLUB';
 export const AQUA_CODE = 'AQUA';
 export const AQUA_ISSUER =
   'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA';
