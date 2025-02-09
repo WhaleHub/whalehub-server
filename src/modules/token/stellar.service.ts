@@ -577,7 +577,7 @@ export class StellarService {
 
   async swapToWhlaqua(amount: number): Promise<number> {
     const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.blub];
-    const poolId = 'CD4ASKG2XVZRAUXSXPCGUSBIX4JOC2TNA2FDBAPUNJB7RSUG5YGRQRSF';
+    const poolId = 'CBL7MWLEZ4SU6YC5XL4T3WXKNKNO2UQVDVONOQSW5VVCYFWORROHY4AM';
 
     // get pool reserves
     const poolReserves = await this.sorobanService.getPoolReserves(
