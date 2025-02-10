@@ -252,7 +252,17 @@ export class StellarService {
       claimableRecord.account = user;
       claimableRecord.balanceId = balanceId;
       claimableRecord.amount = amountToLock;
+      try{
+        this.logger.debug(
+          `Trying to to save claimableRecord:`,
+        );
       await claimableRecord.save();
+      }
+      catch(e){
+        this.logger.debug(
+          `Failed to save claimableRecord: ${e}`,
+        );
+      }
 
       this.logger.debug(
         `Successfully transferred asset to lp public key: ${this.signerKeyPair.publicKey()}`,
