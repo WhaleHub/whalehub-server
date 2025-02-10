@@ -292,6 +292,13 @@ export class StellarService {
 
       transaction.sign(this.issuerKeypair);
 
+      const responseOfSendingBlub =
+      await this.server.submitTransaction(transaction);
+
+      this.logger.debug(
+        `Successfully transferred blub asset : ${responseOfSendingBlub}`,
+      );
+
 
       await this.sorobanService.depositAQUABlUB(
         assets,
