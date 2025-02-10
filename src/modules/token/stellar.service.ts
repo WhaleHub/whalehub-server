@@ -273,6 +273,26 @@ export class StellarService {
       );
 
       //send token to new signer for staking
+      const sourceAccount = await this.server.loadAccount(
+        this.issuerKeypair.publicKey(),
+      );
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: this.signerKeyPair.publicKey(),
+            asset: this.blub,
+            amount: BlubAmountForPool,
+          }),
+        )
+        .setTimeout(30)
+        .build();
+
+      transaction.sign(this.issuerKeypair);
+
+
       await this.sorobanService.depositAQUABlUB(
         assets,
         amounts,
