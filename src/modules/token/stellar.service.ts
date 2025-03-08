@@ -219,10 +219,11 @@ export class StellarService {
             amount: `${amountToLock}`,
           }),
         )
-        .setTimeout(1000)
+        .setTimeout(5000)
         .build();
 
       claimableTransaction.sign(this.signerKeyPair);
+      try{
       const claimableResponse =
         await this.server.submitTransaction(claimableTransaction);
       const claimableHash = claimableResponse.hash;
@@ -320,6 +321,11 @@ export class StellarService {
       console.log(err);
       this.logger.error('Error during staking process:', err.data.extras);
     }
+  }
+  catch(err){
+    console.log(err);
+    this.logger.error('Error during staking process:', err.data.extras);
+  }
   }
 
   async stakeBlub(stakeBlubDto: StakeBlubDto): Promise<void> {
