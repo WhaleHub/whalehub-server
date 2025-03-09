@@ -671,7 +671,7 @@ export class StellarService {
       .leftJoinAndSelect('user.claimableRecords', 'claimableRecords')
       .leftJoinAndSelect('user.pools', 'pools')
       .where('user.account = :accountId', { accountId: account.accountId() })
-      .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
+      // .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
       .andWhere('pools.depositType = :locker', { locker: DepositType.LOCKER })
       .getOne();
 
