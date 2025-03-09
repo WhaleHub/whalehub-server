@@ -752,7 +752,15 @@ export class StellarService {
     // }
 
     // Final check to ensure all adjustments were made
-    if (remainingClaimableAdjustment > 0 || remainingPoolAdjustment > 0) {
+    // if (remainingClaimableAdjustment > 0 || remainingPoolAdjustment > 0) {
+    //   throw new HttpException(
+    //     'Unable to adjust all amounts',
+    //     HttpStatus.INTERNAL_SERVER_ERROR,
+    //   );
+    // }
+
+    console.log(remainingClaimableAdjustment);
+      if (remainingClaimableAdjustment > 0) {
       throw new HttpException(
         'Unable to adjust all amounts',
         HttpStatus.INTERNAL_SERVER_ERROR,
