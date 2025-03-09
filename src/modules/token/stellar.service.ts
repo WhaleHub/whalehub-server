@@ -675,7 +675,8 @@ export class StellarService {
       .reduce((total, pool) => total + parseFloat(pool.assetBAmount), 0);
 
     let totalAmount = totalClaimableRecordsAmount + totalPoolAssetBAmount;
-
+    console.log({ totalClaimableRecordsAmount });
+    console.log({ totalPoolAssetBAmount });
     console.log({ totalAmount });
 
     if (totalAmount <= 0)
@@ -686,7 +687,10 @@ export class StellarService {
       throw new HttpException('Insufficient balance', HttpStatus.FORBIDDEN);
 
     // Calculate proportional amounts to adjust
-    let amountToDeductFromClaimableRecords = amountToUnstake * 0.9;
+    //let amountToDeductFromClaimableRecords = amountToUnstake * 0.9;
+
+    //need to deduct full
+    let amountToDeductFromClaimableRecords = amountToUnstake * 1.0;
     let amountToDeductFromPool = amountToUnstake * 0.1;
 
     let remainingClaimableAdjustment = amountToDeductFromClaimableRecords;
