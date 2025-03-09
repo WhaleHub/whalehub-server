@@ -377,11 +377,14 @@ export class StellarService {
       }
 
       const claimableRecord = claimableRecords[0];
+      console.log(claimableRecords);
 
       const currentAmount = Number(claimableRecord.amount);
       const updatedAmount = currentAmount + Number(stakeBlubDto.amount);
 
       claimableRecord.amount = `${updatedAmount.toFixed(7)}`;
+      //need to add this to work with unclaimed;
+      claimableRecord.claimed = CLAIMS.UNCLAIMED;
 
       await this.claimableRecords.save(claimableRecord);
 
