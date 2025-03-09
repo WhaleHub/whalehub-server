@@ -351,9 +351,18 @@ export class StellarService {
       const transferBlubHash = txn.hash;
       this.logger.debug(`Transfer BLUB transaction hash: ${transferBlubHash}`);
 
+      // const claimableRecords = await this.claimableRecords.find({
+      //   where: {
+      //     claimed: CLAIMS.UNCLAIMED,
+      //     account: { account: stakeBlubDto.senderPublicKey },
+      //   },
+      //   relations: ['account'],
+      //   take: 1,
+      // });
+
       const claimableRecords = await this.claimableRecords.find({
         where: {
-          claimed: CLAIMS.UNCLAIMED,
+          // claimed: CLAIMS.UNCLAIMED,
           account: { account: stakeBlubDto.senderPublicKey },
         },
         relations: ['account'],
