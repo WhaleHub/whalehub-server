@@ -671,7 +671,8 @@ export class StellarService {
       .leftJoinAndSelect('user.claimableRecords', 'claimableRecords')
       .leftJoinAndSelect('user.pools', 'pools')
       .where('user.account = :accountId', { accountId: account.accountId() })
-      // .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
+      //testing this one
+      .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
       .andWhere('pools.depositType = :locker', { locker: DepositType.LOCKER })
       .getOne();
 
@@ -709,6 +710,7 @@ export class StellarService {
     let remainingPoolAdjustment = amountToDeductFromPool;
 
     // Adjust claimable records (90%)
+    try{
     for (const record of user.claimableRecords) {
       if (
         record.claimed === CLAIMS.UNCLAIMED &&
@@ -732,22 +734,22 @@ export class StellarService {
     }
 
     // Adjust pool amounts (10%)
-    for (const pool of user.pools) {
-      if (pool.claimed === CLAIMS.UNCLAIMED && remainingPoolAdjustment > 0) {
-        let poolAmount = parseFloat(pool.assetBAmount);
-        if (remainingPoolAdjustment >= poolAmount) {
-          // Fully consume this pool amount
-          remainingPoolAdjustment -= poolAmount;
-          pool.assetBAmount = '0.0000000'; // This pool is fully used
-          pool.claimed = CLAIMS.CLAIMED; // Mark it as claimed
-        } else {
-          // Partially adjust this pool amount
-          pool.assetBAmount = (poolAmount - remainingPoolAdjustment).toFixed(7);
-          remainingPoolAdjustment = 0;
-          break;
-        }
-      }
-    }
+    // for (const pool of user.pools) {
+    //   if (pool.claimed === CLAIMS.UNCLAIMED && remainingPoolAdjustment > 0) {
+    //     let poolAmount = parseFloat(pool.assetBAmount);
+    //     if (remainingPoolAdjustment >= poolAmount) {
+    //       // Fully consume this pool amount
+    //       remainingPoolAdjustment -= poolAmount;
+    //       pool.assetBAmount = '0.0000000'; // This pool is fully used
+    //       pool.claimed = CLAIMS.CLAIMED; // Mark it as claimed
+    //     } else {
+    //       // Partially adjust this pool amount
+    //       pool.assetBAmount = (poolAmount - remainingPoolAdjustment).toFixed(7);
+    //       remainingPoolAdjustment = 0;
+    //       break;
+    //     }
+    //   }
+    // }
 
     // Final check to ensure all adjustments were made
     if (remainingClaimableAdjustment > 0 || remainingPoolAdjustment > 0) {
@@ -774,6 +776,11 @@ export class StellarService {
     this.logger.debug(
       `Successfully sent: ${amountToUnstake} to ${unlockAquaDto.senderPublicKey}`,
     );
+  }
+  catch(e){
+    console.log(e);
+    throw e;
+  }
   }
 
   // @Cron('0 7 */7 * *')
