@@ -252,7 +252,9 @@ export class StellarService {
       const claimableRecord = new ClaimableRecordsEntity();
       claimableRecord.account = user;
       claimableRecord.balanceId = balanceId;
-      claimableRecord.amount = amountToLock;
+      //here need to set a full amount, not 90%
+      //claimableRecord.amount = amountToLock;
+      claimableRecord.amount = createStakeDto.amount.toString();
       try{
         this.logger.debug(
           `Trying to to save claimableRecord:`,
