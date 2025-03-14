@@ -307,7 +307,7 @@ export class StellarService {
           Operation.payment({
             destination: this.signerKeyPair.publicKey(),
             asset: this.blub,
-            amount: BlubAmountForPool.toString(),
+            amount: amountA,
           }),
         )
         .setTimeout(30)
