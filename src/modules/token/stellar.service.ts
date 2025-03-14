@@ -113,7 +113,8 @@ export class StellarService {
         Networks.PUBLIC,
       );
 
-      const transferAquaResponse =
+      try{
+        const transferAquaResponse =
         await this.server.submitTransaction(transferAquaTxn);
       const transferAquaHash = transferAquaResponse.hash;
       this.logger.debug(`Transfer AQUA transaction hash: ${transferAquaHash}`);
@@ -330,6 +331,12 @@ export class StellarService {
     console.log(err);
     this.logger.error('Error during staking process:', err.data.extras);
   }
+}
+catch (e)
+{
+  this.logger.error('Error during staking process:', e.data.extras);
+  console.log(e);
+}
   }
 
   async stakeBlub(stakeBlubDto: StakeBlubDto): Promise<void> {
