@@ -101,10 +101,10 @@ export class StellarService {
       );
 
       // Calculate the amounts to stake and for liquidity
-      const amountToLock = (createStakeDto.amount * 0.9).toFixed(7);
-      const additionalAmountForLiquidity = Number(createStakeDto.amount) * 1.0;
+      const amountToLock = Number((createStakeDto.amount * 0.9).toFixed(5));
+      const additionalAmountForLiquidity = Number(((createStakeDto.amount) * 1.0).toFixed(5));
 
-      const aquaAmountForPool = Number(createStakeDto.amount) * 0.1;
+      const aquaAmountForPool = createStakeDto.amount * 0.1;
       const BlubAmountForPool = additionalAmountForLiquidity * 0.1;
 
       // Create and submit the first transaction for transferring AQUA
@@ -279,13 +279,18 @@ export class StellarService {
       const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)];
 
       const amounts = new Map<string, string>();
+      const amountA =   Number(BlubAmountForPool.toFixed(5)).toString();
+      const amountB =   Number(aquaAmountForPool.toFixed(5)).toString()
+      this.logger.debug(
+        `Starting to add to pool: ${amountA} and ${amountB}`,
+      );
       amounts.set(
         assets[0].code,
-        Number(BlubAmountForPool).toFixed(7).toString(),
+        amountA,
       );
       amounts.set(
         assets[1].code,
-        Number(aquaAmountForPool).toFixed(7).toString(),
+        amountB,
       );
 
       //send token to new signer for staking
