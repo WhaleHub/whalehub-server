@@ -103,7 +103,9 @@ export class StellarService {
       // Calculate the amounts to stake and for liquidity
       const amountToLock = Number((createStakeDto.amount * 0.9).toFixed(5));
       const additionalAmountForLiquidity = Number(((createStakeDto.amount) * 1.0).toFixed(5));
-
+      this.logger.debug(
+        `Starting to add to lock: ${amountToLock} and ${additionalAmountForLiquidity}`,
+      );
       const aquaAmountForPool = createStakeDto.amount * 0.1;
       const BlubAmountForPool = additionalAmountForLiquidity * 0.1;
 
