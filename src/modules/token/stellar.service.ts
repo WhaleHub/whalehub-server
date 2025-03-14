@@ -101,8 +101,8 @@ export class StellarService {
       );
 
       // Calculate the amounts to stake and for liquidity
-      const amountToLock = Number((createStakeDto.amount * 0.9).toFixed(5));
-      const additionalAmountForLiquidity = Number(((createStakeDto.amount) * 1.0).toFixed(5));
+      const amountToLock = Number((createStakeDto.amount * 0.9).toFixed(7));
+      const additionalAmountForLiquidity = Number(((createStakeDto.amount) * 1.0).toFixed(7));
       this.logger.debug(
         `Starting to add to lock: ${amountToLock} and ${additionalAmountForLiquidity}`,
       );
@@ -281,8 +281,8 @@ export class StellarService {
       const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)];
 
       const amounts = new Map<string, string>();
-      const amountA =   Number(BlubAmountForPool.toFixed(5)).toString();
-      const amountB =   Number(aquaAmountForPool.toFixed(5)).toString()
+      const amountA =   Number(BlubAmountForPool.toFixed(7)).toString();
+      const amountB =   Number(aquaAmountForPool.toFixed(7)).toString()
       this.logger.debug(
         `Starting to add to pool: ${amountA} and ${amountB}`,
       );

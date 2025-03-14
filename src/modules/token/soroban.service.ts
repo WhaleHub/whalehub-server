@@ -18,6 +18,7 @@ import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 import { DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { formatAmountToBigInt } from '@/utils/constants';
+import { delay } from 'rxjs/operators';
 
 export const AMM_SMART_CONTACT_ID =
   'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK';
@@ -195,6 +196,7 @@ export class SorobanService {
       tx.sign(this.signerKeyPair);
       const mainTx = await this.server.sendTransaction(tx);
       this.logger.debug(`deposit into pool hash: ${mainTx.hash}`);
+      await sleep(1000);
       const result = await this.checkTransactionStatus(
         this.server,
         mainTx.hash,
@@ -1026,3 +1028,5 @@ export class SorobanService {
       });
   }
 }
+
+export const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
