@@ -193,7 +193,9 @@ export class StellarService {
         const trustlineResponse =
           await this.server.submitTransaction(builtTrustlineTxn);
         const trustlineHash = trustlineResponse.hash;
-        await this.checkTransactionStatus(this.server, trustlineHash);
+        const status = await this.checkTransactionStatus(this.server, trustlineHash);
+        console.log(`trustlineOperationAdded`);
+        console.log(`trustlineOperationAdded`, status);
       } else {
         console.log('No new trustline was added.');
       }
