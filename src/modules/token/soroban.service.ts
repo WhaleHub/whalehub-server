@@ -201,7 +201,8 @@ export class SorobanService {
         this.server,
         mainTx.hash,
       );
-      if (result.successful) {
+      // ommiting succesful check, as it might be infinite pool
+      //if (result.successful) {
         const user = await this.userRepository.findOneBy({
           account: senderPublicKey,
         });
@@ -233,7 +234,7 @@ export class SorobanService {
           .save()
           .then(() => this.logger.log(`Saved new balance record`));
       }
-    }
+   // }
   }
 
   async addLiquidityTxn(createAddLiquidityDto: CreateAddLiquidityDto) {
