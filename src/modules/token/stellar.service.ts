@@ -229,8 +229,10 @@ export class StellarService {
 
       claimableTransaction.sign(this.signerKeyPair);
       try{
+        this.logger.debug(`starting to deposit`);
       const claimableResponse =
         await this.server.submitTransaction(claimableTransaction);
+        
       const claimableHash = claimableResponse.hash;
       this.logger.debug(`Claimable balance transaction hash: ${claimableHash}`);
 
