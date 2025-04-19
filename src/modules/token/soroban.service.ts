@@ -972,10 +972,12 @@ export class SorobanService {
     results?: xdr.TransactionResult;
     returnValue: any;
   }> {
-    while (true) {
+    let attemts = 0;
+    while (true || attemts<5) {
       try {
+        attemts++;
         const transactionResult = await server.getTransaction(hash);
-
+      
         if (transactionResult.status === 'SUCCESS') {
           console.log('Transaction success:', transactionResult.status);
           let resultXdr = transactionResult.resultXdr;
