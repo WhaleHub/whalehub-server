@@ -230,8 +230,10 @@ export class StellarService {
       claimableTransaction.sign(this.signerKeyPair);
       try{
         this.logger.debug(`starting to deposit`);
+        this.logger.debug(this.server.pubkey);
       const claimableResponse =
         await this.server.submitTransaction(claimableTransaction);
+        this.logger.debug(claimableResponse);
         
       const claimableHash = claimableResponse.hash;
       this.logger.debug(`Claimable balance transaction hash: ${claimableHash}`);
@@ -334,6 +336,7 @@ export class StellarService {
     } catch (err) {
       console.log(err);
       this.logger.error('Error during staking process:', err.data.extras);
+      this.logger.error('Error during staking process:', err.data);
     }
   }
   catch(err){
