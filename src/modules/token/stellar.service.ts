@@ -230,7 +230,7 @@ export class StellarService {
       claimableTransaction.sign(this.signerKeyPair);
       try{
         this.logger.debug(`starting to deposit`);
-        this.logger.debug(this.signerKeyPair.publicKey);
+        this.logger.debug(this.signerKeyPair.publicKey());
       const claimableResponse =
         await this.server.submitTransaction(claimableTransaction);
         this.logger.debug(claimableResponse);
