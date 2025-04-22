@@ -335,19 +335,18 @@ export class StellarService {
       );
     } catch (err) {
       console.log(err);
-      this.logger.error('Error during staking process:', err.data.extras);
-      this.logger.error('Error during staking process:', err.data);
+      this.logger.error('Error during staking process:', err?.data?.extras || err?.data || err?.message || err);
     }
   }
   catch(err){
     console.log(err);
-    this.logger.error('Error during staking process:', err.data.extras);
+    this.logger.error('Error during staking process:', err?.data?.extras || err?.data || err?.message || err);
   }
 }
-catch (e)
+catch (err)
 {
-  this.logger.error('Error during staking process:', e.data.extras);
-  console.log(e);
+  console.log(err);
+  this.logger.error('Error during staking process:', err?.data?.extras || err?.data || err?.message || err);
 }
   }
 
