@@ -102,7 +102,9 @@ export class StellarService {
 
       // Calculate the amounts to stake and for liquidity
       const amountToLock = Number((createStakeDto.amount * 0.9).toFixed(7));
-      const additionalAmountForLiquidity = Number(((createStakeDto.amount) * 1.0).toFixed(7));
+      const additionalAmountForLiquidity = Number(
+        (createStakeDto.amount * 1.0).toFixed(7),
+      );
       this.logger.debug(
         `Starting to add to lock: ${amountToLock} and ${additionalAmountForLiquidity}`,
       );
@@ -115,239 +117,243 @@ export class StellarService {
         Networks.PUBLIC,
       );
 
-      try{
+      try {
         const transferAquaResponse =
-        await this.server.submitTransaction(transferAquaTxn);
-      const transferAquaHash = transferAquaResponse.hash;
-      this.logger.debug(`Transfer AQUA transaction hash: ${transferAquaHash}`);
-
-      // Check if the first transaction was successful
-      const depositAquaTransactionResult = await this.checkTransactionStatus(
-        this.server,
-        transferAquaHash,
-      );
-
-      if (!depositAquaTransactionResult.successful) {
-        throw new Error('Transfer AQUA transaction failed.');
-      }
-
-      // Ensure the user account exists in the database
-      let user = await this.userRepository.findOneBy({
-        account: createStakeDto.senderPublicKey,
-      });
-
-      if (!user) {
-        user = new UserEntity();
-        user.account = createStakeDto.senderPublicKey;
-        await this.userRepository.save(user);
-      }
-
-      // Record the stake amount in the database
-      const stake = new StakeEntity();
-      stake.account = user;
-      stake.amount = createStakeDto.amount.toString();
-      await stake
-        .save()
-        .then(() =>
-          this.logger.debug(`Saved stake amount: ${stake.amount} to db`),
+          await this.server.submitTransaction(transferAquaTxn);
+        const transferAquaHash = transferAquaResponse.hash;
+        this.logger.debug(
+          `Transfer AQUA transaction hash: ${transferAquaHash}`,
         );
 
-      // Check existing trustlines
-      const existingTrustlines = signerAccount.balances.map(
-        (balance: Balance) => balance.asset_code,
-      );
+        // Check if the first transaction was successful
+        const depositAquaTransactionResult = await this.checkTransactionStatus(
+          this.server,
+          transferAquaHash,
+        );
 
-      //transaction
-      const trustlineTransaction = new TransactionBuilder(signerAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: Networks.PUBLIC,
-      });
-
-      // List of governance assets to check
-      const assetsToCheck = [
-        { code: ICE_CODE, issuer: ICE_ISSUER },
-        { code: GOV_ICE_CODE, issuer: ICE_ISSUER },
-        { code: UP_ICE_CODE, issuer: ICE_ISSUER },
-        { code: DOWN_ICE_CODE, issuer: ICE_ISSUER },
-      ];
-
-      let trustlineOperationAdded = false;
-
-      // Add trustline operations only if they don't already exist
-      for (const asset of assetsToCheck) {
-        if (!existingTrustlines.includes(asset.code)) {
-          trustlineTransaction.addOperation(
-            Operation.changeTrust({
-              asset: new Asset(asset.code, asset.issuer),
-              limit: '1000000000',
-            }),
-          );
-          trustlineOperationAdded = true;
-          console.log(`Adding trustline for asset: ${asset.code}`);
-        } else {
-          console.log(`Trustline for asset ${asset.code} already exists.`);
+        if (!depositAquaTransactionResult.successful) {
+          throw new Error('Transfer AQUA transaction failed.');
         }
-      }
 
-      if (trustlineOperationAdded) {
-        const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
-        builtTrustlineTxn.sign(this.signerKeyPair);
+        // Ensure the user account exists in the database
+        let user = await this.userRepository.findOneBy({
+          account: createStakeDto.senderPublicKey,
+        });
 
-        const trustlineResponse =
-          await this.server.submitTransaction(builtTrustlineTxn);
-        const trustlineHash = trustlineResponse.hash;
-        const status = await this.checkTransactionStatus(this.server, trustlineHash);
-        console.log(`trustlineOperationAdded`);
-        console.log(`trustlineOperationAdded`, status);
-      } else {
-        console.log('No new trustline was added.');
-      }
+        if (!user) {
+          user = new UserEntity();
+          user.account = createStakeDto.senderPublicKey;
+          await this.userRepository.save(user);
+        }
 
-      const unlockTime = Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; //2 years
+        // Record the stake amount in the database
+        const stake = new StakeEntity();
+        stake.account = user;
+        stake.amount = createStakeDto.amount.toString();
+        await stake
+          .save()
+          .then(() =>
+            this.logger.debug(`Saved stake amount: ${stake.amount} to db`),
+          );
 
-      const claimableTransaction = new TransactionBuilder(signerAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: Networks.PUBLIC,
-      })
-        .addOperation(
-          Operation.createClaimableBalance({
-            claimants: [
-              new Claimant(
-                signerAccount.accountId(),
-                Claimant.predicateAnd(
-                  Claimant.predicateNot(Claimant.predicateUnconditional()),
-                  Claimant.predicateBeforeAbsoluteTime(unlockTime.toString()),
+        // Check existing trustlines
+        const existingTrustlines = signerAccount.balances.map(
+          (balance: Balance) => balance.asset_code,
+        );
+
+        //transaction
+        const trustlineTransaction = new TransactionBuilder(signerAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: Networks.PUBLIC,
+        });
+
+        // List of governance assets to check
+        const assetsToCheck = [
+          { code: ICE_CODE, issuer: ICE_ISSUER },
+          { code: GOV_ICE_CODE, issuer: ICE_ISSUER },
+          { code: UP_ICE_CODE, issuer: ICE_ISSUER },
+          { code: DOWN_ICE_CODE, issuer: ICE_ISSUER },
+        ];
+
+        let trustlineOperationAdded = false;
+
+        // Add trustline operations only if they don't already exist
+        for (const asset of assetsToCheck) {
+          if (!existingTrustlines.includes(asset.code)) {
+            trustlineTransaction.addOperation(
+              Operation.changeTrust({
+                asset: new Asset(asset.code, asset.issuer),
+                limit: '1000000000',
+              }),
+            );
+            trustlineOperationAdded = true;
+            console.log(`Adding trustline for asset: ${asset.code}`);
+          } else {
+            console.log(`Trustline for asset ${asset.code} already exists.`);
+          }
+        }
+
+        if (trustlineOperationAdded) {
+          const builtTrustlineTxn = trustlineTransaction
+            .setTimeout(180)
+            .build();
+          builtTrustlineTxn.sign(this.signerKeyPair);
+
+          const trustlineResponse =
+            await this.server.submitTransaction(builtTrustlineTxn);
+          const trustlineHash = trustlineResponse.hash;
+          const status = await this.checkTransactionStatus(
+            this.server,
+            trustlineHash,
+          );
+          console.log(`trustlineOperationAdded`);
+          console.log(`trustlineOperationAdded`, status);
+        } else {
+          console.log('No new trustline was added.');
+        }
+
+        const unlockTime =
+          Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; //2 years
+
+        const claimableTransaction = new TransactionBuilder(signerAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: Networks.PUBLIC,
+        })
+          .addOperation(
+            Operation.createClaimableBalance({
+              claimants: [
+                new Claimant(
+                  signerAccount.accountId(),
+                  Claimant.predicateAnd(
+                    Claimant.predicateNot(Claimant.predicateUnconditional()),
+                    Claimant.predicateBeforeAbsoluteTime(unlockTime.toString()),
+                  ),
                 ),
-              ),
-            ],
-            asset: new Asset(AQUA_CODE, AQUA_ISSUER),
-            amount: `${amountToLock}`,
-          }),
-        )
-        .setTimeout(5000)
-        .build();
+              ],
+              asset: new Asset(AQUA_CODE, AQUA_ISSUER),
+              amount: `${amountToLock}`,
+            }),
+          )
+          .setTimeout(5000)
+          .build();
 
-      claimableTransaction.sign(this.signerKeyPair);
-      try{
-        this.logger.debug(`starting to deposit`);
-        this.logger.debug(this.signerKeyPair.publicKey());
-      const claimableResponse =
-        await this.server.submitTransaction(claimableTransaction);
-        this.logger.debug(claimableResponse);
-        
-      const claimableHash = claimableResponse.hash;
-      this.logger.debug(`Claimable balance transaction hash: ${claimableHash}`);
+        claimableTransaction.sign(this.signerKeyPair);
+        try {
+          this.logger.debug(`starting to deposit`);
+          this.logger.debug(this.signerKeyPair.publicKey());
+          const claimableResponse =
+            await this.server.submitTransaction(claimableTransaction);
+          this.logger.debug(claimableResponse);
 
-      // Check the status of the claimable balance transaction
-      const claimableResult = await this.checkTransactionStatus(
-        this.server,
-        claimableHash,
-      );
+          const claimableHash = claimableResponse.hash;
+          this.logger.debug(
+            `Claimable balance transaction hash: ${claimableHash}`,
+          );
 
-      if (!claimableResult.successful) {
-        throw new Error('Claimable balance transaction failed.');
-      }
+          // Check the status of the claimable balance transaction
+          const claimableResult = await this.checkTransactionStatus(
+            this.server,
+            claimableHash,
+          );
 
-      const operationResult = claimableResult.results[0].value() as any;
-      const createClaimableBalanceResult =
-        operationResult.createClaimableBalanceResult();
+          if (!claimableResult.successful) {
+            throw new Error('Claimable balance transaction failed.');
+          }
 
-      let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
+          const operationResult = claimableResult.results[0].value() as any;
+          const createClaimableBalanceResult =
+            operationResult.createClaimableBalanceResult();
 
-      this.logger.debug(
-        `Claimable balance transaction was successful ID: ${balanceId}`,
-      );
+          let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
 
-      const claimableRecord = new ClaimableRecordsEntity();
-      claimableRecord.account = user;
-      claimableRecord.balanceId = balanceId;
-      //here need to set a full amount, not 90%
-      //claimableRecord.amount = amountToLock;
-      claimableRecord.amount = createStakeDto.amount.toString();
-      try{
-        this.logger.debug(
-          `Trying to to save claimableRecord:`,
+          this.logger.debug(
+            `Claimable balance transaction was successful ID: ${balanceId}`,
+          );
+
+          const claimableRecord = new ClaimableRecordsEntity();
+          claimableRecord.account = user;
+          claimableRecord.balanceId = balanceId;
+          //here need to set a full amount, not 90%
+          //claimableRecord.amount = amountToLock;
+          claimableRecord.amount = createStakeDto.amount.toString();
+          try {
+            this.logger.debug(`Trying to to save claimableRecord:`);
+            await claimableRecord.save();
+          } catch (e) {
+            this.logger.debug(`Failed to save claimableRecord: ${e}`);
+          }
+
+          this.logger.debug(
+            `Successfully transferred asset to lp public key: ${this.signerKeyPair.publicKey()}`,
+          );
+
+          await this.checkBalance(this.signerKeyPair.publicKey(), this.blub);
+
+          const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)];
+
+          const amounts = new Map<string, string>();
+          const amountA = Number(BlubAmountForPool.toFixed(7)).toString();
+          const amountB = Number(aquaAmountForPool.toFixed(7)).toString();
+          this.logger.debug(
+            `Starting to add to pool: ${amountA} and ${amountB}`,
+          );
+          amounts.set(assets[0].code, amountA);
+          amounts.set(assets[1].code, amountB);
+
+          //send token to new signer for staking
+          const sourceAccount = await this.server.loadAccount(
+            this.issuerKeypair.publicKey(),
+          );
+          const transaction = new TransactionBuilder(sourceAccount, {
+            fee: BASE_FEE,
+            networkPassphrase: Networks.PUBLIC,
+          })
+            .addOperation(
+              Operation.payment({
+                destination: this.signerKeyPair.publicKey(),
+                asset: this.blub,
+                amount: amountA,
+              }),
+            )
+            .setTimeout(30)
+            .build();
+
+          transaction.sign(this.issuerKeypair);
+
+          const responseOfSendingBlub =
+            await this.server.submitTransaction(transaction);
+
+          this.logger.debug(
+            `Successfully transferred blub asset : ${responseOfSendingBlub}`,
+          );
+
+          await this.sorobanService.depositAQUABlUB(
+            assets,
+            amounts,
+            createStakeDto.senderPublicKey,
+            DepositType.LOCKER,
+          );
+        } catch (err) {
+          console.log(err);
+          this.logger.error(
+            'Error during staking process:',
+            err?.data?.extras || err?.data || err?.message || err,
+          );
+        }
+      } catch (err) {
+        console.log(err);
+        this.logger.error(
+          'Error during staking process:',
+          err?.data?.extras || err?.data || err?.message || err,
         );
-      await claimableRecord.save();
       }
-      catch(e){
-        this.logger.debug(
-          `Failed to save claimableRecord: ${e}`,
-        );
-      }
-
-      this.logger.debug(
-        `Successfully transferred asset to lp public key: ${this.signerKeyPair.publicKey()}`,
-      );
-
-      await this.checkBalance(this.signerKeyPair.publicKey(), this.blub);
-
-      const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)];
-
-      const amounts = new Map<string, string>();
-      const amountA =   Number(BlubAmountForPool.toFixed(7)).toString();
-      const amountB =   Number(aquaAmountForPool.toFixed(7)).toString()
-      this.logger.debug(
-        `Starting to add to pool: ${amountA} and ${amountB}`,
-      );
-      amounts.set(
-        assets[0].code,
-        amountA,
-      );
-      amounts.set(
-        assets[1].code,
-        amountB,
-      );
-
-      //send token to new signer for staking
-      const sourceAccount = await this.server.loadAccount(
-        this.issuerKeypair.publicKey(),
-      );
-      const transaction = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: Networks.PUBLIC,
-      })
-        .addOperation(
-          Operation.payment({
-            destination: this.signerKeyPair.publicKey(),
-            asset: this.blub,
-            amount: amountA,
-          }),
-        )
-        .setTimeout(30)
-        .build();
-
-      transaction.sign(this.issuerKeypair);
-
-      const responseOfSendingBlub =
-      await this.server.submitTransaction(transaction);
-
-      this.logger.debug(
-        `Successfully transferred blub asset : ${responseOfSendingBlub}`,
-      );
-
-
-      await this.sorobanService.depositAQUABlUB(
-        assets,
-        amounts,
-        createStakeDto.senderPublicKey,
-        DepositType.LOCKER,
-      );
     } catch (err) {
       console.log(err);
-      this.logger.error('Error during staking process:', err?.data?.extras || err?.data || err?.message || err);
+      this.logger.error(
+        'Error during staking process:',
+        err?.data?.extras || err?.data || err?.message || err,
+      );
     }
-  }
-  catch(err){
-    console.log(err);
-    this.logger.error('Error during staking process:', err?.data?.extras || err?.data || err?.message || err);
-  }
-}
-catch (err)
-{
-  console.log(err);
-  this.logger.error('Error during staking process:', err?.data?.extras || err?.data || err?.message || err);
-}
   }
 
   async stakeBlub(stakeBlubDto: StakeBlubDto): Promise<void> {
@@ -730,85 +736,84 @@ catch (err)
     let remainingPoolAdjustment = amountToDeductFromPool;
 
     // Adjust claimable records (90%)
-    try{
-    for (const record of user.claimableRecords) {
-      if (
-        record.claimed === CLAIMS.UNCLAIMED &&
-        remainingClaimableAdjustment > 0
-      ) {
-        let recordAmount = parseFloat(record.amount);
-        if (remainingClaimableAdjustment >= recordAmount) {
-          // Fully consume this record
-          remainingClaimableAdjustment -= recordAmount;
-          record.amount = '0.0000000'; // This record is fully used
-          record.claimed = CLAIMS.CLAIMED; // Mark it as claimed
-        } else {
-          // Partially adjust this record
-          record.amount = (recordAmount - remainingClaimableAdjustment).toFixed(
-            7,
-          );
-          remainingClaimableAdjustment = 0;
-          break;
+    try {
+      for (const record of user.claimableRecords) {
+        if (
+          record.claimed === CLAIMS.UNCLAIMED &&
+          remainingClaimableAdjustment > 0
+        ) {
+          let recordAmount = parseFloat(record.amount);
+          if (remainingClaimableAdjustment >= recordAmount) {
+            // Fully consume this record
+            remainingClaimableAdjustment -= recordAmount;
+            record.amount = '0.0000000'; // This record is fully used
+            record.claimed = CLAIMS.CLAIMED; // Mark it as claimed
+          } else {
+            // Partially adjust this record
+            record.amount = (
+              recordAmount - remainingClaimableAdjustment
+            ).toFixed(7);
+            remainingClaimableAdjustment = 0;
+            break;
+          }
         }
       }
-    }
 
-    // Adjust pool amounts (10%)
-    // for (const pool of user.pools) {
-    //   if (pool.claimed === CLAIMS.UNCLAIMED && remainingPoolAdjustment > 0) {
-    //     let poolAmount = parseFloat(pool.assetBAmount);
-    //     if (remainingPoolAdjustment >= poolAmount) {
-    //       // Fully consume this pool amount
-    //       remainingPoolAdjustment -= poolAmount;
-    //       pool.assetBAmount = '0.0000000'; // This pool is fully used
-    //       pool.claimed = CLAIMS.CLAIMED; // Mark it as claimed
-    //     } else {
-    //       // Partially adjust this pool amount
-    //       pool.assetBAmount = (poolAmount - remainingPoolAdjustment).toFixed(7);
-    //       remainingPoolAdjustment = 0;
-    //       break;
-    //     }
-    //   }
-    // }
+      // Adjust pool amounts (10%)
+      // for (const pool of user.pools) {
+      //   if (pool.claimed === CLAIMS.UNCLAIMED && remainingPoolAdjustment > 0) {
+      //     let poolAmount = parseFloat(pool.assetBAmount);
+      //     if (remainingPoolAdjustment >= poolAmount) {
+      //       // Fully consume this pool amount
+      //       remainingPoolAdjustment -= poolAmount;
+      //       pool.assetBAmount = '0.0000000'; // This pool is fully used
+      //       pool.claimed = CLAIMS.CLAIMED; // Mark it as claimed
+      //     } else {
+      //       // Partially adjust this pool amount
+      //       pool.assetBAmount = (poolAmount - remainingPoolAdjustment).toFixed(7);
+      //       remainingPoolAdjustment = 0;
+      //       break;
+      //     }
+      //   }
+      // }
 
-    // Final check to ensure all adjustments were made
-    // if (remainingClaimableAdjustment > 0 || remainingPoolAdjustment > 0) {
-    //   throw new HttpException(
-    //     'Unable to adjust all amounts',
-    //     HttpStatus.INTERNAL_SERVER_ERROR,
-    //   );
-    // }
+      // Final check to ensure all adjustments were made
+      // if (remainingClaimableAdjustment > 0 || remainingPoolAdjustment > 0) {
+      //   throw new HttpException(
+      //     'Unable to adjust all amounts',
+      //     HttpStatus.INTERNAL_SERVER_ERROR,
+      //   );
+      // }
 
-    console.log(remainingClaimableAdjustment);
+      console.log(remainingClaimableAdjustment);
       if (remainingClaimableAdjustment > 0) {
-      throw new HttpException(
-        'Unable to adjust all amounts',
-        HttpStatus.INTERNAL_SERVER_ERROR,
+        throw new HttpException(
+          'Unable to adjust all amounts',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      // Save the adjusted claimable records and pools
+      await this.claimableRecords.save(user.claimableRecords);
+      await this.poolRepository.save(user.pools);
+
+      await this.claimableRecords.save(user.claimableRecords);
+      await this.poolRepository.save(user.pools);
+
+      await this.transferAsset(
+        this.issuerKeypair,
+        unlockAquaDto.senderPublicKey,
+        `${amountToUnstake}`,
+        this.blub,
       );
+
+      this.logger.debug(
+        `Successfully sent: ${amountToUnstake} to ${unlockAquaDto.senderPublicKey}`,
+      );
+    } catch (e) {
+      console.log(e);
+      throw e;
     }
-
-    // Save the adjusted claimable records and pools
-    await this.claimableRecords.save(user.claimableRecords);
-    await this.poolRepository.save(user.pools);
-
-    await this.claimableRecords.save(user.claimableRecords);
-    await this.poolRepository.save(user.pools);
-
-    await this.transferAsset(
-      this.issuerKeypair,
-      unlockAquaDto.senderPublicKey,
-      `${amountToUnstake}`,
-      this.blub,
-    );
-
-    this.logger.debug(
-      `Successfully sent: ${amountToUnstake} to ${unlockAquaDto.senderPublicKey}`,
-    );
-  }
-  catch(e){
-    console.log(e);
-    throw e;
-  }
   }
 
   // @Cron('0 7 */7 * *')

@@ -203,38 +203,38 @@ export class SorobanService {
       );
       // ommiting succesful check, as it might be infinite pool
       //if (result.successful) {
-        const user = await this.userRepository.findOneBy({
-          account: senderPublicKey,
-        });
-        const poolRecord = new PoolsEntity();
-        poolRecord.account = user;
-        poolRecord.assetA = assets[1];
-        poolRecord.assetB = assets[0];
-        poolRecord.assetAAmount = amounts.get(assets[1].code);
-        poolRecord.assetBAmount = amounts.get(assets[0].code);
-        poolRecord.poolHash = poolsForAsset[0][0];
-        poolRecord.txnHash = mainTx.hash;
-        poolRecord.senderPublicKey = senderPublicKey;
-        poolRecord.depositType = depositType;
-        const newPoolRecord = await poolRecord.save();
-        this.logger.debug(
-          `saved txn for ${assets[0].code} and ${assets[1].code}`,
-        );
-        //store the balance for account
-        const newBalanceRecord = new LpBalanceEntity();
-        newBalanceRecord.account = user;
-        newBalanceRecord.pool = newPoolRecord;
-        newBalanceRecord.assetA = assets[0];
-        newBalanceRecord.assetB = assets[1];
-        newBalanceRecord.assetAAmount = amounts.get(assets[0].code);
-        newBalanceRecord.assetBAmount = amounts.get(assets[1].code);
-        newBalanceRecord.depositType = depositType;
-        newBalanceRecord.senderPublicKey = senderPublicKey;
-        await newBalanceRecord
-          .save()
-          .then(() => this.logger.log(`Saved new balance record`));
-      }
-   // }
+      const user = await this.userRepository.findOneBy({
+        account: senderPublicKey,
+      });
+      const poolRecord = new PoolsEntity();
+      poolRecord.account = user;
+      poolRecord.assetA = assets[1];
+      poolRecord.assetB = assets[0];
+      poolRecord.assetAAmount = amounts.get(assets[1].code);
+      poolRecord.assetBAmount = amounts.get(assets[0].code);
+      poolRecord.poolHash = poolsForAsset[0][0];
+      poolRecord.txnHash = mainTx.hash;
+      poolRecord.senderPublicKey = senderPublicKey;
+      poolRecord.depositType = depositType;
+      const newPoolRecord = await poolRecord.save();
+      this.logger.debug(
+        `saved txn for ${assets[0].code} and ${assets[1].code}`,
+      );
+      //store the balance for account
+      const newBalanceRecord = new LpBalanceEntity();
+      newBalanceRecord.account = user;
+      newBalanceRecord.pool = newPoolRecord;
+      newBalanceRecord.assetA = assets[0];
+      newBalanceRecord.assetB = assets[1];
+      newBalanceRecord.assetAAmount = amounts.get(assets[0].code);
+      newBalanceRecord.assetBAmount = amounts.get(assets[1].code);
+      newBalanceRecord.depositType = depositType;
+      newBalanceRecord.senderPublicKey = senderPublicKey;
+      await newBalanceRecord
+        .save()
+        .then(() => this.logger.log(`Saved new balance record`));
+    }
+    // }
   }
 
   async addLiquidityTxn(createAddLiquidityDto: CreateAddLiquidityDto) {
@@ -973,11 +973,11 @@ export class SorobanService {
     returnValue: any;
   }> {
     let attemts = 0;
-    while (true || attemts<5) {
+    while (true || attemts < 5) {
       try {
         attemts++;
         const transactionResult = await server.getTransaction(hash);
-      
+
         if (transactionResult.status === 'SUCCESS') {
           console.log('Transaction success:', transactionResult.status);
           let resultXdr = transactionResult.resultXdr;
@@ -1032,4 +1032,4 @@ export class SorobanService {
   }
 }
 
-export const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
