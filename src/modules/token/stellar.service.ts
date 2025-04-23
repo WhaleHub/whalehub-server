@@ -342,10 +342,25 @@ export class StellarService {
         }
       } catch (err) {
         console.log(err);
-        this.logger.error(
-          'Error during staking process:',
-          err?.data?.extras || err?.data || err?.message || err,
-        );
+        if (err.response && err.response.data) {
+          const errorData = err.response.data;
+          
+          if (errorData.extras) {
+            this.logger.error('Error during staking process:', JSON.stringify(errorData.extras, null, 2));
+            
+            if (errorData.extras.result_codes) {
+              console.error("Transaction result code:", errorData.extras.result_codes.transaction);
+              if (errorData.extras.result_codes.operations) {
+                console.error("Operation result codes:", errorData.extras.result_codes.operations);
+              }
+            }
+          }
+        }  else {
+          this.logger.error(
+            'Error during staking process:',
+            err?.data?.extras || err?.data || err?.message || err,
+          );
+        }
       }
     } catch (err) {
       console.log(err);
