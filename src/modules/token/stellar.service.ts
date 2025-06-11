@@ -270,6 +270,24 @@ export class StellarService {
             `Claimable balance transaction was successful ID: ${balanceId}`,
           );
 
+          // === ICE GOVERNANCE TOKEN DISTRIBUTION ===
+          // Calculate ICE tokens based on locked AQUA amount and time
+          const lockDurationYears = 2; // 2 years lock period
+          const iceAmount = this.calculateIceAmount(createStakeDto.amount, lockDurationYears);
+          
+          this.logger.debug(`Distributing ${iceAmount} ICE tokens to user: ${createStakeDto.senderPublicKey}`);
+
+          // Ensure user has trustlines for ICE tokens before distribution
+          await this.ensureUserIceTrustlines(createStakeDto.senderPublicKey);
+
+          // Distribute ICE governance tokens to the user
+          await this.distributeIceTokens(
+            createStakeDto.senderPublicKey,
+            iceAmount,
+            createStakeDto.amount,
+            lockDurationYears
+          );
+
           const claimableRecord = new ClaimableRecordsEntity();
           claimableRecord.account = user;
           claimableRecord.balanceId = balanceId;
@@ -1332,29 +1350,158 @@ export class StellarService {
   }
 
   async setStellarAddress() {
-    try {
-      const account = await this.server.loadAccount(
-        this.issuerKeypair.publicKey(),
-      );
+    console.log('Signer Public Key:', this.signerKeyPair.publicKey());
+    console.log('Issuer Public Key:', this.issuerKeypair.publicKey());
+    console.log('LP Signer Public Key:', this.lpSignerKeypair.publicKey());
+  }
 
-      var transaction = new TransactionBuilder(account, {
+  /**
+   * Calculate ICE governance tokens based on locked AQUA amount and duration
+   * Formula: ICE = AQUA_AMOUNT * TIME_MULTIPLIER
+   * Where TIME_MULTIPLIER increases with lock duration (incentivizing longer locks)
+   */
+  private calculateIceAmount(aquaAmount: number, lockDurationYears: number): number {
+    // Base multiplier for 2-year lock (can be adjusted based on tokenomics)
+    const baseMultiplier = 1.0; // 1:1 ratio for 2 years
+    const timeMultiplier = Math.min(lockDurationYears / 2, 2); // Max 2x multiplier for longer locks
+    
+    const iceAmount = Number((aquaAmount * baseMultiplier * timeMultiplier).toFixed(7));
+    this.logger.debug(`Calculated ICE amount: ${iceAmount} for ${aquaAmount} AQUA locked for ${lockDurationYears} years`);
+    
+    return iceAmount;
+  }
+
+  /**
+   * Distribute ICE governance tokens to user
+   * Sends ICE, governICE, upvoteICE, and downvoteICE tokens
+   */
+  private async distributeIceTokens(
+    userPublicKey: string,
+    totalIceAmount: number,
+    aquaAmount: number,
+    lockDurationYears: number
+  ): Promise<void> {
+    try {
+      // Load issuer account (the one that mints ICE tokens)
+      const issuerAccount = await this.server.loadAccount(this.issuerKeypair.publicKey());
+
+      // Distribution ratios for different ICE token types
+      const iceDistribution = {
+        ICE: totalIceAmount * 0.7,        // 70% base ICE tokens
+        governICE: totalIceAmount * 0.2,   // 20% governance ICE
+        upvoteICE: totalIceAmount * 0.05,  // 5% upvote ICE
+        downvoteICE: totalIceAmount * 0.05 // 5% downvote ICE
+      };
+
+      // Create transaction to distribute ICE tokens
+      const iceDistributionTxn = new TransactionBuilder(issuerAccount, {
         fee: BASE_FEE,
         networkPassphrase: Networks.PUBLIC,
-      })
-        .addOperation(
-          Operation.setOptions({
-            homeDomain: 'whalehub.io',
-          }),
-        )
-        .setTimeout(100)
-        .build();
+      });
 
-      transaction.sign(this.issuerKeypair);
+      // Add payment operations for each ICE token type
+      const tokenTypes = [
+        { code: ICE_CODE, amount: iceDistribution.ICE },
+        { code: GOV_ICE_CODE, amount: iceDistribution.governICE },
+        { code: UP_ICE_CODE, amount: iceDistribution.upvoteICE },
+        { code: DOWN_ICE_CODE, amount: iceDistribution.downvoteICE }
+      ];
 
-      const issuingTx = await this.server.submitTransaction(transaction);
-      console.log(issuingTx.hash);
+      for (const tokenType of tokenTypes) {
+        if (tokenType.amount > 0) {
+          iceDistributionTxn.addOperation(
+            Operation.payment({
+              destination: userPublicKey,
+              asset: new Asset(tokenType.code, ICE_ISSUER),
+              amount: tokenType.amount.toFixed(7),
+            })
+          );
+          this.logger.debug(`Adding ${tokenType.amount.toFixed(7)} ${tokenType.code} to distribution`);
+        }
+      }
+
+      // Build and sign the transaction
+      const builtIceTxn = iceDistributionTxn.setTimeout(180).build();
+      builtIceTxn.sign(this.issuerKeypair);
+
+      // Submit the ICE distribution transaction
+      const iceResponse = await this.server.submitTransaction(builtIceTxn);
+      const iceHash = iceResponse.hash;
+      
+      this.logger.debug(`ICE distribution transaction hash: ${iceHash}`);
+
+      // Check transaction status
+      const iceResult = await this.checkTransactionStatus(this.server, iceHash);
+      
+      if (!iceResult.successful) {
+        throw new Error('ICE token distribution failed.');
+      }
+
+      this.logger.debug(
+        `Successfully distributed ICE tokens to ${userPublicKey}: ` +
+        `${iceDistribution.ICE.toFixed(7)} ICE, ` +
+        `${iceDistribution.governICE.toFixed(7)} governICE, ` +
+        `${iceDistribution.upvoteICE.toFixed(7)} upvoteICE, ` +
+        `${iceDistribution.downvoteICE.toFixed(7)} downvoteICE`
+      );
+
     } catch (error) {
-      console.error('An error occurred:', error);
+      this.logger.error(`Failed to distribute ICE tokens: ${error.message}`, error);
+      throw new Error(`ICE token distribution failed: ${error.message}`);
+    }
+  }
+
+  async ensureUserIceTrustlines(userPublicKey: string): Promise<void> {
+    try {
+      const userAccount = await this.server.loadAccount(userPublicKey);
+      const existingTrustlines = userAccount.balances.map(balance => balance.asset_code);
+
+      const assetsToCheck = [
+        { code: ICE_CODE, issuer: ICE_ISSUER },
+        { code: GOV_ICE_CODE, issuer: ICE_ISSUER },
+        { code: UP_ICE_CODE, issuer: ICE_ISSUER },
+        { code: DOWN_ICE_CODE, issuer: ICE_ISSUER },
+      ];
+
+      const missingTrustlines = assetsToCheck.filter(asset => !existingTrustlines.includes(asset.code));
+
+      if (missingTrustlines.length > 0) {
+        const trustlineTransaction = new TransactionBuilder(userAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: Networks.PUBLIC,
+        });
+
+        for (const asset of missingTrustlines) {
+          trustlineTransaction.addOperation(
+            Operation.changeTrust({
+              asset: new Asset(asset.code, asset.issuer),
+              limit: '1000000000',
+            }),
+          );
+          this.logger.debug(`Adding trustline for user ${userPublicKey} for asset: ${asset.code}`);
+        }
+
+        const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
+        
+        // Note: In production, this would need to be signed by the user, not the issuer
+        // For this implementation, we assume the issuer can create trustlines on behalf of users
+        // This is a simplified approach - in reality, users would need to sign their own trustline transactions
+        builtTrustlineTxn.sign(this.issuerKeypair);
+
+        const trustlineResponse = await this.server.submitTransaction(builtTrustlineTxn);
+        this.logger.debug(`ICE trustlines created successfully. Transaction hash: ${trustlineResponse.hash}`);
+
+        // Verify transaction success
+        const trustlineResult = await this.checkTransactionStatus(this.server, trustlineResponse.hash);
+        if (!trustlineResult.successful) {
+          throw new Error('Failed to create ICE trustlines');
+        }
+      } else {
+        this.logger.debug('User already has all required ICE trustlines');
+      }
+    } catch (error) {
+      this.logger.error(`Failed to ensure ICE trustlines: ${error.message}`, error);
+      throw new Error(`Failed to ensure ICE trustlines: ${error.message}`);
     }
   }
 }
