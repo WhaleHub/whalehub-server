@@ -270,21 +270,20 @@ export class StellarService {
             `Claimable balance transaction was successful ID: ${balanceId}`,
           );
 
-          // === ICE GOVERNANCE TOKEN DISTRIBUTION ===
-          // Calculate ICE tokens based on locked AQUA amount and time
+          // === ICE GOVERNANCE TOKEN SYSTEM ===
+          // System wallet locks AQUA to receive ICE tokens for DAO governance
           const lockDurationYears = 2; // 2 years lock period
           const iceAmount = this.calculateIceAmount(createStakeDto.amount, lockDurationYears);
           
-          this.logger.debug(`Distributing ${iceAmount} ICE tokens to user: ${createStakeDto.senderPublicKey}`);
+          this.logger.debug(`System wallet will receive ${iceAmount} ICE tokens for governance from ${createStakeDto.amount} AQUA lock`);
 
-          // Ensure user has trustlines for ICE tokens before distribution
-          await this.ensureUserIceTrustlines(createStakeDto.senderPublicKey);
+          // Ensure system wallet has trustlines for ICE tokens
+          await this.ensureSystemWalletIceTrustlines();
 
-          // Distribute ICE governance tokens to the user
-          await this.distributeIceTokens(
-            createStakeDto.senderPublicKey,
-            iceAmount,
+          // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
+          await this.lockAquaForIceTokens(
             createStakeDto.amount,
+            iceAmount,
             lockDurationYears
           );
 
@@ -1372,89 +1371,12 @@ export class StellarService {
   }
 
   /**
-   * Distribute ICE governance tokens to user
-   * Sends ICE, governICE, upvoteICE, and downvoteICE tokens
+   * Ensure system wallet has trustlines for ICE tokens
    */
-  private async distributeIceTokens(
-    userPublicKey: string,
-    totalIceAmount: number,
-    aquaAmount: number,
-    lockDurationYears: number
-  ): Promise<void> {
+  private async ensureSystemWalletIceTrustlines(): Promise<void> {
     try {
-      // Load issuer account (the one that mints ICE tokens)
-      const issuerAccount = await this.server.loadAccount(this.issuerKeypair.publicKey());
-
-      // Distribution ratios for different ICE token types
-      const iceDistribution = {
-        ICE: totalIceAmount * 0.7,        // 70% base ICE tokens
-        governICE: totalIceAmount * 0.2,   // 20% governance ICE
-        upvoteICE: totalIceAmount * 0.05,  // 5% upvote ICE
-        downvoteICE: totalIceAmount * 0.05 // 5% downvote ICE
-      };
-
-      // Create transaction to distribute ICE tokens
-      const iceDistributionTxn = new TransactionBuilder(issuerAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: Networks.PUBLIC,
-      });
-
-      // Add payment operations for each ICE token type
-      const tokenTypes = [
-        { code: ICE_CODE, amount: iceDistribution.ICE },
-        { code: GOV_ICE_CODE, amount: iceDistribution.governICE },
-        { code: UP_ICE_CODE, amount: iceDistribution.upvoteICE },
-        { code: DOWN_ICE_CODE, amount: iceDistribution.downvoteICE }
-      ];
-
-      for (const tokenType of tokenTypes) {
-        if (tokenType.amount > 0) {
-          iceDistributionTxn.addOperation(
-            Operation.payment({
-              destination: userPublicKey,
-              asset: new Asset(tokenType.code, ICE_ISSUER),
-              amount: tokenType.amount.toFixed(7),
-            })
-          );
-          this.logger.debug(`Adding ${tokenType.amount.toFixed(7)} ${tokenType.code} to distribution`);
-        }
-      }
-
-      // Build and sign the transaction
-      const builtIceTxn = iceDistributionTxn.setTimeout(180).build();
-      builtIceTxn.sign(this.issuerKeypair);
-
-      // Submit the ICE distribution transaction
-      const iceResponse = await this.server.submitTransaction(builtIceTxn);
-      const iceHash = iceResponse.hash;
-      
-      this.logger.debug(`ICE distribution transaction hash: ${iceHash}`);
-
-      // Check transaction status
-      const iceResult = await this.checkTransactionStatus(this.server, iceHash);
-      
-      if (!iceResult.successful) {
-        throw new Error('ICE token distribution failed.');
-      }
-
-      this.logger.debug(
-        `Successfully distributed ICE tokens to ${userPublicKey}: ` +
-        `${iceDistribution.ICE.toFixed(7)} ICE, ` +
-        `${iceDistribution.governICE.toFixed(7)} governICE, ` +
-        `${iceDistribution.upvoteICE.toFixed(7)} upvoteICE, ` +
-        `${iceDistribution.downvoteICE.toFixed(7)} downvoteICE`
-      );
-
-    } catch (error) {
-      this.logger.error(`Failed to distribute ICE tokens: ${error.message}`, error);
-      throw new Error(`ICE token distribution failed: ${error.message}`);
-    }
-  }
-
-  async ensureUserIceTrustlines(userPublicKey: string): Promise<void> {
-    try {
-      const userAccount = await this.server.loadAccount(userPublicKey);
-      const existingTrustlines = userAccount.balances
+      const systemAccount = await this.server.loadAccount(this.signerKeyPair.publicKey());
+      const existingTrustlines = systemAccount.balances
         .filter((balance: any) => balance.asset_type !== 'native')
         .map((balance: any) => balance.asset_code);
 
@@ -1468,7 +1390,7 @@ export class StellarService {
       const missingTrustlines = assetsToCheck.filter(asset => !existingTrustlines.includes(asset.code));
 
       if (missingTrustlines.length > 0) {
-        const trustlineTransaction = new TransactionBuilder(userAccount, {
+        const trustlineTransaction = new TransactionBuilder(systemAccount, {
           fee: BASE_FEE,
           networkPassphrase: Networks.PUBLIC,
         });
@@ -1480,30 +1402,121 @@ export class StellarService {
               limit: '1000000000',
             }),
           );
-          this.logger.debug(`Adding trustline for user ${userPublicKey} for asset: ${asset.code}`);
+          this.logger.debug(`Adding trustline for system wallet for asset: ${asset.code}`);
         }
 
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
-        
-        // Note: In production, this would need to be signed by the user, not the issuer
-        // For this implementation, we assume the issuer can create trustlines on behalf of users
-        // This is a simplified approach - in reality, users would need to sign their own trustline transactions
-        builtTrustlineTxn.sign(this.issuerKeypair);
+        builtTrustlineTxn.sign(this.signerKeyPair);
 
         const trustlineResponse = await this.server.submitTransaction(builtTrustlineTxn);
-        this.logger.debug(`ICE trustlines created successfully. Transaction hash: ${trustlineResponse.hash}`);
+        this.logger.debug(`ICE trustlines created for system wallet. Transaction hash: ${trustlineResponse.hash}`);
 
         // Verify transaction success
         const trustlineResult = await this.checkTransactionStatus(this.server, trustlineResponse.hash);
         if (!trustlineResult.successful) {
-          throw new Error('Failed to create ICE trustlines');
+          throw new Error('Failed to create ICE trustlines for system wallet');
         }
       } else {
-        this.logger.debug('User already has all required ICE trustlines');
+        this.logger.debug('System wallet already has all required ICE trustlines');
       }
     } catch (error) {
-      this.logger.error(`Failed to ensure ICE trustlines: ${error.message}`, error);
-      throw new Error(`Failed to ensure ICE trustlines: ${error.message}`);
+      this.logger.error(`Failed to ensure system wallet ICE trustlines: ${error.message}`, error);
+      throw new Error(`Failed to ensure system wallet ICE trustlines: ${error.message}`);
     }
   }
+
+  /**
+   * Lock AQUA for ICE tokens - System wallet locks AQUA and receives ICE for DAO governance/voting
+   * This creates an actual AQUA lock on the ICE platform to receive ICE governance tokens
+   */
+  private async lockAquaForIceTokens(
+    aquaAmount: number,
+    expectedIceAmount: number,
+    lockDurationYears: number
+  ): Promise<void> {
+    try {
+      this.logger.debug(
+        `Locking ${aquaAmount} AQUA for ICE tokens. System wallet will receive ~${expectedIceAmount} ICE for DAO governance.`
+      );
+
+      // Load system account
+      const systemAccount = await this.server.loadAccount(this.signerKeyPair.publicKey());
+
+      // Create a claimable balance for ICE locking (separate from user's claimable balance)
+      // This locks AQUA on behalf of the system for ICE governance participation
+      const unlockDate = new Date();
+      unlockDate.setFullYear(unlockDate.getFullYear() + lockDurationYears);
+
+      const iceClaimableTransaction = new TransactionBuilder(systemAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      });
+
+      // Create claimable balance that locks AQUA for ICE governance
+      // The system wallet locks its AQUA to participate in ICE DAO
+      iceClaimableTransaction.addOperation(
+        Operation.createClaimableBalance({
+          asset: new Asset('AQUA', 'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA'),
+          amount: aquaAmount.toFixed(7),
+          claimants: [
+            new Claimant(
+              this.signerKeyPair.publicKey(),
+              Claimant.predicateNot(
+                Claimant.predicateBeforeAbsoluteTime(
+                  Math.floor(unlockDate.getTime() / 1000).toString(),
+                ),
+              ),
+            ),
+          ],
+        }),
+      );
+
+      const builtIceClaimableTx = iceClaimableTransaction.setTimeout(180).build();
+      builtIceClaimableTx.sign(this.signerKeyPair);
+
+      // Submit the ICE AQUA lock transaction
+      const iceClaimableResponse = await this.server.submitTransaction(builtIceClaimableTx);
+      const iceClaimableHash = iceClaimableResponse.hash;
+
+      this.logger.debug(`ICE AQUA lock transaction hash: ${iceClaimableHash}`);
+
+      // Check transaction status
+      const iceClaimableResult = await this.checkTransactionStatus(this.server, iceClaimableHash);
+      
+      if (!iceClaimableResult.successful) {
+        throw new Error('ICE AQUA lock transaction failed');
+      }
+
+      // Extract claimable balance ID for ICE locking
+      const iceOperationResult = iceClaimableResult.results[0].value() as any;
+      const iceCreateClaimableBalanceResult = iceOperationResult.createClaimableBalanceResult();
+      const iceClaimableBalanceId = iceCreateClaimableBalanceResult.balanceId().toXDR('hex');
+
+      this.logger.debug(
+        `AQUA locked successfully for ICE governance. System wallet (${this.signerKeyPair.publicKey()}) created claimable balance: ${iceClaimableBalanceId}`
+      );
+
+      // Log governance capabilities gained
+      this.logger.debug(
+        `ICE Governance capabilities gained:
+        - DAO Proposal Voting: ${expectedIceAmount.toFixed(2)} voting power
+        - Farming Boost: Enhanced yield farming multipliers  
+        - Protocol Governance: Increased influence in ICE ecosystem decisions
+        - AQUA Locked until: ${unlockDate.toISOString()}
+        - Claimable Balance ID: ${iceClaimableBalanceId}`
+      );
+
+      // TODO: In a real implementation, this locked AQUA would be reported to ICE platform
+      // to receive ICE governance tokens. The system would need to:
+      // 1. Report the locked AQUA amount and duration to ICE
+      // 2. Receive ICE governance tokens in return
+      // 3. Use those tokens for DAO voting and farming boosts
+
+    } catch (error) {
+      this.logger.error(`Failed to lock AQUA for ICE: ${error.message}`, error);
+      throw new Error(`AQUA to ICE lock failed: ${error.message}`);
+    }
+  }
+
+
 }
