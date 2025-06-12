@@ -1435,8 +1435,11 @@ export class StellarService {
     lockDurationYears: number
   ): Promise<void> {
     try {
+      const aquaAmountNum = Number(aquaAmount);
+      const expectedIceAmountNum = Number(expectedIceAmount);
+      
       this.logger.debug(
-        `Locking ${aquaAmount} AQUA for ICE tokens. System wallet will receive ~${expectedIceAmount} ICE for DAO governance.`
+        `Locking ${aquaAmountNum} AQUA for ICE tokens. System wallet will receive ~${expectedIceAmountNum} ICE for DAO governance.`
       );
 
       // Load system account
@@ -1457,7 +1460,7 @@ export class StellarService {
       iceClaimableTransaction.addOperation(
         Operation.createClaimableBalance({
           asset: new Asset('AQUA', 'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA'),
-          amount: aquaAmount.toFixed(7),
+          amount: aquaAmountNum.toFixed(7),
           claimants: [
             new Claimant(
               this.signerKeyPair.publicKey(),
@@ -1499,7 +1502,7 @@ export class StellarService {
       // Log governance capabilities gained
       this.logger.debug(
         `ICE Governance capabilities gained:
-        - DAO Proposal Voting: ${expectedIceAmount.toFixed(2)} voting power
+        - DAO Proposal Voting: ${expectedIceAmountNum.toFixed(2)} voting power
         - Farming Boost: Enhanced yield farming multipliers  
         - Protocol Governance: Increased influence in ICE ecosystem decisions
         - AQUA Locked until: ${unlockDate.toISOString()}
