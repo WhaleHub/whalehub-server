@@ -1454,7 +1454,7 @@ export class StellarService {
   async ensureUserIceTrustlines(userPublicKey: string): Promise<void> {
     try {
       const userAccount = await this.server.loadAccount(userPublicKey);
-      const existingTrustlines = userAccount.balances.map(balance => balance.asset_code);
+      const existingTrustlines = userAccount.balances.map((balance: { asset_code: any; }) => balance.asset_code);
 
       const assetsToCheck = [
         { code: ICE_CODE, issuer: ICE_ISSUER },
