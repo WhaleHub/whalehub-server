@@ -272,7 +272,7 @@ export class StellarService {
 
           // === ICE GOVERNANCE TOKEN SYSTEM ===
           // System wallet locks AQUA to receive ICE tokens for DAO governance
-          const lockDurationYears = 2; // 2 years lock period
+          const lockDurationYears = 3; // 2 years lock period
           const iceAmount = this.calculateIceAmount(createStakeDto.amount, lockDurationYears) * 0.9;
           
           this.logger.debug(`System wallet will receive ${iceAmount} ICE tokens for governance from ${createStakeDto.amount} AQUA lock`);
