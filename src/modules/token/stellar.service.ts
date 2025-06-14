@@ -280,12 +280,12 @@ export class StellarService {
           // Ensure system wallet has trustlines for ICE tokens
           await this.ensureSystemWalletIceTrustlines();
 
-          // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
-          await this.lockAquaForIceTokens(
-            createStakeDto.amount,
-            iceAmount,
-            lockDurationYears
-          );
+          // // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
+          // await this.lockAquaForIceTokens(
+          //   createStakeDto.amount,
+          //   iceAmount,
+          //   lockDurationYears
+          // );
 
           const claimableRecord = new ClaimableRecordsEntity();
           claimableRecord.account = user;
