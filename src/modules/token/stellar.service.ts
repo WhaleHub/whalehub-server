@@ -282,7 +282,7 @@ export class StellarService {
 
           // // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
           let balanceId = await this.lockAquaForIceTokens(
-            createStakeDto.amount,
+            createStakeDto.amount*0.9,
             iceAmount,
             lockDurationYears
           );
