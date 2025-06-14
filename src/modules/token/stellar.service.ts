@@ -215,60 +215,60 @@ export class StellarService {
         const unlockTime =
           Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; //2 years
 
-        const claimableTransaction = new TransactionBuilder(signerAccount, {
-          fee: BASE_FEE,
-          networkPassphrase: Networks.PUBLIC,
-        })
-          .addOperation(
-            Operation.createClaimableBalance({
-              claimants: [
-                new Claimant(
-                  signerAccount.accountId(),
-                  Claimant.predicateAnd(
-                    Claimant.predicateNot(Claimant.predicateUnconditional()),
-                    Claimant.predicateBeforeAbsoluteTime(unlockTime.toString()),
-                  ),
-                ),
-              ],
-              asset: new Asset(AQUA_CODE, AQUA_ISSUER),
-              amount: `${amountToLock}`,
-            }),
-          )
-          .setTimeout(5000)
-          .build();
+        // const claimableTransaction = new TransactionBuilder(signerAccount, {
+        //   fee: BASE_FEE,
+        //   networkPassphrase: Networks.PUBLIC,
+        // })
+        //   .addOperation(
+        //     Operation.createClaimableBalance({
+        //       claimants: [
+        //         new Claimant(
+        //           signerAccount.accountId(),
+        //           Claimant.predicateAnd(
+        //             Claimant.predicateNot(Claimant.predicateUnconditional()),
+        //             Claimant.predicateBeforeAbsoluteTime(unlockTime.toString()),
+        //           ),
+        //         ),
+        //       ],
+        //       asset: new Asset(AQUA_CODE, AQUA_ISSUER),
+        //       amount: `${amountToLock}`,
+        //     }),
+        //   )
+        //   .setTimeout(5000)
+        //   .build();
 
-        claimableTransaction.sign(this.signerKeyPair);
+        // claimableTransaction.sign(this.signerKeyPair);
         try {
-          this.logger.debug(`starting to deposit`);
-          this.logger.debug(this.signerKeyPair.publicKey());
-          const claimableResponse =
-            await this.server.submitTransaction(claimableTransaction);
-          this.logger.debug(claimableResponse);
+          // this.logger.debug(`starting to deposit`);
+          // this.logger.debug(this.signerKeyPair.publicKey());
+          // const claimableResponse =
+          //   await this.server.submitTransaction(claimableTransaction);
+          // this.logger.debug(claimableResponse);
 
-          const claimableHash = claimableResponse.hash;
-          this.logger.debug(
-            `Claimable balance transaction hash: ${claimableHash}`,
-          );
+          // const claimableHash = claimableResponse.hash;
+          // this.logger.debug(
+          //   `Claimable balance transaction hash: ${claimableHash}`,
+          // );
 
-          // Check the status of the claimable balance transaction
-          const claimableResult = await this.checkTransactionStatus(
-            this.server,
-            claimableHash,
-          );
+          // // Check the status of the claimable balance transaction
+          // const claimableResult = await this.checkTransactionStatus(
+          //   this.server,
+          //   claimableHash,
+          // );
 
-          if (!claimableResult.successful) {
-            throw new Error('Claimable balance transaction failed.');
-          }
+          // if (!claimableResult.successful) {
+          //   throw new Error('Claimable balance transaction failed.');
+          // }
 
-          const operationResult = claimableResult.results[0].value() as any;
-          const createClaimableBalanceResult =
-            operationResult.createClaimableBalanceResult();
+          // const operationResult = claimableResult.results[0].value() as any;
+          // const createClaimableBalanceResult =
+          //   operationResult.createClaimableBalanceResult();
 
-          let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
+          // let balanceId = createClaimableBalanceResult.balanceId().toXDR('hex');
 
-          this.logger.debug(
-            `Claimable balance transaction was successful ID: ${balanceId}`,
-          );
+          // this.logger.debug(
+          //   `Claimable balance transaction was successful ID: ${balanceId}`,
+          // );
 
           // === ICE GOVERNANCE TOKEN SYSTEM ===
           // System wallet locks AQUA to receive ICE tokens for DAO governance
@@ -281,11 +281,11 @@ export class StellarService {
           await this.ensureSystemWalletIceTrustlines();
 
           // // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
-          // await this.lockAquaForIceTokens(
-          //   createStakeDto.amount,
-          //   iceAmount,
-          //   lockDurationYears
-          // );
+          let balanceId = await this.lockAquaForIceTokens(
+            createStakeDto.amount,
+            iceAmount,
+            lockDurationYears
+          );
 
           const claimableRecord = new ClaimableRecordsEntity();
           claimableRecord.account = user;
@@ -1435,7 +1435,7 @@ export class StellarService {
     aquaAmount: number,
     expectedIceAmount: number,
     lockDurationYears: number
-  ): Promise<void> {
+  ): Promise<string> {
     try {
       const aquaAmountNum = Number(aquaAmount);
       const expectedIceAmountNum = Number(expectedIceAmount);
@@ -1516,6 +1516,7 @@ export class StellarService {
       // 1. Report the locked AQUA amount and duration to ICE
       // 2. Receive ICE governance tokens in return
       // 3. Use those tokens for DAO voting and farming boosts
+      return iceClaimableBalanceId;
 
     } catch (error) {
       this.logger.error(`Failed to lock AQUA for ICE: ${error.message}`, error);
