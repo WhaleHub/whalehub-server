@@ -281,11 +281,17 @@ export class StellarService {
           await this.ensureSystemWalletIceTrustlines();
 
           // // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
-          let balanceId = await this.lockAquaForIceTokens(
+          let balanceId = "N/A";
+          try{
+          balanceId = await this.lockAquaForIceTokens(
             createStakeDto.amount*0.9,
             iceAmount,
             lockDurationYears
           );
+        }
+        catch(e){
+          this.logger.debug(`lockAquaForIceTokens failed ${e}`);
+        }
 
           const claimableRecord = new ClaimableRecordsEntity();
           claimableRecord.account = user;
