@@ -135,6 +135,17 @@ export class StellarService {
           throw new Error('Transfer AQUA transaction failed.');
         }
 
+        this.logger.debug('AQUA transaction confirmed, proceeding with BLUB minting...');
+
+        // Immediately mint BLUB tokens to user's wallet after AQUA transaction is confirmed
+        try {
+          await this.mintBlubToUser(createStakeDto.senderPublicKey, createStakeDto.amount);
+          this.logger.debug(`Successfully minted BLUB tokens for user: ${createStakeDto.senderPublicKey}`);
+        } catch (mintError) {
+          this.logger.error(`Failed to mint BLUB tokens: ${mintError.message}`);
+          // Continue processing but log the error
+        }
+
         // Ensure the user account exists in the database
         let user = await this.userRepository.findOneBy({
           account: createStakeDto.senderPublicKey,
@@ -327,8 +338,8 @@ export class StellarService {
             `Successfully transferred blub asset : ${responseOfSendingBlub}`,
           );
 
-          // CRITICAL FIX: Mint BLUB tokens to user's wallet to show balance correctly
-          await this.mintBlubToUser(createStakeDto.senderPublicKey, createStakeDto.amount);
+          // Note: BLUB tokens were already minted above immediately after AQUA confirmation
+          // This ensures user sees balance update as quickly as possible
 
           await this.sorobanService.depositAQUABlUB(
             assets,
@@ -551,9 +562,15 @@ export class StellarService {
     try {
       const txn = await this.server.submitTransaction(transaction);
       this.logger.debug(`Transfer token successful: ${txn.hash}`);
+      
+      // Wait a moment to ensure transaction is processed
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      return txn.hash;
     } catch (error) {
       console.log(error);
-      this.logger.error(`Transaction failed: ${error.response.data}`);
+      this.logger.error(`Transaction failed: ${error.response?.data || error.message || error}`);
+      throw error;
     }
   }
 
