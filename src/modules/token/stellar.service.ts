@@ -327,6 +327,9 @@ export class StellarService {
             `Successfully transferred blub asset : ${responseOfSendingBlub}`,
           );
 
+          // CRITICAL FIX: Mint BLUB tokens to user's wallet to show balance correctly
+          await this.mintBlubToUser(createStakeDto.senderPublicKey, createStakeDto.amount);
+
           await this.sorobanService.depositAQUABlUB(
             assets,
             amounts,
@@ -368,6 +371,28 @@ export class StellarService {
         'Error during staking process:',
         err?.data?.extras || err?.data || err?.message || err,
       );
+    }
+  }
+
+  async mintBlubToUser(userPublicKey: string, aquaAmount: number): Promise<void> {
+    try {
+      this.logger.debug(`Minting BLUB tokens to user: ${userPublicKey} for AQUA amount: ${aquaAmount}`);
+      
+      // Calculate BLUB amount (1:1 ratio with AQUA for now)
+      const blubAmount = aquaAmount.toFixed(7);
+      
+      // Transfer BLUB from issuer to user
+      await this.transferAsset(
+        this.issuerKeypair,
+        userPublicKey,
+        blubAmount,
+        this.blub,
+      );
+      
+      this.logger.debug(`Successfully minted ${blubAmount} BLUB tokens to ${userPublicKey}`);
+    } catch (error) {
+      this.logger.error(`Error minting BLUB to user ${userPublicKey}:`, error);
+      throw error;
     }
   }
 
