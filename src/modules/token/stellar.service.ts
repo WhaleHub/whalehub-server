@@ -469,8 +469,9 @@ export class StellarService {
     results: xdr.OperationResult[];
   }> {
     let attemts = 0;
-    while (true || attemts < 5 ) {
+    while (attemts < 5 ) {
       try {
+        console.log(attemts);
         attemts++;
         const transactionResult = await server
           .transactions()
