@@ -11,6 +11,7 @@ import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecord
 import { PoolsEntity } from './utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
 import { ScheduleModule } from '@nestjs/schedule';
+import { MemoryMonitorService } from './helpers/memory-monitor.service';
 
 @Module({
   imports: [
@@ -31,6 +32,6 @@ import { ScheduleModule } from '@nestjs/schedule';
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, MemoryMonitorService],
 })
 export class AppModule {}

@@ -1,0 +1,48 @@
+FROM node:18-alpine
+
+# Set memory limits
+ENV NODE_OPTIONS="--max-old-space-size=4096 --optimize-for-size --gc-interval=100"
+ENV UV_THREADPOOL_SIZE=16
+
+# Create app directory
+WORKDIR /usr/src/app
+
+# Copy package files
+COPY package*.json ./
+COPY yarn.lock ./
+
+# Install dependencies with memory optimization
+RUN yarn install --frozen-lockfile --production=false && \
+    yarn cache clean
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN yarn build
+
+# Remove dev dependencies to save memory
+RUN yarn install --frozen-lockfile --production=true && \
+    yarn cache clean
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nestjs -u 1001
+
+# Change ownership
+RUN chown -R nestjs:nodejs /usr/src/app
+
+USER nestjs
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node healthcheck.js
+
+# Start the application
+CMD ["node", "dist/main"] 

@@ -28,11 +28,26 @@ export const typeOrmConfig = async (
     migrations: [__dirname + '/../database/migrations/*{.ts,.js}'],
     extra: {
       charset: 'utf8mb4_unicode_ci',
+      max: 20, // Maximum number of connections in pool
+      min: 5,  // Minimum number of connections in pool
+      acquireTimeoutMillis: 30000, // Connection timeout
+      idleTimeoutMillis: 30000, // Idle connection timeout
+      createTimeoutMillis: 30000, // Create connection timeout
     },
     synchronize:
       configService.get<string>('NODE_ENV') === 'development' ? true : true,
     autoLoadEntities: true,
     logging: false,
     ssl: configService.get<string>('NODE_ENV') === 'development' ? false : true,
+    // Add memory management for large result sets
+    cache: {
+      duration: 30000, // 30 seconds cache
+      type: 'database',
+      options: {
+        max: 100, // Max number of cached queries
+      }
+    },
+    // Prevent memory leaks from long-running queries
+    maxQueryExecutionTime: 30000, // 30 seconds max query time
   };
 };

@@ -614,12 +614,13 @@ export class StellarService {
 
   async getUser(userPublicKey: string): Promise<UserEntity> {
     try {
+      // Use pagination and limit results to prevent memory overflow
       const userRecord = await this.userRepository
         .createQueryBuilder('user')
-        .leftJoinAndSelect('user.stakes', 'stakes')
-        .leftJoinAndSelect('user.claimableRecords', 'claimableRecords')
-        .leftJoinAndSelect('user.pools', 'pools')
-        .leftJoinAndSelect('user.lpBalances', 'lp_balance')
+        .leftJoinAndSelect('user.stakes', 'stakes', 'stakes.id IN (SELECT id FROM stake WHERE account_id = user.id ORDER BY created_at DESC LIMIT 100)')
+        .leftJoinAndSelect('user.claimableRecords', 'claimableRecords', 'claimableRecords.id IN (SELECT id FROM claimable_records WHERE user_id = user.id ORDER BY created_at DESC LIMIT 100)')
+        .leftJoinAndSelect('user.pools', 'pools', 'pools.id IN (SELECT id FROM pools WHERE user_id = user.id ORDER BY created_at DESC LIMIT 100)')
+        .leftJoinAndSelect('user.lpBalances', 'lp_balance', 'lp_balance.id IN (SELECT id FROM lp_balances WHERE user_id = user.id ORDER BY created_at DESC LIMIT 100)')
         .addSelect([
           'claimableRecords.id',
           'claimableRecords.balanceId',
@@ -637,7 +638,8 @@ export class StellarService {
 
       return userRecord;
     } catch (err) {
-      console.log(err);
+      this.logger.error(`Error fetching user ${userPublicKey}:`, err);
+      throw new HttpException('Error fetching user data', HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
