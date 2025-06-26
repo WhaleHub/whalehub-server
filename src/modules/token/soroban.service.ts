@@ -976,6 +976,7 @@ export class SorobanService {
     while (attemts < 5) {
       try {
         attemts++;
+        console.log(attemts);
         const transactionResult = await server.getTransaction(hash);
 
         if (transactionResult.status === 'SUCCESS') {
