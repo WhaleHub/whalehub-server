@@ -481,8 +481,10 @@ export class StellarService {
     successful: boolean;
     results: xdr.OperationResult[];
   }> {
-    while (true) {
+    let attemts = 0;
+    while (attemts < 5) {
       try {
+        attemts++;
         const transactionResult = await server
           .transactions()
           .transaction(hash)
