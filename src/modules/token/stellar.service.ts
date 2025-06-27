@@ -70,6 +70,9 @@ export class StellarService {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
 
+    @InjectRepository(StakeEntity)
+    private stakeRepository: Repository<StakeEntity>,
+
     @InjectRepository(PoolsEntity)
     private poolRepository: Repository<PoolsEntity>,
 
@@ -161,8 +164,8 @@ export class StellarService {
         const stake = new StakeEntity();
         stake.account = user;
         stake.amount = createStakeDto.amount.toString();
-        await stake
-          .save()
+        await this.stakeRepository
+          .save(stake)
           .then(() =>
             this.logger.debug(`Saved stake amount: ${stake.amount} to db`),
           );
@@ -617,10 +620,10 @@ export class StellarService {
       // Use pagination and limit results to prevent memory overflow
       const userRecord = await this.userRepository
         .createQueryBuilder('user')
-        .leftJoinAndSelect('user.stakes', 'stakes', 'stakes.id IN (SELECT id FROM stake WHERE account_id = user.id ORDER BY created_at DESC LIMIT 100)')
-        .leftJoinAndSelect('user.claimableRecords', 'claimableRecords', 'claimableRecords.id IN (SELECT id FROM claimable_records WHERE user_id = user.id ORDER BY created_at DESC LIMIT 100)')
-        .leftJoinAndSelect('user.pools', 'pools', 'pools.id IN (SELECT id FROM pools WHERE user_id = user.id ORDER BY created_at DESC LIMIT 100)')
-        .leftJoinAndSelect('user.lpBalances', 'lp_balance', 'lp_balance.id IN (SELECT id FROM lp_balances WHERE user_id = user.id ORDER BY created_at DESC LIMIT 100)')
+        .leftJoinAndSelect('user.stakes', 'stakes')
+        .leftJoinAndSelect('user.claimableRecords', 'claimableRecords')
+        .leftJoinAndSelect('user.pools', 'pools')
+        .leftJoinAndSelect('user.lpBalances', 'lp_balance')
         .addSelect([
           'claimableRecords.id',
           'claimableRecords.balanceId',

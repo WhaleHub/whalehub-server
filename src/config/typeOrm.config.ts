@@ -6,6 +6,7 @@ import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity';
+import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 
 export const typeOrmConfig = async (
   configService: ConfigService,
@@ -19,6 +20,7 @@ export const typeOrmConfig = async (
     password: configService.get<string>('POSTGRES_PASSWORD'),
     entities: [
       UserEntity,
+      StakeEntity,
       TokenEntity,
       PoolsEntity,
       LpBalanceEntity,

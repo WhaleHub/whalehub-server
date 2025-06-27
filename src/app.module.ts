@@ -5,6 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TokenModule } from './modules/token/token.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserEntity } from './utils/typeorm/entities/user.entity';
+import { StakeEntity } from './utils/typeorm/entities/stake.entity';
 import { TokenEntity } from './utils/typeorm/entities/token.entity';
 import { typeOrmConfig } from './config/typeOrm.config';
 import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecords.entity';
@@ -17,6 +18,7 @@ import { MemoryMonitorService } from './helpers/memory-monitor.service';
   imports: [
     TypeOrmModule.forFeature([
       UserEntity,
+      StakeEntity,
       TokenEntity,
       PoolsEntity,
       LpBalanceEntity,
