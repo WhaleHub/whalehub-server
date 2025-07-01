@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
 import { StakeEntity } from './stake.entity';
@@ -7,6 +7,11 @@ import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from './lp-balances.entity';
 
 @Entity({ name: 'pools' })
+@Index(['senderPublicKey', 'claimed', 'depositType']) // Composite index for common query pattern
+@Index(['claimed']) // Index for filtering by claim status
+@Index(['depositType']) // Index for filtering by deposit type
+@Index(['senderPublicKey']) // Index for filtering by sender
+@Index(['createdAt']) // Index for ordering by creation date
 export class PoolsEntity extends BaseEntity {
   @ManyToOne(() => UserEntity, (user) => user.account)
   @JoinColumn()

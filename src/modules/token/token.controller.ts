@@ -53,6 +53,23 @@ export class TokenController {
     return this.stellarService.getUser(userPublicKey);
   }
 
+  @Get('user/staking-balance')
+  @ApiOperation({ summary: 'Get user staking balance data (optimized for wallets with many transactions)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Staking balance data retrieved successfully',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid user public key',
+  })
+  getUserStakingBalance(@Query('userPublicKey') userPublicKey: string) {
+    if (!userPublicKey || userPublicKey.trim() === '') {
+      throw new Error('Invalid user public key');
+    }
+    return this.stellarService.getUserStakingBalance(userPublicKey);
+  }
+
   @Get('getLockedReward')
   @ApiOperation({ summary: 'Get public key locked rewards' })
   @ApiResponse({
