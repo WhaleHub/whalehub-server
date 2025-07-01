@@ -645,8 +645,18 @@ export class StellarService {
     try {
       this.logger.debug(`Fetching user data for ${userPublicKey}`);
       
+      // Create timeout wrapper function
+      const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
+        return Promise.race([
+          promise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
+          )
+        ]);
+      };
+      
       // Use optimized query with pagination and limits to prevent memory overflow
-      const userRecord = await this.userRepository
+      const userQueryPromise = this.userRepository
         .createQueryBuilder('user')
         .leftJoinAndSelect('user.stakes', 'stakes')
         .leftJoinAndSelect(
@@ -681,8 +691,9 @@ export class StellarService {
         .orderBy('claimableRecords.createdAt', 'DESC')
         .addOrderBy('pools.createdAt', 'DESC')
         .take(1000) // Limit to prevent memory overflow
-        .timeout(30000) // 30 second timeout
         .getOne();
+
+      const userRecord = await timeoutPromise(userQueryPromise, 30000) as UserEntity;
 
       if (!userRecord) {
         // If user doesn't exist, create a new user record
@@ -715,7 +726,17 @@ export class StellarService {
       // Fallback: try to get user with minimal data if full query fails
       try {
         this.logger.debug(`Attempting fallback query for user ${userPublicKey}`);
-        const fallbackUser = await this.userRepository
+        
+        const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
+          return Promise.race([
+            promise,
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Fallback query timeout')), timeoutMs)
+            )
+          ]);
+        };
+        
+        const fallbackQueryPromise = this.userRepository
           .createQueryBuilder('user')
           .leftJoinAndSelect(
             'user.claimableRecords', 
@@ -725,8 +746,9 @@ export class StellarService {
           )
           .where('user.account = :userPublicKey', { userPublicKey })
           .take(100) // Even more limited for fallback
-          .timeout(15000) // 15 second timeout for fallback
           .getOne();
+          
+        const fallbackUser = await timeoutPromise(fallbackQueryPromise, 15000) as UserEntity;
           
         if (fallbackUser) {
           this.logger.debug(`Fallback query successful for user ${userPublicKey}`);
@@ -758,6 +780,16 @@ export class StellarService {
     try {
       this.logger.debug(`Fetching staking balance for ${userPublicKey}`);
       
+      // Create timeout wrapper function
+      const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
+        return Promise.race([
+          promise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Staking balance query timeout')), timeoutMs)
+          )
+        ]);
+      };
+      
       // Get user first
       let user = await this.userRepository.findOne({
         where: { account: userPublicKey }
@@ -775,25 +807,27 @@ export class StellarService {
       }
 
       // Get claimable records with optimized query
-      const claimableRecords = await this.claimableRecords
+      const claimableQueryPromise = this.claimableRecords
         .createQueryBuilder('claimableRecords')
         .where('claimableRecords.account = :userId', { userId: user.id })
         .andWhere('claimableRecords.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
         .orderBy('claimableRecords.createdAt', 'DESC')
         .take(500) // Limit results
-        .timeout(10000) // 10 second timeout
         .getMany();
 
+      const claimableRecords = await timeoutPromise(claimableQueryPromise, 10000) as ClaimableRecordsEntity[];
+
       // Get pool data with optimized query
-      const pools = await this.poolRepository
+      const poolsQueryPromise = this.poolRepository
         .createQueryBuilder('pools')
         .where('pools.senderPublicKey = :userPublicKey', { userPublicKey })
         .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
         .andWhere('pools.depositType = :locker', { locker: DepositType.LOCKER })
         .orderBy('pools.createdAt', 'DESC')
         .take(500) // Limit results
-        .timeout(10000) // 10 second timeout
         .getMany();
+
+      const pools = await timeoutPromise(poolsQueryPromise, 10000) as PoolsEntity[];
 
       this.logger.debug(`Staking balance data fetched for ${userPublicKey}:`, {
         claimableRecordsCount: claimableRecords.length,
