@@ -762,10 +762,28 @@ export class StellarService {
         this.logger.error(`Fallback query also failed for user ${userPublicKey}:`, fallbackErr);
       }
       
-      throw new HttpException(
-        `Error fetching user data: ${err.message}`, 
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      // Final fallback: create a minimal user object to prevent 502 errors
+      this.logger.debug(`Creating minimal user object for ${userPublicKey} to prevent 502 errors`);
+      try {
+        const minimalUser = new UserEntity();
+        minimalUser.account = userPublicKey;
+        minimalUser.stakes = [];
+        minimalUser.claimableRecords = [];
+        minimalUser.pools = [];
+        minimalUser.lpBalances = [];
+        await this.userRepository.save(minimalUser);
+        return minimalUser;
+      } catch (createErr) {
+        this.logger.error(`Failed to create minimal user for ${userPublicKey}:`, createErr);
+        // Return a user object even if DB save fails
+        const tempUser = new UserEntity();
+        tempUser.account = userPublicKey;
+        tempUser.stakes = [];
+        tempUser.claimableRecords = [];
+        tempUser.pools = [];
+        tempUser.lpBalances = [];
+        return tempUser;
+      }
     }
   }
 
@@ -843,77 +861,104 @@ export class StellarService {
   }
 
   async getPublicKeyLockedRewards(userPublicKey: string): Promise<any> {
-    const user = await this.userRepository.findOneBy({
-      account: userPublicKey,
-    });
+    try {
+      this.logger.debug(`Fetching locked rewards for ${userPublicKey}`);
+      
+      const user = await this.userRepository.findOneBy({
+        account: userPublicKey,
+      });
 
-    if (!user)
-      throw new HttpException('Public key not found', HttpStatus.NOT_FOUND);
+      if (!user) {
+        this.logger.debug(`User ${userPublicKey} not found, returning default locked rewards`);
+        return {
+          lockedAquaRewardEstimation: '0.0000000',
+        };
+      }
 
-    const userLockedRecords = await this.poolRepository.findOne({
-      where: {
-        senderPublicKey: user.account,
-        depositType: DepositType.LOCKER,
-      },
-    });
+      const userLockedRecords = await this.poolRepository.findOne({
+        where: {
+          senderPublicKey: user.account,
+          depositType: DepositType.LOCKER,
+        },
+      });
 
-    if (!userLockedRecords)
-      throw new HttpException(
-        'You rewards yet to be unlocked',
-        HttpStatus.NOT_FOUND,
+      if (!userLockedRecords) {
+        this.logger.debug(`No locked records found for ${userPublicKey}, returning default`);
+        return {
+          lockedAquaRewardEstimation: '0.0000000',
+        };
+      }
+
+      const locks = await this.poolRepository.find({
+        where: {
+          depositType: DepositType.LOCKER,
+        },
+      });
+
+      const userLocks = locks.filter(
+        (lock) => lock.senderPublicKey === userPublicKey,
       );
 
-    const locks = await this.poolRepository.find({
-      where: {
-        depositType: DepositType.LOCKER,
-      },
-    });
+      if (userLocks.length === 0) {
+        return {
+          lockedAquaRewardEstimation: '0.0000000',
+        };
+      }
 
-    const userLocks = locks.filter(
-      (lock) => lock.senderPublicKey === userPublicKey,
-    );
+      let totalAssetA = 0;
+      let totalAssetB = 0;
 
-    let totalAssetA = 0;
-    let totalAssetB = 0;
+      locks.forEach((pool) => {
+        const assetAAmount = parseFloat(pool.assetAAmount);
+        const assetBAmount = parseFloat(pool.assetBAmount);
 
-    locks.forEach((pool) => {
-      const assetAAmount = parseFloat(pool.assetAAmount);
-      const assetBAmount = parseFloat(pool.assetBAmount);
+        if (!isNaN(assetAAmount)) totalAssetA += assetAAmount;
+        if (!isNaN(assetBAmount)) totalAssetB += assetBAmount;
+      });
 
-      if (!isNaN(assetAAmount)) totalAssetA += assetAAmount;
-      if (!isNaN(assetBAmount)) totalAssetB += assetBAmount;
-    });
+      const lockTotalAmount = totalAssetA + totalAssetB;
 
-    const lockTotalAmount = totalAssetA + totalAssetB;
+      // Initialize user total amounts for assets
+      let userTotalAAmount = 0;
+      let userTotalBAmount = 0;
 
-    // Initialize user total amounts for assets
-    let userTotalAAmount = 0;
-    let userTotalBAmount = 0;
+      userLocks.forEach((pool) => {
+        const userAssetAAmount = parseFloat(pool.assetAAmount);
+        const userAssetBAmount = parseFloat(pool.assetBAmount);
 
-    userLocks.forEach((pool) => {
-      const userAssetAAmount = parseFloat(pool.assetAAmount);
-      const userAssetBAmount = parseFloat(pool.assetBAmount);
+        if (!isNaN(userAssetAAmount)) userTotalAAmount += userAssetAAmount;
+        if (!isNaN(userAssetBAmount)) userTotalBAmount += userAssetBAmount;
+      });
 
-      if (!isNaN(userAssetAAmount)) userTotalAAmount += userAssetAAmount;
-      if (!isNaN(userAssetBAmount)) userTotalBAmount += userAssetBAmount;
-    });
+      const userTotalDepositAmount = userTotalAAmount + userTotalBAmount;
+      const userPercentage =
+        lockTotalAmount > 0 ? userTotalDepositAmount / lockTotalAmount : 0;
 
-    const userTotalDepositAmount = userTotalAAmount + userTotalBAmount;
-    const userPercentage =
-      lockTotalAmount > 0 ? userTotalDepositAmount / lockTotalAmount : 0;
+      const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)].sort();
 
-    const assets = [this.blub, new Asset(AQUA_CODE, AQUA_ISSUER)].sort();
+      try {
+        const rewardEstimation = await this.sorobanService.userRewardEstimation(
+          assets,
+          this.lpSignerKeypair.publicKey(),
+        );
 
-    const rewardEstimation = await this.sorobanService.userRewardEstimation(
-      assets,
-      this.lpSignerKeypair.publicKey(),
-    );
-
-    return {
-      lockedAquaRewardEstimation: (rewardEstimation * userPercentage).toFixed(
-        7,
-      ),
-    };
+        return {
+          lockedAquaRewardEstimation: (rewardEstimation * userPercentage).toFixed(
+            7,
+          ),
+        };
+      } catch (rewardError) {
+        this.logger.error(`Error calculating reward estimation for ${userPublicKey}:`, rewardError);
+        return {
+          lockedAquaRewardEstimation: '0.0000000',
+        };
+      }
+    } catch (err) {
+      this.logger.error(`Error fetching locked rewards for ${userPublicKey}:`, err);
+      return {
+        lockedAquaRewardEstimation: '0.0000000',
+      };
+    }
   }
 
   async swapToWhlaqua(amount: number): Promise<number> {

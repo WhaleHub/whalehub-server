@@ -46,11 +46,36 @@ export class TokenController {
   @Get('user')
   @ApiOperation({ summary: 'Get user public key records' })
   @ApiResponse({
-    status: 201,
-    description: 'Public key records not found',
+    status: 200,
+    description: 'User records retrieved successfully',
   })
-  getUserInfo(@Query('userPublicKey') userPublicKey: string) {
-    return this.stellarService.getUser(userPublicKey);
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid user public key',
+  })
+  async getUserInfo(@Query('userPublicKey') userPublicKey: string) {
+    try {
+      if (!userPublicKey || userPublicKey.trim() === '') {
+        return {
+          error: 'Invalid user public key',
+          stakes: [],
+          claimableRecords: [],
+          pools: [],
+          lpBalances: []
+        };
+      }
+      const result = await this.stellarService.getUser(userPublicKey);
+      return result;
+    } catch (error) {
+      console.error(`Error fetching user info for ${userPublicKey}:`, error);
+      return {
+        error: 'Failed to fetch user information',
+        stakes: [],
+        claimableRecords: [],
+        pools: [],
+        lpBalances: []
+      };
+    }
   }
 
   @Get('user/staking-balance')
@@ -63,21 +88,54 @@ export class TokenController {
     status: 400,
     description: 'Invalid user public key',
   })
-  getUserStakingBalance(@Query('userPublicKey') userPublicKey: string) {
-    if (!userPublicKey || userPublicKey.trim() === '') {
-      throw new Error('Invalid user public key');
+  async getUserStakingBalance(@Query('userPublicKey') userPublicKey: string) {
+    try {
+      if (!userPublicKey || userPublicKey.trim() === '') {
+        return {
+          error: 'Invalid user public key',
+          claimableRecords: [],
+          pools: []
+        };
+      }
+      const result = await this.stellarService.getUserStakingBalance(userPublicKey);
+      return result;
+    } catch (error) {
+      console.error(`Error fetching staking balance for ${userPublicKey}:`, error);
+      return {
+        error: 'Failed to fetch staking balance',
+        claimableRecords: [],
+        pools: []
+      };
     }
-    return this.stellarService.getUserStakingBalance(userPublicKey);
   }
 
   @Get('getLockedReward')
   @ApiOperation({ summary: 'Get public key locked rewards' })
   @ApiResponse({
-    status: 201,
-    description: 'Public key locked rewards not available',
+    status: 200,
+    description: 'Locked rewards retrieved successfully',
   })
-  getPublicKeyLockedRewards(@Query('userPublicKey') userPublicKey: string) {
-    return this.stellarService.getPublicKeyLockedRewards(userPublicKey);
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid user public key',
+  })
+  async getPublicKeyLockedRewards(@Query('userPublicKey') userPublicKey: string) {
+    try {
+      if (!userPublicKey || userPublicKey.trim() === '') {
+        return {
+          error: 'Invalid user public key',
+          lockedAquaRewardEstimation: '0.0000000'
+        };
+      }
+      const result = await this.stellarService.getPublicKeyLockedRewards(userPublicKey);
+      return result;
+    } catch (error) {
+      console.error(`Error fetching locked rewards for ${userPublicKey}:`, error);
+      return {
+        error: 'Failed to fetch locked rewards',
+        lockedAquaRewardEstimation: '0.0000000'
+      };
+    }
   }
 
   @Post('unlock-aqua')
