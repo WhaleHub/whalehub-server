@@ -29,7 +29,6 @@ import { aquaPools, getPoolKey } from '@/utils/constants';
 import { StakeBlubDto } from './dto/stake-blub.dto';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity';
-import { CLAIMS, DepositType } from '@/utils/models/enums';
 
 const BLUB_CODE = 'BLUB';
 export const AQUA_CODE = 'AQUA';
@@ -703,15 +702,15 @@ export class StellarService {
       // Try to get quick count of total records first
       const recordCounts = await Promise.all([
         timeoutPromise(
-          this.stakeRepository.count({ where: { user: { account: userPublicKey } } }),
+          this.stakeRepository.count({ where: { account: { account: userPublicKey } } }),
           3000
         ),
         timeoutPromise(
-          this.claimableRecordsRepository.count({ where: { account: userPublicKey } }),
+          this.claimableRecordsRepository.count({ where: { account: { account: userPublicKey } } }),
           3000
         ),
         timeoutPromise(
-          this.poolsRepository.count({ where: { account: userPublicKey } }),
+          this.poolsRepository.count({ where: { senderPublicKey: userPublicKey } }),
           3000
         ),
         timeoutPromise(
@@ -733,7 +732,7 @@ export class StellarService {
       const [stakes, claimableRecords, pools, lpBalances] = await Promise.all([
         timeoutPromise(
           this.stakeRepository.find({
-            where: { user: { account: userPublicKey } },
+            where: { account: { account: userPublicKey } },
             order: { createdAt: 'DESC' },
             take: 50
           }),
@@ -741,7 +740,7 @@ export class StellarService {
         ),
         timeoutPromise(
           this.claimableRecordsRepository.find({
-            where: { account: userPublicKey },
+            where: { account: { account: userPublicKey } },
             order: { createdAt: 'DESC' },
             take: 50
           }),
@@ -749,7 +748,7 @@ export class StellarService {
         ),
         timeoutPromise(
           this.poolsRepository.find({
-            where: { account: userPublicKey },
+            where: { senderPublicKey: userPublicKey },
             order: { createdAt: 'DESC' },
             take: 50
           }),
@@ -765,23 +764,20 @@ export class StellarService {
         )
       ]);
 
-      // Construct full user object
-      const fullUserData: UserEntity = {
-        ...userRecord,
-        stakes,
-        claimableRecords,
-        pools,
-        lpBalances
-      };
+      // Assign relationships to user record
+      userRecord.stakes = stakes;
+      userRecord.claimableRecords = claimableRecords;
+      userRecord.pools = pools;
+      userRecord.lpBalances = lpBalances;
 
       // Cache the result
       this.userCache.set(userPublicKey, {
-        data: fullUserData,
+        data: userRecord,
         timestamp: Date.now()
       });
 
       this.logger.debug(`Successfully fetched full data for ${userPublicKey}`);
-      return fullUserData;
+      return userRecord;
 
     } catch (error) {
       this.logger.error(`Error fetching user ${userPublicKey}:`, error.message);
@@ -817,32 +813,27 @@ export class StellarService {
         await this.userRepository.save(userRecord);
       }
 
-      // Return minimal data structure with empty arrays
-      const simplifiedData: UserEntity = {
-        ...userRecord,
-        stakes: [],
-        claimableRecords: [],
-        pools: [],
-        lpBalances: []
-      };
+      // Assign empty arrays to user record
+      userRecord.stakes = [];
+      userRecord.claimableRecords = [];
+      userRecord.pools = [];
+      userRecord.lpBalances = [];
 
       this.logger.debug(`Returned simplified data for ${userPublicKey}`);
-      return simplifiedData;
+      return userRecord;
 
     } catch (error) {
       this.logger.error(`Error getting simplified data for ${userPublicKey}:`, error.message);
       
       // Create minimal user object as last resort
-      return {
-        id: 'temp-' + userPublicKey.substring(0, 8),
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      const tempUser = this.userRepository.create({
         account: userPublicKey,
         stakes: [],
         claimableRecords: [],
         pools: [],
         lpBalances: []
-      } as UserEntity;
+      });
+      return tempUser;
     }
   }
 
