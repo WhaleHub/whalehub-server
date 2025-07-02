@@ -11,6 +11,7 @@ import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { TokenEntity } from '@/utils/typeorm/entities/token.entity';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity';
+import { MemoryMonitorService } from '../../helpers/memory-monitor.service';
 
 @Module({
   imports: [
@@ -26,6 +27,6 @@ import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity
     ConfigModule,
   ],
   controllers: [TokenController],
-  providers: [StellarService, SorobanService],
+  providers: [StellarService, SorobanService, MemoryMonitorService],
 })
 export class TokenModule {}

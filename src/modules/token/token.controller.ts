@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query, Res } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Res, HttpStatus, HttpException } from '@nestjs/common';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateStakeDto } from './dto/create-stake.dto';
@@ -7,11 +7,21 @@ import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { UnlockAquaDto } from './dto/create-remove-lp.dto';
 import { StakeBlubDto } from './dto/stake-blub.dto';
 import { Asset } from '@stellar/stellar-sdk';
+import { MemoryMonitorService } from '../../helpers/memory-monitor.service';
+import { Response } from 'express';
+import { Logger } from '@nestjs/common';
 
 @ApiTags('Token')
 @Controller('token')
 export class TokenController {
-  constructor(private readonly stellarService: StellarService) {}
+  private failedWallets = new Map<string, number>(); // Circuit breaker for problematic wallets
+  private lastCleanup = Date.now();
+  private readonly logger = new Logger(TokenController.name);
+
+  constructor(
+    private readonly stellarService: StellarService,
+    private readonly memoryMonitorService: MemoryMonitorService
+  ) {}
 
   @Post('lock')
   @ApiOperation({ summary: 'Lock AQUA tokens' })
@@ -44,37 +54,70 @@ export class TokenController {
   }
 
   @Get('user')
-  @ApiOperation({ summary: 'Get user public key records' })
-  @ApiResponse({
-    status: 200,
-    description: 'User records retrieved successfully',
-  })
-  @ApiResponse({
-    status: 400,
-    description: 'Invalid user public key',
-  })
-  async getUserInfo(@Query('userPublicKey') userPublicKey: string) {
+  @ApiOperation({ summary: 'Get user information' })
+  @ApiResponse({ status: 200, description: 'User information retrieved successfully' })
+  @ApiResponse({ status: 502, description: 'Bad Gateway - Heavy wallet detected' })
+  async getUserInfo(@Query('userPublicKey') userPublicKey: string, @Res() res: Response) {
     try {
-      if (!userPublicKey || userPublicKey.trim() === '') {
-        return {
-          error: 'Invalid user public key',
+      // Check memory usage before processing
+      const memUsage = this.memoryMonitorService.getMemoryStats();
+      if (memUsage.systemUsagePercentage > 80) { // 80% threshold
+        this.logger.warn(`High memory usage detected: ${memUsage.systemUsagePercentage.toFixed(2)}%`);
+      }
+
+      // Circuit breaker for known heavy wallets
+      if (this.failedWallets.has(userPublicKey)) {
+        const lastFail = this.failedWallets.get(userPublicKey);
+        if (Date.now() - lastFail < 300000) { // 5 minute cooldown
+          return res.status(200).json({
+            account: userPublicKey,
+            stakes: [],
+            claimableRecords: [],
+            pools: [],
+            lpBalances: [],
+            message: 'Heavy wallet - using simplified response mode',
+            totalStaked: '0',
+            totalClaimable: '0'
+          });
+        } else {
+          this.failedWallets.delete(userPublicKey);
+        }
+      }
+
+      // Add timeout wrapper for the entire operation
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Request timeout')), 15000); // 15 second timeout
+      });
+
+      const userPromise = this.stellarService.getUser(userPublicKey);
+      
+      const user = await Promise.race([userPromise, timeoutPromise]);
+      
+      res.status(200).json(user);
+    } catch (error) {
+      this.logger.error(`Error fetching user ${userPublicKey}:`, error.message);
+      
+      // Mark as failed for circuit breaker
+      this.failedWallets.set(userPublicKey, Date.now());
+      
+      if (error.message.includes('timeout') || error.message.includes('memory')) {
+        // Return simplified response for heavy wallets instead of 502
+        return res.status(200).json({
+          account: userPublicKey,
           stakes: [],
           claimableRecords: [],
           pools: [],
-          lpBalances: []
-        };
+          lpBalances: [],
+          message: 'Heavy wallet detected - simplified response mode activated',
+          totalStaked: '0',
+          totalClaimable: '0'
+        });
       }
-      const result = await this.stellarService.getUser(userPublicKey);
-      return result;
-    } catch (error) {
-      console.error(`Error fetching user info for ${userPublicKey}:`, error);
-      return {
-        error: 'Failed to fetch user information',
-        stakes: [],
-        claimableRecords: [],
-        pools: [],
-        lpBalances: []
-      };
+      
+      res.status(500).json({
+        message: 'Internal server error',
+        error: error.message
+      });
     }
   }
 

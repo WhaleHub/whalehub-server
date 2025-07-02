@@ -14,7 +14,7 @@ import {
   xdr,
 } from '@stellar/stellar-sdk';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 import { Balance } from '@/utils/models/interfaces';
@@ -27,6 +27,9 @@ import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { aquaPools, getPoolKey } from '@/utils/constants';
 import { StakeBlubDto } from './dto/stake-blub.dto';
+import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
+import { RewardClaimsEntity } from '@/utils/typeorm/entities/claimRecords.entity';
+import { CLAIMS, DepositType } from '@/utils/models/enums';
 
 const BLUB_CODE = 'BLUB';
 export const AQUA_CODE = 'AQUA';
@@ -61,23 +64,29 @@ export class StellarService {
   private treasureAddress: string;
   private blub: Asset;
   private readonly logger = new Logger(StellarService.name);
+  private readonly userCache = new Map<string, { data: UserEntity; timestamp: number }>();
+  private readonly failedWallets = new Set<string>();
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  private readonly CIRCUIT_BREAKER_TTL = 30 * 60 * 1000; // 30 minutes
+  private readonly MAX_QUERY_TIMEOUT = 15000; // 15 seconds
+  private readonly SIMPLIFIED_MODE_LIMIT = 100; // Switch to simplified mode for heavy wallets
 
   constructor(
     private configService: ConfigService,
-
     private sorobanService: SorobanService,
-
     @InjectRepository(UserEntity)
-    private userRepository: Repository<UserEntity>,
-
+    private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(StakeEntity)
-    private stakeRepository: Repository<StakeEntity>,
-
-    @InjectRepository(PoolsEntity)
-    private poolRepository: Repository<PoolsEntity>,
-
+    private readonly stakeRepository: Repository<StakeEntity>,
     @InjectRepository(ClaimableRecordsEntity)
-    private claimableRecords: Repository<ClaimableRecordsEntity>,
+    private readonly claimableRecordsRepository: Repository<ClaimableRecordsEntity>,
+    @InjectRepository(PoolsEntity)
+    private readonly poolsRepository: Repository<PoolsEntity>,
+    @InjectRepository(LpBalanceEntity)
+    private readonly lpBalanceRepository: Repository<LpBalanceEntity>,
+    @InjectRepository(RewardClaimsEntity)
+    private readonly rewardClaimsRepository: Repository<RewardClaimsEntity>,
+    private readonly dataSource: DataSource
   ) {
     this.issuerKeypair = Keypair.fromSecret(
       this.configService.get('ISSUER_SECRET_KEY'),
@@ -92,6 +101,9 @@ export class StellarService {
     this.signerKeyPair = Keypair.fromSecret(
       this.configService.get('SIGNER_SECRET_KEY'),
     );
+    
+    // Initialize cleanup for cache
+    this.initializeCleanup();
   }
 
   async lock(createStakeDto: CreateStakeDto): Promise<void> {
@@ -463,7 +475,7 @@ export class StellarService {
       //   take: 1,
       // });
 
-      const claimableRecords = await this.claimableRecords.find({
+      const claimableRecords = await this.claimableRecordsRepository.find({
         where: {
           // claimed: CLAIMS.UNCLAIMED,
           account: { account: stakeBlubDto.senderPublicKey },
@@ -489,7 +501,7 @@ export class StellarService {
       //need to add this to work with unclaimed;
       claimableRecord.claimed = CLAIMS.UNCLAIMED;
 
-      await this.claimableRecords.save(claimableRecord);
+      await this.claimableRecordsRepository.save(claimableRecord);
 
       this.logger.debug(`Record updated. New amount: ${updatedAmount}`);
 
@@ -645,6 +657,19 @@ export class StellarService {
     try {
       this.logger.debug(`Fetching user data for ${userPublicKey}`);
       
+      // Circuit breaker - if wallet has failed recently, return simplified response
+      if (this.failedWallets.has(userPublicKey)) {
+        this.logger.warn(`Wallet ${userPublicKey} is in circuit breaker mode`);
+        return await this.getSimplifiedUserData(userPublicKey);
+      }
+
+      // Check cache first
+      const cached = this.userCache.get(userPublicKey);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+        this.logger.debug(`Returning cached data for ${userPublicKey}`);
+        return cached.data;
+      }
+
       // Create timeout wrapper function
       const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
         return Promise.race([
@@ -654,137 +679,186 @@ export class StellarService {
           )
         ]);
       };
-      
-      // Use optimized query with pagination and limits to prevent memory overflow
-      const userQueryPromise = this.userRepository
-        .createQueryBuilder('user')
-        .leftJoinAndSelect('user.stakes', 'stakes')
-        .leftJoinAndSelect(
-          'user.claimableRecords', 
-          'claimableRecords',
-          'claimableRecords.claimed = :unclaimed',
-          { unclaimed: CLAIMS.UNCLAIMED }
-        )
-        .leftJoinAndSelect(
-          'user.pools', 
-          'pools',
-          'pools.claimed = :unclaimed AND pools.depositType = :locker',
-          { unclaimed: CLAIMS.UNCLAIMED, locker: DepositType.LOCKER }
-        )
-        .leftJoinAndSelect('user.lpBalances', 'lp_balance')
-        .addSelect([
-          'claimableRecords.id',
-          'claimableRecords.balanceId',
-          'claimableRecords.amount',
-          'claimableRecords.claimed',
-          'pools.assetA',
-          'pools.assetB',
-          'pools.senderPublicKey',
-          'pools.assetAAmount',
-          'pools.assetBAmount',
-          'pools.id',
-          'pools.depositType',
-          'pools.claimed',
-          'lp_balance.assetA',
-        ])
-        .where('user.account = :userPublicKey', { userPublicKey })
-        .orderBy('claimableRecords.createdAt', 'DESC')
-        .addOrderBy('pools.createdAt', 'DESC')
-        .take(1000) // Limit to prevent memory overflow
-        .getOne();
 
-      const userRecord = await timeoutPromise(userQueryPromise, 30000) as UserEntity;
+      // Start with basic user lookup
+      let userRecord = await timeoutPromise(
+        this.userRepository.findOne({
+          where: { account: userPublicKey }
+        }),
+        5000 // 5 second timeout for user lookup
+      );
 
       if (!userRecord) {
-        // If user doesn't exist, create a new user record
-        this.logger.debug(`User ${userPublicKey} not found, creating new user record`);
-        const newUser = new UserEntity();
-        newUser.account = userPublicKey;
-        newUser.stakes = [];
-        newUser.claimableRecords = [];
-        newUser.pools = [];
-        newUser.lpBalances = [];
-        await this.userRepository.save(newUser);
-        return newUser;
+        this.logger.debug(`User ${userPublicKey} not found, creating new record`);
+        userRecord = this.userRepository.create({
+          account: userPublicKey,
+          stakes: [],
+          claimableRecords: [],
+          pools: [],
+          lpBalances: []
+        });
+        await this.userRepository.save(userRecord);
       }
 
-      this.logger.debug(`Successfully fetched user data for ${userPublicKey}:`, {
-        stakesCount: userRecord.stakes?.length || 0,
-        claimableRecordsCount: userRecord.claimableRecords?.length || 0,
-        poolsCount: userRecord.pools?.length || 0,
-        lpBalancesCount: userRecord.lpBalances?.length || 0
+      // Try to get quick count of total records first
+      const recordCounts = await Promise.all([
+        timeoutPromise(
+          this.stakeRepository.count({ where: { user: { account: userPublicKey } } }),
+          3000
+        ),
+        timeoutPromise(
+          this.claimableRecordsRepository.count({ where: { account: userPublicKey } }),
+          3000
+        ),
+        timeoutPromise(
+          this.poolsRepository.count({ where: { account: userPublicKey } }),
+          3000
+        ),
+        timeoutPromise(
+          this.lpBalanceRepository.count({ where: { senderPublicKey: userPublicKey } }),
+          3000
+        )
+      ]);
+
+      const totalRecords = recordCounts.reduce((sum, count) => sum + count, 0);
+      this.logger.debug(`Total records for ${userPublicKey}: ${totalRecords}`);
+
+      // If too many records, use simplified mode
+      if (totalRecords > this.SIMPLIFIED_MODE_LIMIT) {
+        this.logger.warn(`Wallet ${userPublicKey} has ${totalRecords} records, using simplified mode`);
+        return await this.getSimplifiedUserData(userPublicKey);
+      }
+
+      // Proceed with full data loading using separate optimized queries
+      const [stakes, claimableRecords, pools, lpBalances] = await Promise.all([
+        timeoutPromise(
+          this.stakeRepository.find({
+            where: { user: { account: userPublicKey } },
+            order: { createdAt: 'DESC' },
+            take: 50
+          }),
+          this.MAX_QUERY_TIMEOUT
+        ),
+        timeoutPromise(
+          this.claimableRecordsRepository.find({
+            where: { account: userPublicKey },
+            order: { createdAt: 'DESC' },
+            take: 50
+          }),
+          this.MAX_QUERY_TIMEOUT
+        ),
+        timeoutPromise(
+          this.poolsRepository.find({
+            where: { account: userPublicKey },
+            order: { createdAt: 'DESC' },
+            take: 50
+          }),
+          this.MAX_QUERY_TIMEOUT
+        ),
+        timeoutPromise(
+          this.lpBalanceRepository.find({
+            where: { senderPublicKey: userPublicKey },
+            order: { createdAt: 'DESC' },
+            take: 50
+          }),
+          this.MAX_QUERY_TIMEOUT
+        )
+      ]);
+
+      // Construct full user object
+      const fullUserData: UserEntity = {
+        ...userRecord,
+        stakes,
+        claimableRecords,
+        pools,
+        lpBalances
+      };
+
+      // Cache the result
+      this.userCache.set(userPublicKey, {
+        data: fullUserData,
+        timestamp: Date.now()
       });
 
-      return userRecord;
-    } catch (err) {
-      this.logger.error(`Error fetching user ${userPublicKey}:`, {
-        error: err,
-        message: err.message,
-        stack: err.stack
+      this.logger.debug(`Successfully fetched full data for ${userPublicKey}`);
+      return fullUserData;
+
+    } catch (error) {
+      this.logger.error(`Error fetching user ${userPublicKey}:`, error.message);
+      
+      // Add to circuit breaker
+      this.failedWallets.add(userPublicKey);
+      setTimeout(() => {
+        this.failedWallets.delete(userPublicKey);
+      }, this.CIRCUIT_BREAKER_TTL);
+
+      // Return simplified data as fallback
+      return await this.getSimplifiedUserData(userPublicKey);
+    }
+  }
+
+  private async getSimplifiedUserData(userPublicKey: string): Promise<UserEntity> {
+    try {
+      this.logger.debug(`Getting simplified data for ${userPublicKey}`);
+      
+      // Check if user exists, create if not
+      let userRecord = await this.userRepository.findOne({
+        where: { account: userPublicKey }
       });
-      
-      // Fallback: try to get user with minimal data if full query fails
-      try {
-        this.logger.debug(`Attempting fallback query for user ${userPublicKey}`);
-        
-        const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
-          return Promise.race([
-            promise,
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Fallback query timeout')), timeoutMs)
-            )
-          ]);
-        };
-        
-        const fallbackQueryPromise = this.userRepository
-          .createQueryBuilder('user')
-          .leftJoinAndSelect(
-            'user.claimableRecords', 
-            'claimableRecords',
-            'claimableRecords.claimed = :unclaimed',
-            { unclaimed: CLAIMS.UNCLAIMED }
-          )
-          .where('user.account = :userPublicKey', { userPublicKey })
-          .take(100) // Even more limited for fallback
-          .getOne();
-          
-        const fallbackUser = await timeoutPromise(fallbackQueryPromise, 15000) as UserEntity;
-          
-        if (fallbackUser) {
-          this.logger.debug(`Fallback query successful for user ${userPublicKey}`);
-          // Ensure arrays are initialized
-          fallbackUser.stakes = fallbackUser.stakes || [];
-          fallbackUser.pools = fallbackUser.pools || [];
-          fallbackUser.lpBalances = fallbackUser.lpBalances || [];
-          return fallbackUser;
-        }
-      } catch (fallbackErr) {
-        this.logger.error(`Fallback query also failed for user ${userPublicKey}:`, fallbackErr);
+
+      if (!userRecord) {
+        userRecord = this.userRepository.create({
+          account: userPublicKey,
+          stakes: [],
+          claimableRecords: [],
+          pools: [],
+          lpBalances: []
+        });
+        await this.userRepository.save(userRecord);
       }
+
+      // Return minimal data structure with empty arrays
+      const simplifiedData: UserEntity = {
+        ...userRecord,
+        stakes: [],
+        claimableRecords: [],
+        pools: [],
+        lpBalances: []
+      };
+
+      this.logger.debug(`Returned simplified data for ${userPublicKey}`);
+      return simplifiedData;
+
+    } catch (error) {
+      this.logger.error(`Error getting simplified data for ${userPublicKey}:`, error.message);
       
-      // Final fallback: create a minimal user object to prevent 502 errors
-      this.logger.debug(`Creating minimal user object for ${userPublicKey} to prevent 502 errors`);
-      try {
-        const minimalUser = new UserEntity();
-        minimalUser.account = userPublicKey;
-        minimalUser.stakes = [];
-        minimalUser.claimableRecords = [];
-        minimalUser.pools = [];
-        minimalUser.lpBalances = [];
-        await this.userRepository.save(minimalUser);
-        return minimalUser;
-      } catch (createErr) {
-        this.logger.error(`Failed to create minimal user for ${userPublicKey}:`, createErr);
-        // Return a user object even if DB save fails
-        const tempUser = new UserEntity();
-        tempUser.account = userPublicKey;
-        tempUser.stakes = [];
-        tempUser.claimableRecords = [];
-        tempUser.pools = [];
-        tempUser.lpBalances = [];
-        return tempUser;
+      // Create minimal user object as last resort
+      return {
+        id: 'temp-' + userPublicKey.substring(0, 8),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        account: userPublicKey,
+        stakes: [],
+        claimableRecords: [],
+        pools: [],
+        lpBalances: []
+      } as UserEntity;
+    }
+  }
+
+  // Clean up cache periodically
+  private cleanupCache(): void {
+    const now = Date.now();
+    for (const [key, value] of this.userCache.entries()) {
+      if (now - value.timestamp > this.CACHE_TTL) {
+        this.userCache.delete(key);
       }
     }
+  }
+
+  // Initialize cleanup interval in constructor
+  private initializeCleanup() {
+    setInterval(() => this.cleanupCache(), 10 * 60 * 1000);
   }
 
   /**
@@ -825,7 +899,7 @@ export class StellarService {
       }
 
       // Get claimable records with optimized query
-      const claimableQueryPromise = this.claimableRecords
+      const claimableQueryPromise = this.claimableRecordsRepository
         .createQueryBuilder('claimableRecords')
         .where('claimableRecords.account = :userId', { userId: user.id })
         .andWhere('claimableRecords.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
@@ -836,7 +910,7 @@ export class StellarService {
       const claimableRecords = await timeoutPromise(claimableQueryPromise, 10000) as ClaimableRecordsEntity[];
 
       // Get pool data with optimized query
-      const poolsQueryPromise = this.poolRepository
+      const poolsQueryPromise = this.poolsRepository
         .createQueryBuilder('pools')
         .where('pools.senderPublicKey = :userPublicKey', { userPublicKey })
         .andWhere('pools.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
@@ -875,7 +949,7 @@ export class StellarService {
         };
       }
 
-      const userLockedRecords = await this.poolRepository.findOne({
+      const userLockedRecords = await this.poolsRepository.findOne({
         where: {
           senderPublicKey: user.account,
           depositType: DepositType.LOCKER,
@@ -889,7 +963,7 @@ export class StellarService {
         };
       }
 
-      const locks = await this.poolRepository.find({
+      const locks = await this.poolsRepository.find({
         where: {
           depositType: DepositType.LOCKER,
         },
@@ -1097,11 +1171,11 @@ export class StellarService {
       }
 
       // Save the adjusted claimable records and pools
-      await this.claimableRecords.save(user.claimableRecords);
-      await this.poolRepository.save(user.pools);
+      await this.claimableRecordsRepository.save(user.claimableRecords);
+      await this.poolsRepository.save(user.pools);
 
-      await this.claimableRecords.save(user.claimableRecords);
-      await this.poolRepository.save(user.pools);
+      await this.claimableRecordsRepository.save(user.claimableRecords);
+      await this.poolsRepository.save(user.pools);
 
       await this.transferAsset(
         this.issuerKeypair,
@@ -1123,7 +1197,7 @@ export class StellarService {
   @Cron(CronExpression.EVERY_WEEK)
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
-    const poolRecords = await this.poolRepository.find({
+    const poolRecords = await this.poolsRepository.find({
       select: [
         'assetA',
         'assetB',
@@ -1303,7 +1377,7 @@ export class StellarService {
   @Cron(CronExpression.EVERY_WEEK)
   async redeemAquaRewardsForICE() {
     // Fetch all staked whlaqua and aqua records
-    const poolRecords = await this.poolRepository.find({
+    const poolRecords = await this.poolsRepository.find({
       select: [
         'assetA',
         'assetB',
@@ -1792,6 +1866,4 @@ export class StellarService {
       throw new Error(`AQUA to ICE lock failed: ${error.message}`);
     }
   }
-
-
 }
