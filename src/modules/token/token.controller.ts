@@ -58,65 +58,96 @@ export class TokenController {
   @ApiResponse({ status: 200, description: 'User information retrieved successfully' })
   @ApiResponse({ status: 502, description: 'Bad Gateway - Heavy wallet detected' })
   async getUserInfo(@Query('userPublicKey') userPublicKey: string, @Res() res: Response) {
+    // EMERGENCY: Block known heavy wallets immediately to prevent crashes
+    const HEAVY_WALLETS = [
+      'GCKTMO57VPZIOMFW47ZHXNWARPQRO4UGNNLHVFSEKDB2XKC74ZP4EKXD',
+      // Add other problematic wallets here
+    ];
+
+    if (HEAVY_WALLETS.includes(userPublicKey)) {
+      this.logger.warn(`🚨 EMERGENCY: Blocking heavy wallet ${userPublicKey} to prevent server crash`);
+      return res.status(503).json({
+        error: 'Service temporarily unavailable for this wallet',
+        message: 'This wallet has extensive transaction history. Please try again later.',
+        code: 'HEAVY_WALLET_BLOCKED',
+        userPublicKey
+      });
+    }
+
     try {
-      // Check memory usage before processing
-      const memUsage = this.memoryMonitorService.getMemoryStats();
-      if (memUsage.systemUsagePercentage > 80) { // 80% threshold
-        this.logger.warn(`High memory usage detected: ${memUsage.systemUsagePercentage.toFixed(2)}%`);
+      // Check memory before processing
+      const memUsage = process.memoryUsage();
+      const memUsagePercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+      
+      if (memUsagePercent > 80) {
+        this.logger.warn(`🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Blocking requests`);
+        return res.status(503).json({
+          error: 'Server under high memory load',
+          message: 'Please try again in a few minutes',
+          code: 'MEMORY_PROTECTION'
+        });
       }
 
-      // Circuit breaker for known heavy wallets
+      // Monitor memory usage during processing
+      const startMemory = process.memoryUsage().heapUsed;
+      
+      // Circuit breaker for known problematic wallets
       if (this.failedWallets.has(userPublicKey)) {
         const lastFail = this.failedWallets.get(userPublicKey);
-        if (Date.now() - lastFail < 300000) { // 5 minute cooldown
-          return res.status(200).json({
-            account: userPublicKey,
-            stakes: [],
-            claimableRecords: [],
-            pools: [],
-            lpBalances: [],
-            message: 'Heavy wallet - using simplified response mode',
-            totalStaked: '0',
-            totalClaimable: '0'
+        if (Date.now() - lastFail < 300000) { // 5 minutes
+          this.logger.warn(`Circuit breaker active for ${userPublicKey}`);
+          return res.status(503).json({
+            error: 'Circuit breaker active',
+            message: 'This wallet is temporarily blocked due to previous failures',
+            code: 'CIRCUIT_BREAKER_ACTIVE'
           });
-        } else {
-          this.failedWallets.delete(userPublicKey);
         }
       }
 
-      // Add timeout wrapper for the entire operation
+      // Set aggressive timeout
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Request timeout')), 15000); // 15 second timeout
+        setTimeout(() => reject(new Error('Request timeout')), 15000); // 15 seconds max
       });
 
-      const userPromise = this.stellarService.getUser(userPublicKey);
+      // Wrap the main logic with timeout and memory monitoring
+      const userInfoPromise = this.stellarService.getUser(userPublicKey);
       
-      const user = await Promise.race([userPromise, timeoutPromise]);
+      const result = await Promise.race([userInfoPromise, timeoutPromise]);
+
+      // Check memory after processing
+      const endMemory = process.memoryUsage().heapUsed;
+      const memoryIncrease = endMemory - startMemory;
       
-      res.status(200).json(user);
+      if (memoryIncrease > 50 * 1024 * 1024) { // 50MB increase
+        this.logger.warn(`Large memory increase detected: ${memoryIncrease / 1024 / 1024}MB for wallet ${userPublicKey}`);
+        this.failedWallets.set(userPublicKey, Date.now());
+      }
+
+      return res.status(200).json(result);
+
     } catch (error) {
       this.logger.error(`Error fetching user ${userPublicKey}:`, error.message);
       
-      // Mark as failed for circuit breaker
+      // Add to failed wallets list
       this.failedWallets.set(userPublicKey, Date.now());
       
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc();
+      }
+
       if (error.message.includes('timeout') || error.message.includes('memory')) {
-        // Return simplified response for heavy wallets instead of 502
-        return res.status(200).json({
-          account: userPublicKey,
-          stakes: [],
-          claimableRecords: [],
-          pools: [],
-          lpBalances: [],
-          message: 'Heavy wallet detected - simplified response mode activated',
-          totalStaked: '0',
-          totalClaimable: '0'
+        return res.status(503).json({
+          error: 'Service temporarily unavailable',
+          message: 'Request timed out or exceeded memory limits',
+          code: 'TIMEOUT_OR_MEMORY'
         });
       }
-      
-      res.status(500).json({
-        message: 'Internal server error',
-        error: error.message
+
+      return res.status(502).json({
+        error: 'Bad Gateway',
+        message: 'Unable to process request for this wallet',
+        code: 'PROCESSING_ERROR'
       });
     }
   }
