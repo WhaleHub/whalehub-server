@@ -212,6 +212,16 @@ export class TokenController {
     }
   }
 
+  @Get('auth/challenge')
+  @ApiOperation({ summary: 'Issue a wallet ownership challenge (SEP-10 style)' })
+  @ApiResponse({ status: 200, description: 'Returns a challenge transaction XDR to be signed by the wallet' })
+  async getAuthChallenge(@Query('account') account: string) {
+    if (!account) {
+      throw new HttpException('Missing account', HttpStatus.BAD_REQUEST);
+    }
+    return await this.stellarService.createAuthChallenge(account);
+  }
+
   @Post('unlock-aqua')
   @ApiOperation({ summary: 'Unlock AQUA to Public Key' })
   @ApiBody({
@@ -224,8 +234,9 @@ export class TokenController {
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
+    await this.stellarService.verifyAuthChallenge(unlockAquaDto.senderPublicKey, unlockAquaDto.signedChallengeXdr);
     await this.stellarService.unlockAqua(unlockAquaDto);
-    res.send().status(200);
+    res.status(200).send();
   }
 
   @Post('restake-blub')

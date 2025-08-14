@@ -12,7 +12,9 @@ import {
   Transaction,
   TransactionBuilder,
   xdr,
+  Account,
 } from '@stellar/stellar-sdk';
+import { randomBytes } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
@@ -69,6 +71,7 @@ export class StellarService {
   private readonly CIRCUIT_BREAKER_TTL = 30 * 60 * 1000; // 30 minutes
   private readonly MAX_QUERY_TIMEOUT = 15000; // 15 seconds
   private readonly SIMPLIFIED_MODE_LIMIT = 100; // Switch to simplified mode for heavy wallets
+  private readonly authChallenges = new Map<string, { accountId: string; expiresAt: number }>();
 
   constructor(
     private configService: ConfigService,
@@ -1855,6 +1858,94 @@ export class StellarService {
     } catch (error) {
       this.logger.error(`Failed to lock AQUA for ICE: ${error.message}`, error);
       throw new Error(`AQUA to ICE lock failed: ${error.message}`);
+    }
+  }
+
+  // Issue a SEP-10 style challenge XDR for a wallet to sign
+  async createAuthChallenge(accountId: string) {
+    try {
+      const serverAccount = new Account(this.signerKeyPair.publicKey(), '0');
+      const nonce = randomBytes(48);
+      const tx = new TransactionBuilder(serverAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.manageData({
+            source: accountId,
+            name: 'whalehub-auth',
+            value: nonce,
+          }),
+        )
+        .setTimeout(300) // 5 minutes
+        .build();
+
+      // Sign by server to bind to our domain/account
+      tx.sign(this.signerKeyPair);
+
+      const xdr = tx.toXDR();
+      const expiresAt = Date.now() + 5 * 60 * 1000;
+      const nonceKey = nonce.toString('base64');
+      this.authChallenges.set(nonceKey, { accountId, expiresAt });
+      return { challengeXdr: xdr, serverAccountId: this.signerKeyPair.publicKey() };
+    } catch (error) {
+      this.logger.error('Failed to create auth challenge', error);
+      throw new HttpException('Failed to create challenge', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  // Verify that the signed challenge proves ownership of the provided account
+  async verifyAuthChallenge(accountId: string, signedChallengeXdr: string) {
+    try {
+      if (!signedChallengeXdr) {
+        throw new HttpException('Missing signed challenge', HttpStatus.UNAUTHORIZED);
+      }
+
+      const tx = new Transaction(signedChallengeXdr, Networks.PUBLIC);
+
+      // Ensure challenge structure
+      if (tx.source !== this.signerKeyPair.publicKey()) {
+        throw new HttpException('Invalid challenge source', HttpStatus.UNAUTHORIZED);
+      }
+
+      if (!tx.timeBounds || (tx.timeBounds.maxTime !== '0' && Number(tx.timeBounds.maxTime) < Math.floor(Date.now() / 1000))) {
+        // TransactionBuilder.setTimeout sets only maxTime
+      }
+
+      // Extract nonce from manageData op and ensure it was issued for this account
+      const op = tx.operations.find((o) => o.type === 'manageData');
+      if (!op || (op as any).name !== 'whalehub-auth' || (op as any).source !== accountId) {
+        throw new HttpException('Invalid challenge operation', HttpStatus.UNAUTHORIZED);
+      }
+      const value = (op as any).value as Buffer;
+      const nonceKey = (Buffer.isBuffer(value) ? value : Buffer.from(value)).toString('base64');
+      const issued = this.authChallenges.get(nonceKey);
+      if (!issued || issued.accountId !== accountId || issued.expiresAt < Date.now()) {
+        throw new HttpException('Expired or unknown challenge', HttpStatus.UNAUTHORIZED);
+      }
+
+      // Verify client signature is present
+      const txHash = tx.hash();
+      const clientKeypair = Keypair.fromPublicKey(accountId);
+      const hasClientSig = tx.signatures.some((sig) => clientKeypair.verify(txHash, sig.signature()));
+      if (!hasClientSig) {
+        throw new HttpException('Missing valid wallet signature', HttpStatus.UNAUTHORIZED);
+      }
+
+      // Verify server signature is present to ensure it is our challenge
+      const serverKeypair = Keypair.fromPublicKey(this.signerKeyPair.publicKey());
+      const hasServerSig = tx.signatures.some((sig) => serverKeypair.verify(txHash, sig.signature()));
+      if (!hasServerSig) {
+        throw new HttpException('Invalid challenge signer', HttpStatus.UNAUTHORIZED);
+      }
+
+      // One-time use
+      this.authChallenges.delete(nonceKey);
+      return true;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.logger.error('Auth verification failed', error);
+      throw new HttpException('Unauthorized', HttpStatus.UNAUTHORIZED);
     }
   }
 }
