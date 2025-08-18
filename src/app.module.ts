@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -13,6 +13,7 @@ import { PoolsEntity } from './utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MemoryMonitorService } from './helpers/memory-monitor.service';
+import { UnlockAquaSecurityMiddleware } from './middleware/unlock-aqua-security.middleware';
 
 @Module({
   imports: [
@@ -36,4 +37,10 @@ import { MemoryMonitorService } from './helpers/memory-monitor.service';
   controllers: [AppController],
   providers: [AppService, MemoryMonitorService],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(UnlockAquaSecurityMiddleware)
+      .forRoutes('*'); // Apply to all routes, but middleware will filter for unlock-aqua
+  }
+}

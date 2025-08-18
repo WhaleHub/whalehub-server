@@ -1056,11 +1056,25 @@ export class StellarService {
   }
 
   async unlockAqua(unlockAquaDto: UnlockAquaDto) {
-    // SECURITY: Validate that signedTxXdr is provided
-    if (!unlockAquaDto.signedTxXdr) {
-      this.logger.error('Unauthorized unstake attempt: Missing signed transaction');
+    // SECURITY: Multiple validation layers to ensure signedTxXdr is provided
+    if (!unlockAquaDto || 
+        !unlockAquaDto.signedTxXdr || 
+        unlockAquaDto.signedTxXdr.trim() === '' ||
+        unlockAquaDto.signedTxXdr === 'undefined' ||
+        unlockAquaDto.signedTxXdr === 'null') {
+      this.logger.error('SECURITY ALERT: Unauthorized unstake attempt blocked in service layer');
+      this.logger.error(`Request details: ${JSON.stringify(unlockAquaDto)}`);
       throw new HttpException(
-        'Unauthorized: Signed transaction required for wallet verification',
+        'SECURITY: Wallet signature verification required. Unstaking is only allowed through authenticated wallet connections.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    // Additional validation for XDR format
+    if (unlockAquaDto.signedTxXdr.length < 20) {
+      this.logger.error('SECURITY ALERT: Invalid transaction XDR format detected');
+      throw new HttpException(
+        'SECURITY: Invalid transaction format. Please use the web application with a connected wallet.',
         HttpStatus.UNAUTHORIZED,
       );
     }

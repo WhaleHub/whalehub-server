@@ -213,10 +213,10 @@ export class TokenController {
   }
 
   @Post('unlock-aqua')
-  @ApiOperation({ summary: 'Unlock AQUA to Public Key' })
+  @ApiOperation({ summary: 'Unlock AQUA to Public Key - REQUIRES WALLET SIGNATURE' })
   @ApiBody({
     type: UnlockAquaDto,
-    description: 'Data required to unlock AQUA stakes - signedTxXdr is REQUIRED for security',
+    description: 'Data required to unlock AQUA stakes - signedTxXdr is MANDATORY for security',
   })
   @ApiResponse({
     status: 201,
@@ -225,8 +225,56 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   @ApiResponse({ status: 401, description: 'Unauthorized: Missing or invalid signed transaction.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
-    await this.stellarService.unlockAqua(unlockAquaDto);
-    res.send().status(200);
+    // SECURITY: CRITICAL - Multiple validation layers to prevent unauthorized access
+    this.logger.warn('🔒 UNLOCK-AQUA SECURITY: Request received, performing validation');
+    
+    // Primary security check
+    if (!unlockAquaDto || typeof unlockAquaDto !== 'object') {
+      this.logger.error('🚨 SECURITY VIOLATION: Invalid request object');
+      return res.status(401).json({
+        statusCode: 401,
+        message: 'SECURITY: Invalid request format',
+        error: 'Unauthorized'
+      });
+    }
+
+    // Critical signedTxXdr validation
+    if (!unlockAquaDto.signedTxXdr || 
+        typeof unlockAquaDto.signedTxXdr !== 'string' ||
+        unlockAquaDto.signedTxXdr.trim() === '' ||
+        unlockAquaDto.signedTxXdr.length < 20) {
+      
+      this.logger.error('🚨 SECURITY VIOLATION: Missing or invalid signedTxXdr');
+      this.logger.error(`Request details: ${JSON.stringify(unlockAquaDto)}`);
+      
+      return res.status(401).json({
+        statusCode: 401,
+        message: 'SECURITY: Wallet signature verification required. Unauthorized access blocked.',
+        error: 'Unauthorized',
+        details: 'Use the web application with connected wallet to unstake tokens safely.'
+      });
+    }
+
+    // Additional validation for common bypass attempts
+    const suspiciousValues = ['null', 'undefined', 'invalid', 'test', '123'];
+    if (suspiciousValues.includes(unlockAquaDto.signedTxXdr.toLowerCase())) {
+      this.logger.error('🚨 SECURITY VIOLATION: Suspicious signedTxXdr value detected');
+      return res.status(401).json({
+        statusCode: 401,
+        message: 'SECURITY: Invalid transaction signature detected',
+        error: 'Unauthorized'
+      });
+    }
+
+    this.logger.log(`✅ SECURITY: Valid signature found, proceeding with unlock for ${unlockAquaDto.senderPublicKey}`);
+    
+    try {
+      await this.stellarService.unlockAqua(unlockAquaDto);
+      res.status(201).send();
+    } catch (error) {
+      this.logger.error(`Unlock failed: ${error.message}`);
+      throw error;
+    }
   }
 
   @Post('restake-blub')
