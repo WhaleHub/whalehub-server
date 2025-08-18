@@ -1056,6 +1056,33 @@ export class StellarService {
   }
 
   async unlockAqua(unlockAquaDto: UnlockAquaDto) {
+    // First validate the signed transaction to ensure the request is authenticated
+    try {
+      const unlockTxn = new Transaction(
+        unlockAquaDto.signedTxXdr,
+        Networks.PUBLIC,
+      );
+      
+      // Submit the transaction to validate it's properly signed and from the sender
+      const txResponse = await this.server.submitTransaction(unlockTxn);
+      const txHash = txResponse.hash;
+      this.logger.debug(`Unlock validation transaction hash: ${txHash}`);
+      
+      // Check if the validation transaction was successful
+      const txResult = await this.checkTransactionStatus(this.server, txHash);
+      if (!txResult.successful) {
+        throw new HttpException('Transaction validation failed', HttpStatus.UNAUTHORIZED);
+      }
+      
+      this.logger.debug('Transaction validation successful, proceeding with unlock...');
+    } catch (error) {
+      this.logger.error(`Transaction validation failed: ${error.message}`);
+      throw new HttpException(
+        'Unauthorized: Invalid or unsigned transaction',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
     const account = await this.server.loadAccount(
       unlockAquaDto.senderPublicKey,
     );
