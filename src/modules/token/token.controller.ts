@@ -216,13 +216,14 @@ export class TokenController {
   @ApiOperation({ summary: 'Unlock AQUA to Public Key' })
   @ApiBody({
     type: UnlockAquaDto,
-    description: 'Data required to unlock AQUA stakes',
+    description: 'Data required to unlock AQUA stakes - signedTxXdr is REQUIRED for security',
   })
   @ApiResponse({
     status: 201,
     description: 'Liquidity successfully removed',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized: Missing or invalid signed transaction.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
     await this.stellarService.unlockAqua(unlockAquaDto);
     res.send().status(200);

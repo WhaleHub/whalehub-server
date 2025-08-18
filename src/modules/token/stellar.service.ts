@@ -1056,7 +1056,16 @@ export class StellarService {
   }
 
   async unlockAqua(unlockAquaDto: UnlockAquaDto) {
-    // First validate the signed transaction to ensure the request is authenticated
+    // SECURITY: Validate that signedTxXdr is provided
+    if (!unlockAquaDto.signedTxXdr) {
+      this.logger.error('Unauthorized unstake attempt: Missing signed transaction');
+      throw new HttpException(
+        'Unauthorized: Signed transaction required for wallet verification',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    // Validate the signed transaction to ensure the request is authenticated
     try {
       const unlockTxn = new Transaction(
         unlockAquaDto.signedTxXdr,
