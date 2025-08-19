@@ -47,7 +47,7 @@ export const typeOrmConfig = async (
     maxQueryExecutionTime: 25000, // Log slow queries over 25 seconds
     
     // Pool settings specifically for heavy queries
-    poolSize: 25, // Maximum active connections
+    poolSize: 60, // Maximum active connections
     
     // Cache settings
     cache: {
@@ -76,7 +76,7 @@ export const typeOrmConfig = async (
       '-c', 'random_page_cost=1.1',
       '-c', 'effective_cache_size=1GB',
       '-c', 'shared_preload_libraries=pg_stat_statements',
-      '-c', 'max_connections=100',
+      '-c', 'max_connections=1000',
       '-c', 'work_mem=32MB',
       '-c', 'maintenance_work_mem=256MB',
       '-c', 'effective_io_concurrency=200',
