@@ -14,11 +14,11 @@ export const typeOrmConfig = async (
   const nodeEnv = configService.get<string>('NODE_ENV') ?? 'development';
   const isProduction = nodeEnv === 'production';
 
-  const host = configService.get<string>('DATABASE_HOST') || '127.0.0.1';
-  const port = Number(configService.get<string>('DATABASE_PORT') ?? 5432);
-  const username = configService.get<string>('DATABASE_USERNAME');
-  const password = configService.get<string>('DATABASE_PASSWORD');
-  const database = configService.get<string>('DATABASE_NAME');
+  const host = configService.get<string>('POSTGRES_HOST') || '127.0.0.1';
+  const port = Number(configService.get<string>('POSTGRES_PORT') ?? 5432);
+  const username = configService.get<string>('POSTGRES_USER');
+  const password = configService.get<string>('POSTGRES_PASSWORD');
+  const database = configService.get<string>('POSTGRES_DATABASE');
 
   // Fail fast if critical envs are missing
   for (const [k, v] of Object.entries({ host, port, username, password, database })) {
