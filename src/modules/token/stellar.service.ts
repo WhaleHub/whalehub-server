@@ -94,7 +94,8 @@ export class StellarService {
       this.configService.get('LP_SIGNER_SECRET_KEY'),
     );
     this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
-    this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
+    const horizonUrl = this.configService.get<string>('HORIZON_ENDPOINT') || 'https://horizon.stellar.org';
+    this.server = new Horizon.Server(horizonUrl);
     this.blub = new Asset(BLUB_CODE, this.issuerKeypair.publicKey());
     this.treasureAddress = this.configService.get<string>('TREASURE_ADDRESS');
     this.signerKeyPair = Keypair.fromSecret(
