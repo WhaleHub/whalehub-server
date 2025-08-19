@@ -1,4 +1,4 @@
-import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -41,6 +41,6 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(UnlockAquaSecurityMiddleware)
-      .forRoutes('*'); // Apply to all routes, but middleware will filter for unlock-aqua
+      .forRoutes({ path: 'token/unlock-aqua', method: RequestMethod.POST });
   }
 }
