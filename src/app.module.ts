@@ -35,6 +35,7 @@ import { DataSource, DataSourceOptions } from 'typeorm';
           const dataSource = new DataSource(options as DataSourceOptions);
           return await dataSource.initialize();
         } catch (error) {
+          console.warn(error);
           const sqliteOptions: DataSourceOptions = {
             type: 'sqlite',
             database: ':memory:',
