@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsNumber, IsString, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateStakeDto {
   @ApiProperty({ description: 'The name of the token' })
@@ -9,7 +10,8 @@ export class CreateStakeDto {
   assetIssuer: string;
 
   @ApiProperty({ description: 'Amount to lock', minimum: 1 })
-  @IsString()
+  @Type(() => Number)
+  @IsNumber()
   amount: number;
 
   @ApiProperty({ description: 'Treasury Amount', minimum: 1 })

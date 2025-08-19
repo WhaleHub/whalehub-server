@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsNumber, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 
 class AssetDto {
   @ApiProperty({ description: 'The code of the asset (e.g., XLM, AQUA)' })
@@ -12,6 +13,7 @@ class AssetDto {
   issuer?: string;
 
   @ApiProperty({ description: 'The amount of the asset' })
+  @Type(() => Number)
   @IsNumber()
   @Min(1, { message: 'Amount must be at least 1' })
   amount: number;

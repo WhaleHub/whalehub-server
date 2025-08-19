@@ -225,15 +225,6 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   @ApiResponse({ status: 401, description: 'Unauthorized: Missing or invalid signed transaction.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
-    // SECURITY: HARD KILL-SWITCH (set ENABLE_UNLOCK_AQUA=true to allow)
-    if (process.env.ENABLE_UNLOCK_AQUA !== 'true') {
-      this.logger.error('🚫 Unstake disabled by policy. Set ENABLE_UNLOCK_AQUA=true to enable.');
-      return res.status(401).json({
-        statusCode: 401,
-        message: 'SECURITY: Unstaking disabled. Please use the web app when enabled.',
-        error: 'Unauthorized'
-      });
-    }
 
     // SECURITY: CRITICAL - Multiple validation layers to prevent unauthorized access
     this.logger.warn('🔒 UNLOCK-AQUA SECURITY: Request received, performing validation');
@@ -290,7 +281,7 @@ export class TokenController {
   @Post('restake-blub')
   @ApiOperation({ summary: 'Stake Blub Tokens' })
   @ApiBody({
-    type: UnlockAquaDto,
+    type: StakeBlubDto,
     description: 'Data required to stake Blub tokens',
   })
   @ApiResponse({

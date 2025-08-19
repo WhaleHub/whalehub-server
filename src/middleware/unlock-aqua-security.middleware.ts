@@ -10,6 +10,17 @@ export class UnlockAquaSecurityMiddleware implements NestMiddleware {
     if (req.path === '/token/unlock-aqua' && req.method === 'POST') {
       this.logger.warn(`🔒 SECURITY CHECK: Unlock-aqua request from ${req.ip}`);
       
+      // Block direct curl attempts explicitly
+      const userAgent = (req.get('User-Agent') || '').toLowerCase();
+      if (userAgent.includes('curl')) {
+        this.logger.error('🚫 SECURITY: Blocked curl client for unlock-aqua endpoint');
+        throw new HttpException({
+          statusCode: HttpStatus.UNAUTHORIZED,
+          message: 'SECURITY: Direct command-line access is not allowed. Please use the web application with a connected wallet.',
+          error: 'Unauthorized',
+        }, HttpStatus.UNAUTHORIZED);
+      }
+      
       const body = req.body;
       
       // Multiple security validations
