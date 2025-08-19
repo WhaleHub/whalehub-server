@@ -225,8 +225,8 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   @ApiResponse({ status: 401, description: 'Unauthorized: Missing or invalid signed transaction.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
-    // SECURITY: Allow unstake by default; set ENABLE_UNLOCK_AQUA=false to disable
-    if (process.env.ENABLE_UNLOCK_AQUA === 'false') {
+    // SECURITY: HARD KILL-SWITCH (set ENABLE_UNLOCK_AQUA=true to allow)
+    if (process.env.ENABLE_UNLOCK_AQUA !== 'true') {
       this.logger.error('🚫 Unstake disabled by policy. Set ENABLE_UNLOCK_AQUA=true to enable.');
       return res.status(401).json({
         statusCode: 401,
