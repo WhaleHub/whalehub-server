@@ -11,16 +11,29 @@ import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 export const typeOrmConfig = async (
   configService: ConfigService,
 ): Promise<TypeOrmModuleOptions> => {
-  const nodeEnv = configService.get<string>('NODE_ENV');
+  const nodeEnv = configService.get<string>('NODE_ENV') ?? 'development';
   const isProduction = nodeEnv === 'production';
+
+  const host = configService.get<string>('DATABASE_HOST') || '127.0.0.1';
+  const port = Number(configService.get<string>('DATABASE_PORT') ?? 5432);
+  const username = configService.get<string>('DATABASE_USERNAME');
+  const password = configService.get<string>('DATABASE_PASSWORD');
+  const database = configService.get<string>('DATABASE_NAME');
+
+  // Fail fast if critical envs are missing
+  for (const [k, v] of Object.entries({ host, port, username, password, database })) {
+    if (v === undefined || v === null || v === '') {
+      throw new Error(`Missing database config: ${k}`);
+    }
+  }
 
   const base: TypeOrmModuleOptions = {
     type: 'postgres',
-    host: configService.get<string>('DATABASE_HOST'),
-    port: parseInt(configService.get<string>('DATABASE_PORT') || '5432') || 5432,
-    username: configService.get<string>('DATABASE_USERNAME'),
-    password: configService.get<string>('DATABASE_PASSWORD'),
-    database: configService.get<string>('DATABASE_NAME'),
+    host,
+    port,
+    username,
+    password,
+    database,
     entities: [
       UserEntity,
       TokenEntity,
@@ -30,57 +43,39 @@ export const typeOrmConfig = async (
       RewardClaimsEntity,
       StakeEntity,
     ],
-    synchronize: nodeEnv !== 'production',
+    synchronize: !isProduction,
     logging: nodeEnv === 'development',
 
-    // Connection retry settings
+    // Retries (TypeORM supports these on initial connection)
     retryAttempts: 3,
-    retryDelay: 3000, // 3 seconds between retries
-    
-    // Auto load entities
+    retryDelay: 3000,
+
+    // Let TypeORM pick up entities from feature modules (optional if you list entities)
     autoLoadEntities: true,
-    
-    // Connection name for multiple connections
-    name: 'default',
-    
-    // Connection options for better performance
-    maxQueryExecutionTime: 25000, // Log slow queries over 25 seconds
-    
-    // Pool settings specifically for heavy queries
-    poolSize: 60, // Maximum active connections
-    
-    // Cache settings
+
+    // Log slow queries
+    maxQueryExecutionTime: 25_000,
+
+    // Cache in DB (table will be auto-created)
     cache: {
       type: 'database',
       tableName: 'query_result_cache',
-      duration: 30000,
+      duration: 30_000,
     },
-  } as TypeOrmModuleOptions;
 
-  // Add Postgres-specific extras only when using Postgres
-  (base as any).extra = {
-    max: 25,
-    min: 5,
-    idle: 10000,
-    evict: 1000,
-    acquire: 60000,
-    connectionTimeoutMillis: 30000,
-    idleTimeoutMillis: 30000,
-    query_timeout: 25000,
-    statement_timeout: 25000,
-    application_name: 'whalehub-server',
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 0,
-    ssl: isProduction ? { rejectUnauthorized: false } : false,
-    options: [
-      '-c', 'random_page_cost=1.1',
-      '-c', 'effective_cache_size=1GB',
-      '-c', 'shared_preload_libraries=pg_stat_statements',
-      '-c', 'max_connections=1000',
-      '-c', 'work_mem=32MB',
-      '-c', 'maintenance_work_mem=256MB',
-      '-c', 'effective_io_concurrency=200',
-    ].join(' '),
+    // Pool config – pg uses `extra` for pool options
+    extra: {
+      max: 25,                    // max clients in pool
+      min: 5,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 30_000,
+      statement_timeout: 25_000,  // server-side statement timeout
+      query_timeout: 25_000,      // client-side
+      application_name: 'whalehub-server',
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 0,
+      ssl: isProduction ? { rejectUnauthorized: false } : false,
+    },
   };
 
   return base;
