@@ -14,6 +14,7 @@ import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MemoryMonitorService } from './helpers/memory-monitor.service';
 import { UnlockAquaSecurityMiddleware } from './middleware/unlock-aqua-security.middleware';
+import { DataSource, DataSourceOptions } from 'typeorm';
 
 @Module({
   imports: [
@@ -29,6 +30,25 @@ import { UnlockAquaSecurityMiddleware } from './middleware/unlock-aqua-security.
       useFactory: async (configService: ConfigService) =>
         await typeOrmConfig(configService),
       inject: [ConfigService],
+      dataSourceFactory: async (options) => {
+        try {
+          const dataSource = new DataSource(options as DataSourceOptions);
+          return await dataSource.initialize();
+        } catch (error) {
+          const sqliteOptions: DataSourceOptions = {
+            type: 'sqlite',
+            database: ':memory:',
+            entities: (options as DataSourceOptions).entities,
+            synchronize: true,
+            logging: false,
+            name: (options as any).name || 'default',
+          };
+          // eslint-disable-next-line no-console
+          console.warn('[TypeOrmModule] Database connection failed; automatically starting with in-memory SQLite fallback');
+          const sqliteDataSource = new DataSource(sqliteOptions);
+          return await sqliteDataSource.initialize();
+        }
+      },
     }),
     ConfigModule.forRoot({ isGlobal: true }),
     TokenModule,
