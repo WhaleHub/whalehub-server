@@ -32,22 +32,26 @@ import { DataSource, DataSourceOptions } from 'typeorm';
       inject: [ConfigService],
       dataSourceFactory: async (options) => {
         try {
+          console.log('[TypeOrmModule] Attempting to connect to database...');
           const dataSource = new DataSource(options as DataSourceOptions);
-          return await dataSource.initialize();
+          const initializedDataSource = await dataSource.initialize();
+          console.log('[TypeOrmModule] Database connection established successfully');
+          return initializedDataSource;
         } catch (error) {
-          console.warn(error);
-          const sqliteOptions: DataSourceOptions = {
-            type: 'sqlite',
-            database: ':memory:',
-            entities: (options as DataSourceOptions).entities,
-            synchronize: true,
-            logging: false,
-            name: (options as any).name || 'default',
-          };
-          // eslint-disable-next-line no-console
-          console.warn('[TypeOrmModule] Database connection failed; automatically starting with in-memory SQLite fallback');
-          const sqliteDataSource = new DataSource(sqliteOptions);
-          return await sqliteDataSource.initialize();
+          console.error('[TypeOrmModule] Database connection failed:', error);
+          
+          // Log detailed error information
+          if (error.code === 'ECONNREFUSED') {
+            console.error('[TypeOrmModule] Connection refused - Database server may not be running or accessible');
+            console.error(`[TypeOrmModule] Host: ${(options as any).host}:${(options as any).port}`);
+          } else if (error.code === 'ENOTFOUND') {
+            console.error('[TypeOrmModule] Host not found - Check database host configuration');
+          } else if (error.code === 'ECONNRESET') {
+            console.error('[TypeOrmModule] Connection reset - Network or authentication issue');
+          }
+          
+          // Re-throw the error to prevent application startup with invalid database state
+          throw new Error(`Database connection failed: ${error.message}`);
         }
       },
     }),
