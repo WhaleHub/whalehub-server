@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsString, Min, IsNotEmpty } from 'class-validator';
+import { IsNumber, IsString, Min, IsNotEmpty, IsOptional } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateStakeDto {
@@ -13,17 +13,17 @@ export class CreateStakeDto {
   @IsNotEmpty()
   assetIssuer: string;
 
-  @ApiProperty({ description: 'Amount to lock', minimum: 1 })
+  @ApiProperty({ description: 'Amount to lock', minimum: 0.0000001 })
   @Type(() => Number)
   @IsNumber()
   @Min(0.0000001, { message: 'Amount must be at least 0.0000001' })
   amount: number;
 
-  @ApiProperty({ description: 'Treasury Amount', minimum: 0 })
+  @ApiProperty({ description: 'Treasury Amount', minimum: 0, required: false })
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  @Min(0, { message: 'Treasury amount must be at least 0' })
-  treasuryAmount: number;
+  treasuryAmount?: number;
 
   @ApiProperty({ description: 'The signed transaction from user' })
   @IsString()

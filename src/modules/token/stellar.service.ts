@@ -107,7 +107,7 @@ export class StellarService {
 
   async lock(createStakeDto: CreateStakeDto): Promise<void> {
     try {
-      // Input validation
+      // Basic input validation
       if (!createStakeDto.senderPublicKey || createStakeDto.senderPublicKey.trim() === '') {
         throw new HttpException('Invalid sender public key', HttpStatus.BAD_REQUEST);
       }
@@ -116,16 +116,8 @@ export class StellarService {
         throw new HttpException('Invalid signed transaction XDR', HttpStatus.BAD_REQUEST);
       }
       
-      if (!createStakeDto.amount || createStakeDto.amount <= 0) {
-        throw new HttpException('Invalid amount', HttpStatus.BAD_REQUEST);
-      }
-      
-      if (!createStakeDto.assetCode || createStakeDto.assetCode.trim() === '') {
-        throw new HttpException('Invalid asset code', HttpStatus.BAD_REQUEST);
-      }
-      
-      if (!createStakeDto.assetIssuer || createStakeDto.assetIssuer.trim() === '') {
-        throw new HttpException('Invalid asset issuer', HttpStatus.BAD_REQUEST);
+      if (typeof createStakeDto.amount !== 'number' || isNaN(createStakeDto.amount) || createStakeDto.amount <= 0) {
+        throw new HttpException(`Invalid amount: ${createStakeDto.amount}`, HttpStatus.BAD_REQUEST);
       }
 
       // Load the account details
