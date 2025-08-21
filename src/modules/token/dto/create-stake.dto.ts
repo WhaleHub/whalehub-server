@@ -1,12 +1,16 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsString, Min } from 'class-validator';
+import { IsNumber, IsString, Min, IsNotEmpty } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateStakeDto {
   @ApiProperty({ description: 'The name of the token' })
+  @IsString()
+  @IsNotEmpty()
   assetCode: string;
 
   @ApiProperty({ description: 'Contract address of the token' })
+  @IsString()
+  @IsNotEmpty()
   assetIssuer: string;
 
   @ApiProperty({ description: 'Amount to lock', minimum: 1 })
@@ -19,9 +23,11 @@ export class CreateStakeDto {
 
   @ApiProperty({ description: 'The signed transaction from user' })
   @IsString()
+  @IsNotEmpty()
   signedTxXdr: string;
 
   @ApiProperty({ description: 'The signed transaction from user' })
   @IsString()
+  @IsNotEmpty()
   senderPublicKey: string;
 }

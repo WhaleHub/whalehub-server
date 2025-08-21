@@ -1,10 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsNumber, IsOptional, IsString, IsNotEmpty } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class StakeBlubDto {
 	@ApiProperty({ description: 'The public key of the sender wallet' })
 	@IsString()
+	@IsNotEmpty()
 	senderPublicKey: string;
 
 	@ApiProperty({ description: 'Amount to restake' })
@@ -14,6 +15,7 @@ export class StakeBlubDto {
 
 	@ApiProperty({ description: 'Signed transaction XDR for wallet verification' })
 	@IsString()
+	@IsNotEmpty()
 	signedTxXdr: string;
 
 	// Optional fields sometimes sent by the frontend; allowed for whitelist compatibility

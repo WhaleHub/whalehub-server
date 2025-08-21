@@ -10,40 +10,33 @@ export class UnlockAquaSecurityMiddleware implements NestMiddleware {
     if (req.path === '/token/unlock-aqua' && req.method === 'POST') {
       this.logger.warn(`🔒 SECURITY CHECK: Unlock-aqua request from ${req.ip}`);
       
-      // Block direct curl attempts explicitly
       const userAgent = (req.get('User-Agent') || '').toLowerCase();
-      if (userAgent.includes('curl')) {
-        this.logger.error('🚫 SECURITY: Blocked curl client for unlock-aqua endpoint');
-        throw new HttpException({
-          statusCode: HttpStatus.UNAUTHORIZED,
-          message: 'SECURITY: Direct command-line access is not allowed. Please use the web application with a connected wallet.',
-          error: 'Unauthorized',
-        }, HttpStatus.UNAUTHORIZED);
-      }
-      
       const body = req.body;
-      
-      // Multiple security validations
-      if (!body || 
-          typeof body !== 'object' ||
-          !body.signedTxXdr || 
-          typeof body.signedTxXdr !== 'string' ||
-          body.signedTxXdr.trim() === '' ||
-          body.signedTxXdr.length < 20) {
-        
-        this.logger.error('🚨 SECURITY ALERT: Blocked unauthorized unstaking attempt');
-        this.logger.error(`Request body: ${JSON.stringify(body)}`);
-        this.logger.error(`IP: ${req.ip}, User-Agent: ${req.get('User-Agent')}`);
-        
+
+      const hasValidXdr = !!(
+        body &&
+        typeof body === 'object' &&
+        typeof body.signedTxXdr === 'string' &&
+        body.signedTxXdr.trim() !== '' &&
+        body.signedTxXdr.length >= 20
+      );
+
+      // Only block direct curl attempts explicitly when XDR is missing/invalid
+      if (userAgent.includes('curl') && !hasValidXdr) {
+        this.logger.error('🚫 SECURITY: Blocked curl client for unlock-aqua endpoint (missing/invalid signedTxXdr)');
         throw new HttpException({
           statusCode: HttpStatus.UNAUTHORIZED,
-          message: 'SECURITY: Unauthorized access blocked. Wallet signature required.',
+          message: 'SECURITY: Direct command-line access without a valid signed transaction is not allowed. Please use the web application with a connected wallet.',
           error: 'Unauthorized',
-          details: 'Unstaking requires wallet authentication through the web application.'
         }, HttpStatus.UNAUTHORIZED);
       }
 
-      this.logger.log('✅ SECURITY: Valid signedTxXdr found, proceeding with validation');
+      if (!hasValidXdr) {
+        // Allow request to proceed so controller/DTO validation can return 400 instead of hard 401 here
+        this.logger.warn('⚠️ SECURITY: No valid signedTxXdr found in request body; delegating to controller validation');
+      } else {
+        this.logger.log('✅ SECURITY: Valid signedTxXdr found, proceeding');
+      }
     }
     
     next();
