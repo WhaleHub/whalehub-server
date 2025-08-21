@@ -16,9 +16,13 @@ export class CreateStakeDto {
   @ApiProperty({ description: 'Amount to lock', minimum: 1 })
   @Type(() => Number)
   @IsNumber()
+  @Min(0.0000001, { message: 'Amount must be at least 0.0000001' })
   amount: number;
 
-  @ApiProperty({ description: 'Treasury Amount', minimum: 1 })
+  @ApiProperty({ description: 'Treasury Amount', minimum: 0 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0, { message: 'Treasury amount must be at least 0' })
   treasuryAmount: number;
 
   @ApiProperty({ description: 'The signed transaction from user' })

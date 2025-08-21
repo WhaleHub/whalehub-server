@@ -34,8 +34,16 @@ export class TokenController {
     description: 'Aqua locked successfully',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  lock(@Body() createStakeDto: CreateStakeDto) {
-    return this.stellarService.lock(createStakeDto);
+  async lock(@Body() createStakeDto: CreateStakeDto) {
+    try {
+      return await this.stellarService.lock(createStakeDto);
+    } catch (error) {
+      this.logger.error('Error in lock endpoint:', error);
+      throw new HttpException(
+        error.message || 'Failed to lock AQUA tokens',
+        error.status || HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
   }
 
   @Post('add-liquidity')

@@ -107,6 +107,27 @@ export class StellarService {
 
   async lock(createStakeDto: CreateStakeDto): Promise<void> {
     try {
+      // Input validation
+      if (!createStakeDto.senderPublicKey || createStakeDto.senderPublicKey.trim() === '') {
+        throw new HttpException('Invalid sender public key', HttpStatus.BAD_REQUEST);
+      }
+      
+      if (!createStakeDto.signedTxXdr || createStakeDto.signedTxXdr.trim() === '') {
+        throw new HttpException('Invalid signed transaction XDR', HttpStatus.BAD_REQUEST);
+      }
+      
+      if (!createStakeDto.amount || createStakeDto.amount <= 0) {
+        throw new HttpException('Invalid amount', HttpStatus.BAD_REQUEST);
+      }
+      
+      if (!createStakeDto.assetCode || createStakeDto.assetCode.trim() === '') {
+        throw new HttpException('Invalid asset code', HttpStatus.BAD_REQUEST);
+      }
+      
+      if (!createStakeDto.assetIssuer || createStakeDto.assetIssuer.trim() === '') {
+        throw new HttpException('Invalid asset issuer', HttpStatus.BAD_REQUEST);
+      }
+
       // Load the account details
       await this.server.loadAccount(this.issuerKeypair.publicKey());
 
@@ -418,6 +439,16 @@ export class StellarService {
       this.logger.error(
         'Error during staking process:',
         err?.data?.extras || err?.data || err?.message || err,
+      );
+      
+      // Re-throw the error so it can be properly handled by the controller
+      if (err instanceof HttpException) {
+        throw err;
+      }
+      
+      throw new HttpException(
+        `Failed to process staking transaction: ${err?.message || 'Unknown error'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
   }
