@@ -64,14 +64,40 @@ export class TokenController {
       // Add other problematic wallets here
     ];
 
+    const respondWithFallback = async () => {
+      try {
+        const stakingData = await this.stellarService.getUserStakingBalance(userPublicKey);
+        const fallbackData = {
+          id: null,
+          account: userPublicKey,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          claimableRecords: stakingData.claimableRecords || [],
+          pools: stakingData.pools || [],
+          stakes: [],
+          treasuryDeposits: [],
+          lpBalances: [],
+        };
+        return res.status(200).json(fallbackData);
+      } catch (e) {
+        this.logger.error(`Fallback user info failed for ${userPublicKey}: ${e?.message}`);
+        return res.status(200).json({
+          id: null,
+          account: userPublicKey,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          claimableRecords: [],
+          pools: [],
+          stakes: [],
+          treasuryDeposits: [],
+          lpBalances: [],
+        });
+      }
+    };
+
     if (HEAVY_WALLETS.includes(userPublicKey)) {
-      this.logger.warn(`🚨 EMERGENCY: Blocking heavy wallet ${userPublicKey} to prevent server crash`);
-      return res.status(503).json({
-        error: 'Service temporarily unavailable for this wallet',
-        message: 'This wallet has extensive transaction history. Please try again later.',
-        code: 'HEAVY_WALLET_BLOCKED',
-        userPublicKey
-      });
+      this.logger.warn(`🚨 EMERGENCY: Heavy wallet ${userPublicKey}; serving fallback data`);
+      return await respondWithFallback();
     }
 
     try {
@@ -80,27 +106,16 @@ export class TokenController {
       const memUsagePercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
       
       if (memUsagePercent > 80) {
-        this.logger.warn(`🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Blocking requests`);
-        return res.status(503).json({
-          error: 'Server under high memory load',
-          message: 'Please try again in a few minutes',
-          code: 'MEMORY_PROTECTION'
-        });
+        this.logger.warn(`🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Serving fallback data`);
+        return await respondWithFallback();
       }
 
-      // Monitor memory usage during processing
-      const startMemory = process.memoryUsage().heapUsed;
-      
       // Circuit breaker for known problematic wallets
       if (this.failedWallets.has(userPublicKey)) {
         const lastFail = this.failedWallets.get(userPublicKey);
         if (Date.now() - lastFail < 300000) { // 5 minutes
-          this.logger.warn(`Circuit breaker active for ${userPublicKey}`);
-          return res.status(503).json({
-            error: 'Circuit breaker active',
-            message: 'This wallet is temporarily blocked due to previous failures',
-            code: 'CIRCUIT_BREAKER_ACTIVE'
-          });
+          this.logger.warn(`Circuit breaker active for ${userPublicKey} - Serving fallback data`);
+          return await respondWithFallback();
         }
       }
 
@@ -113,15 +128,6 @@ export class TokenController {
       const userInfoPromise = this.stellarService.getUser(userPublicKey);
       
       const result = await Promise.race([userInfoPromise, timeoutPromise]);
-
-      // Check memory after processing
-      const endMemory = process.memoryUsage().heapUsed;
-      const memoryIncrease = endMemory - startMemory;
-      
-      if (memoryIncrease > 50 * 1024 * 1024) { // 50MB increase
-        this.logger.warn(`Large memory increase detected: ${memoryIncrease / 1024 / 1024}MB for wallet ${userPublicKey}`);
-        this.failedWallets.set(userPublicKey, Date.now());
-      }
 
       return res.status(200).json(result);
 
@@ -136,19 +142,7 @@ export class TokenController {
         global.gc();
       }
 
-      if (error.message.includes('timeout') || error.message.includes('memory')) {
-        return res.status(503).json({
-          error: 'Service temporarily unavailable',
-          message: 'Request timed out or exceeded memory limits',
-          code: 'TIMEOUT_OR_MEMORY'
-        });
-      }
-
-      return res.status(502).json({
-        error: 'Bad Gateway',
-        message: 'Unable to process request for this wallet',
-        code: 'PROCESSING_ERROR'
-      });
+      return await respondWithFallback();
     }
   }
 
@@ -291,7 +285,7 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async restakeBlub(@Body() stakeBlubDto: StakeBlubDto, @Res() res) {
     await this.stellarService.stakeBlub(stakeBlubDto);
-    res.send().status(200);
+    res.status(200).send();
   }
 
   @Post('issuer')
