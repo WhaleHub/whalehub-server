@@ -36,9 +36,44 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async lock(@Body() createStakeDto: CreateStakeDto) {
     try {
+      this.logger.log(`Lock request received for user: ${createStakeDto.senderPublicKey}`);
+      this.logger.debug(`Lock request data: ${JSON.stringify({
+        assetCode: createStakeDto.assetCode,
+        assetIssuer: createStakeDto.assetIssuer,
+        amount: createStakeDto.amount,
+        treasuryAmount: createStakeDto.treasuryAmount,
+        senderPublicKey: createStakeDto.senderPublicKey,
+        signedTxXdrLength: createStakeDto.signedTxXdr?.length || 0
+      })}`);
+      
       return await this.stellarService.lock(createStakeDto);
     } catch (error) {
-      this.logger.error('Error in lock endpoint:', error);
+      this.logger.error(`Error in lock endpoint for user ${createStakeDto?.senderPublicKey}:`, {
+        message: error.message,
+        status: error.status,
+        stack: error.stack
+      });
+      
+      // Provide more specific error responses
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      // Handle different types of errors with appropriate status codes
+      if (error.message?.includes('Invalid') || error.message?.includes('validation')) {
+        throw new HttpException(
+          `Validation error: ${error.message}`,
+          HttpStatus.BAD_REQUEST
+        );
+      }
+      
+      if (error.message?.includes('account') || error.message?.includes('not found')) {
+        throw new HttpException(
+          `Account error: ${error.message}`,
+          HttpStatus.NOT_FOUND
+        );
+      }
+      
       throw new HttpException(
         error.message || 'Failed to lock AQUA tokens',
         error.status || HttpStatus.INTERNAL_SERVER_ERROR
