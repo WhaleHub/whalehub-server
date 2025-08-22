@@ -228,16 +228,11 @@ export class StellarService {
           throw new Error('Transfer AQUA transaction failed.');
         }
 
-        this.logger.debug('AQUA transaction confirmed, proceeding with BLUB minting...');
+        this.logger.debug('AQUA transaction confirmed, proceeding with direct stake recording...');
 
-        // Immediately mint BLUB tokens to user's wallet after AQUA transaction is confirmed
-        try {
-          await this.mintBlubToUser(createStakeDto.senderPublicKey, createStakeDto.amount);
-          this.logger.debug(`Successfully minted BLUB tokens for user: ${createStakeDto.senderPublicKey}`);
-        } catch (mintError) {
-          this.logger.error(`Failed to mint BLUB tokens: ${mintError.message}`);
-          // Continue processing but log the error
-        }
+        // For Convert & Stake: AQUA is converted directly to staked BLUB
+        // We do NOT mint BLUB tokens to user's wallet - they go directly to stake
+        this.logger.debug('Converting AQUA directly to staked BLUB (no wallet minting)');
 
         // Ensure the user account exists in the database
         let user = await this.userRepository.findOneBy({
