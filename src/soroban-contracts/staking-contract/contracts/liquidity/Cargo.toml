@@ -1,13 +1,16 @@
 [package]
-name = "liquidity-contract"
+name = "whalehub-liquidity"
 version = "0.1.0"
 edition = "2021"
+authors = ["WhaleHub Team"]
+description = "WhaleHub Liquidity Contract for Soroban"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+whalehub-shared = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
