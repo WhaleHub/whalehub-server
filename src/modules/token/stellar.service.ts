@@ -87,32 +87,111 @@ export class StellarService {
     private readonly rewardClaimsRepository: Repository<RewardClaimsEntity>,
     private readonly dataSource: DataSource
   ) {
-    this.issuerKeypair = Keypair.fromSecret(
-      this.configService.get('ISSUER_SECRET_KEY'),
-    );
-    this.lpSignerKeypair = Keypair.fromSecret(
-      this.configService.get('LP_SIGNER_SECRET_KEY'),
-    );
-    this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
-    this.server = new Horizon.Server(this.rpcUrl, { allowHttp: true });
-    this.blub = new Asset(BLUB_CODE, this.issuerKeypair.publicKey());
-    this.treasureAddress = this.configService.get<string>('TREASURE_ADDRESS');
-    this.signerKeyPair = Keypair.fromSecret(
-      this.configService.get('SIGNER_SECRET_KEY'),
-    );
+    try {
+      // Validate and initialize keypairs
+      const issuerSecret = this.configService.get('ISSUER_SECRET_KEY');
+      if (!issuerSecret) {
+        throw new Error('ISSUER_SECRET_KEY environment variable is required');
+      }
+      this.issuerKeypair = Keypair.fromSecret(issuerSecret);
+
+      const lpSignerSecret = this.configService.get('LP_SIGNER_SECRET_KEY');
+      if (!lpSignerSecret) {
+        throw new Error('LP_SIGNER_SECRET_KEY environment variable is required');
+      }
+      this.lpSignerKeypair = Keypair.fromSecret(lpSignerSecret);
+
+      const signerSecret = this.configService.get('SIGNER_SECRET_KEY');
+      if (!signerSecret) {
+        throw new Error('SIGNER_SECRET_KEY environment variable is required');
+      }
+      this.signerKeyPair = Keypair.fromSecret(signerSecret);
+
+      // Initialize Soroban RPC URL
+      this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
+      if (!this.rpcUrl) {
+        this.logger.warn('SOROBAN_RPC_ENDPOINT not configured, some features may not work');
+      }
+
+      // Fix: Use Horizon API URL instead of Soroban RPC endpoint for Horizon server
+      const horizonUrl = this.configService.get<string>('HORIZON_URL') || 'https://horizon.stellar.org';
+      this.server = new Horizon.Server(horizonUrl, { allowHttp: false });
+      this.logger.log(`Horizon server initialized with URL: ${horizonUrl}`);
+
+      // Initialize other properties
+      this.blub = new Asset(BLUB_CODE, this.issuerKeypair.publicKey());
+      this.treasureAddress = this.configService.get<string>('TREASURE_ADDRESS');
+      if (!this.treasureAddress) {
+        this.logger.warn('TREASURE_ADDRESS not configured');
+      }
+
+      this.logger.log('StellarService initialized successfully');
+    } catch (error) {
+      this.logger.error('Failed to initialize StellarService:', error.message);
+      throw error;
+    }
     
     // Initialize cleanup for cache
     this.initializeCleanup();
   }
 
   async lock(createStakeDto: CreateStakeDto): Promise<void> {
-    try {
-      // Load the account details
-      await this.server.loadAccount(this.issuerKeypair.publicKey());
+    this.logger.log(`🔐 Starting lock process for user: ${createStakeDto.senderPublicKey}`);
+    this.logger.debug(`🔐 Lock request details:`, {
+      assetCode: createStakeDto.assetCode,
+      assetIssuer: createStakeDto.assetIssuer,
+      amount: createStakeDto.amount,
+      amountType: typeof createStakeDto.amount,
+      treasuryAmount: createStakeDto.treasuryAmount,
+      treasuryAmountType: typeof createStakeDto.treasuryAmount,
+      senderPublicKey: createStakeDto.senderPublicKey,
+      signedTxXdrLength: createStakeDto.signedTxXdr?.length || 0,
+      signedTxXdrStart: createStakeDto.signedTxXdr?.substring(0, 20) + '...'
+    });
 
-      const signerAccount = await this.server.loadAccount(
-        this.signerKeyPair.publicKey(),
-      );
+    try {
+      // Basic input validation
+      if (!createStakeDto.senderPublicKey || createStakeDto.senderPublicKey.trim() === '') {
+        this.logger.error('❌ Invalid sender public key');
+        throw new HttpException('Invalid sender public key', HttpStatus.BAD_REQUEST);
+      }
+      
+      if (!createStakeDto.signedTxXdr || createStakeDto.signedTxXdr.trim() === '') {
+        this.logger.error('❌ Invalid signed transaction XDR');
+        throw new HttpException('Invalid signed transaction XDR', HttpStatus.BAD_REQUEST);
+      }
+      
+      if (typeof createStakeDto.amount !== 'number' || isNaN(createStakeDto.amount) || createStakeDto.amount <= 0) {
+        this.logger.error(`❌ Invalid amount: ${createStakeDto.amount} (type: ${typeof createStakeDto.amount})`);
+        throw new HttpException(`Invalid amount: ${createStakeDto.amount}`, HttpStatus.BAD_REQUEST);
+      }
+
+      this.logger.debug('✅ Basic validation passed, proceeding with account loading...');
+
+      // Load the account details
+      let signerAccount;
+      try {
+        this.logger.debug(`Loading issuer account: ${this.issuerKeypair.publicKey()}`);
+        await this.server.loadAccount(this.issuerKeypair.publicKey());
+        this.logger.debug('✅ Issuer account loaded successfully');
+
+        this.logger.debug(`Loading signer account: ${this.signerKeyPair.publicKey()}`);
+        signerAccount = await this.server.loadAccount(
+          this.signerKeyPair.publicKey(),
+        );
+        this.logger.debug('✅ Signer account loaded successfully');
+      } catch (accountError) {
+        this.logger.error('❌ Failed to load accounts:', {
+          error: accountError.message,
+          issuerPublicKey: this.issuerKeypair.publicKey(),
+          signerPublicKey: this.signerKeyPair.publicKey(),
+          horizonUrl: this.server.serverURL
+        });
+        throw new HttpException(
+          `Failed to load Stellar accounts: ${accountError.message}. Please try again later.`,
+          HttpStatus.SERVICE_UNAVAILABLE
+        );
+      }
 
       // Calculate the amounts to stake and for liquidity
       const amountToLock = Number((createStakeDto.amount * 0.9).toFixed(7));
@@ -149,16 +228,11 @@ export class StellarService {
           throw new Error('Transfer AQUA transaction failed.');
         }
 
-        this.logger.debug('AQUA transaction confirmed, proceeding with BLUB minting...');
+        this.logger.debug('AQUA transaction confirmed, proceeding with direct stake recording...');
 
-        // Immediately mint BLUB tokens to user's wallet after AQUA transaction is confirmed
-        try {
-          await this.mintBlubToUser(createStakeDto.senderPublicKey, createStakeDto.amount);
-          this.logger.debug(`Successfully minted BLUB tokens for user: ${createStakeDto.senderPublicKey}`);
-        } catch (mintError) {
-          this.logger.error(`Failed to mint BLUB tokens: ${mintError.message}`);
-          // Continue processing but log the error
-        }
+        // For Convert & Stake: AQUA is converted directly to staked BLUB
+        // We do NOT mint BLUB tokens to user's wallet - they go directly to stake
+        this.logger.debug('Converting AQUA directly to staked BLUB (no wallet minting)');
 
         // Ensure the user account exists in the database
         let user = await this.userRepository.findOneBy({
@@ -418,6 +492,16 @@ export class StellarService {
       this.logger.error(
         'Error during staking process:',
         err?.data?.extras || err?.data || err?.message || err,
+      );
+      
+      // Re-throw the error so it can be properly handled by the controller
+      if (err instanceof HttpException) {
+        throw err;
+      }
+      
+      throw new HttpException(
+        `Failed to process staking transaction: ${err?.message || 'Unknown error'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
   }
@@ -1056,6 +1140,56 @@ export class StellarService {
   }
 
   async unlockAqua(unlockAquaDto: UnlockAquaDto) {
+    // SECURITY: Multiple validation layers to ensure signedTxXdr is provided
+    if (!unlockAquaDto || 
+        !unlockAquaDto.signedTxXdr || 
+        unlockAquaDto.signedTxXdr.trim() === '' ||
+        unlockAquaDto.signedTxXdr === 'undefined' ||
+        unlockAquaDto.signedTxXdr === 'null') {
+      this.logger.error('SECURITY ALERT: Unauthorized unstake attempt blocked in service layer');
+      this.logger.error(`Request details: ${JSON.stringify(unlockAquaDto)}`);
+      throw new HttpException(
+        'SECURITY: Wallet signature verification required. Unstaking is only allowed through authenticated wallet connections.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    // Additional validation for XDR format
+    if (unlockAquaDto.signedTxXdr.length < 20) {
+      this.logger.error('SECURITY ALERT: Invalid transaction XDR format detected');
+      throw new HttpException(
+        'SECURITY: Invalid transaction format. Please use the web application with a connected wallet.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    // Validate the signed transaction to ensure the request is authenticated
+    try {
+      const unlockTxn = new Transaction(
+        unlockAquaDto.signedTxXdr,
+        Networks.PUBLIC,
+      );
+      
+      // Submit the transaction to validate it's properly signed and from the sender
+      const txResponse = await this.server.submitTransaction(unlockTxn);
+      const txHash = txResponse.hash;
+      this.logger.debug(`Unlock validation transaction hash: ${txHash}`);
+      
+      // Check if the validation transaction was successful
+      const txResult = await this.checkTransactionStatus(this.server, txHash);
+      if (!txResult.successful) {
+        throw new HttpException('Transaction validation failed', HttpStatus.UNAUTHORIZED);
+      }
+      
+      this.logger.debug('Transaction validation successful, proceeding with unlock...');
+    } catch (error) {
+      this.logger.error(`Transaction validation failed: ${error.message}`);
+      throw new HttpException(
+        'Unauthorized: Invalid or unsigned transaction',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
     const account = await this.server.loadAccount(
       unlockAquaDto.senderPublicKey,
     );

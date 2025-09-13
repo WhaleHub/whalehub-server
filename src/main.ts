@@ -3,7 +3,7 @@ import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { ErrorInterceptor } from '@/middleware/error.interceptor';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, HttpException, HttpStatus } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -49,7 +49,22 @@ async function bootstrap() {
   const serverIp = configService.get<string>('SERVER_IP');
 
   app.enableCors();
-  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalPipes(new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+    validateCustomDecorators: true,
+    stopAtFirstError: true,
+    exceptionFactory: (errors) => {
+      const messages = errors.map(error => 
+        Object.values(error.constraints || {}).join(', ')
+      ).join('; ');
+      return new HttpException(
+        `Validation failed: ${messages}`,
+        HttpStatus.BAD_REQUEST
+      );
+    }
+  }));
   app.useGlobalInterceptors(new ErrorInterceptor());
 
   await app.listen(serverPort, serverIp);

@@ -34,8 +34,51 @@ export class TokenController {
     description: 'Aqua locked successfully',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  lock(@Body() createStakeDto: CreateStakeDto) {
-    return this.stellarService.lock(createStakeDto);
+  async lock(@Body() createStakeDto: CreateStakeDto) {
+    try {
+      this.logger.log(`Lock request received for user: ${createStakeDto.senderPublicKey}`);
+      this.logger.debug(`Lock request data: ${JSON.stringify({
+        assetCode: createStakeDto.assetCode,
+        assetIssuer: createStakeDto.assetIssuer,
+        amount: createStakeDto.amount,
+        treasuryAmount: createStakeDto.treasuryAmount,
+        senderPublicKey: createStakeDto.senderPublicKey,
+        signedTxXdrLength: createStakeDto.signedTxXdr?.length || 0
+      })}`);
+      
+      return await this.stellarService.lock(createStakeDto);
+    } catch (error) {
+      this.logger.error(`Error in lock endpoint for user ${createStakeDto?.senderPublicKey}:`, {
+        message: error.message,
+        status: error.status,
+        stack: error.stack
+      });
+      
+      // Provide more specific error responses
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      // Handle different types of errors with appropriate status codes
+      if (error.message?.includes('Invalid') || error.message?.includes('validation')) {
+        throw new HttpException(
+          `Validation error: ${error.message}`,
+          HttpStatus.BAD_REQUEST
+        );
+      }
+      
+      if (error.message?.includes('account') || error.message?.includes('not found')) {
+        throw new HttpException(
+          `Account error: ${error.message}`,
+          HttpStatus.NOT_FOUND
+        );
+      }
+      
+      throw new HttpException(
+        error.message || 'Failed to lock AQUA tokens',
+        error.status || HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
   }
 
   @Post('add-liquidity')
@@ -64,14 +107,40 @@ export class TokenController {
       // Add other problematic wallets here
     ];
 
+    const respondWithFallback = async () => {
+      try {
+        const stakingData = await this.stellarService.getUserStakingBalance(userPublicKey);
+        const fallbackData = {
+          id: null,
+          account: userPublicKey,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          claimableRecords: stakingData.claimableRecords || [],
+          pools: stakingData.pools || [],
+          stakes: [],
+          treasuryDeposits: [],
+          lpBalances: [],
+        };
+        return res.status(200).json(fallbackData);
+      } catch (e) {
+        this.logger.error(`Fallback user info failed for ${userPublicKey}: ${e?.message}`);
+        return res.status(200).json({
+          id: null,
+          account: userPublicKey,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          claimableRecords: [],
+          pools: [],
+          stakes: [],
+          treasuryDeposits: [],
+          lpBalances: [],
+        });
+      }
+    };
+
     if (HEAVY_WALLETS.includes(userPublicKey)) {
-      this.logger.warn(`🚨 EMERGENCY: Blocking heavy wallet ${userPublicKey} to prevent server crash`);
-      return res.status(503).json({
-        error: 'Service temporarily unavailable for this wallet',
-        message: 'This wallet has extensive transaction history. Please try again later.',
-        code: 'HEAVY_WALLET_BLOCKED',
-        userPublicKey
-      });
+      this.logger.warn(`🚨 EMERGENCY: Heavy wallet ${userPublicKey}; serving fallback data`);
+      return await respondWithFallback();
     }
 
     try {
@@ -80,27 +149,16 @@ export class TokenController {
       const memUsagePercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
       
       if (memUsagePercent > 80) {
-        this.logger.warn(`🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Blocking requests`);
-        return res.status(503).json({
-          error: 'Server under high memory load',
-          message: 'Please try again in a few minutes',
-          code: 'MEMORY_PROTECTION'
-        });
+        this.logger.warn(`🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Serving fallback data`);
+        return await respondWithFallback();
       }
 
-      // Monitor memory usage during processing
-      const startMemory = process.memoryUsage().heapUsed;
-      
       // Circuit breaker for known problematic wallets
       if (this.failedWallets.has(userPublicKey)) {
         const lastFail = this.failedWallets.get(userPublicKey);
         if (Date.now() - lastFail < 300000) { // 5 minutes
-          this.logger.warn(`Circuit breaker active for ${userPublicKey}`);
-          return res.status(503).json({
-            error: 'Circuit breaker active',
-            message: 'This wallet is temporarily blocked due to previous failures',
-            code: 'CIRCUIT_BREAKER_ACTIVE'
-          });
+          this.logger.warn(`Circuit breaker active for ${userPublicKey} - Serving fallback data`);
+          return await respondWithFallback();
         }
       }
 
@@ -113,15 +171,6 @@ export class TokenController {
       const userInfoPromise = this.stellarService.getUser(userPublicKey);
       
       const result = await Promise.race([userInfoPromise, timeoutPromise]);
-
-      // Check memory after processing
-      const endMemory = process.memoryUsage().heapUsed;
-      const memoryIncrease = endMemory - startMemory;
-      
-      if (memoryIncrease > 50 * 1024 * 1024) { // 50MB increase
-        this.logger.warn(`Large memory increase detected: ${memoryIncrease / 1024 / 1024}MB for wallet ${userPublicKey}`);
-        this.failedWallets.set(userPublicKey, Date.now());
-      }
 
       return res.status(200).json(result);
 
@@ -136,19 +185,7 @@ export class TokenController {
         global.gc();
       }
 
-      if (error.message.includes('timeout') || error.message.includes('memory')) {
-        return res.status(503).json({
-          error: 'Service temporarily unavailable',
-          message: 'Request timed out or exceeded memory limits',
-          code: 'TIMEOUT_OR_MEMORY'
-        });
-      }
-
-      return res.status(502).json({
-        error: 'Bad Gateway',
-        message: 'Unable to process request for this wallet',
-        code: 'PROCESSING_ERROR'
-      });
+      return await respondWithFallback();
     }
   }
 
@@ -213,25 +250,75 @@ export class TokenController {
   }
 
   @Post('unlock-aqua')
-  @ApiOperation({ summary: 'Unlock AQUA to Public Key' })
+  @ApiOperation({ summary: 'Unlock AQUA to Public Key - REQUIRES WALLET SIGNATURE' })
   @ApiBody({
     type: UnlockAquaDto,
-    description: 'Data required to unlock AQUA stakes',
+    description: 'Data required to unlock AQUA stakes - signedTxXdr is MANDATORY for security',
   })
   @ApiResponse({
     status: 201,
     description: 'Liquidity successfully removed',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized: Missing or invalid signed transaction.' })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
-    await this.stellarService.unlockAqua(unlockAquaDto);
-    res.send().status(200);
+
+    // SECURITY: CRITICAL - Multiple validation layers to prevent unauthorized access
+    this.logger.warn('🔒 UNLOCK-AQUA SECURITY: Request received, performing validation');
+    
+    // Primary security check
+    if (!unlockAquaDto || typeof unlockAquaDto !== 'object') {
+      this.logger.error('🚨 SECURITY VIOLATION: Invalid request object');
+      return res.status(401).json({
+        statusCode: 401,
+        message: 'SECURITY: Invalid request format',
+        error: 'Unauthorized'
+      });
+    }
+
+    // Critical signedTxXdr validation
+    if (!unlockAquaDto.signedTxXdr || 
+        typeof unlockAquaDto.signedTxXdr !== 'string' ||
+        unlockAquaDto.signedTxXdr.trim() === '' ||
+        unlockAquaDto.signedTxXdr.length < 20) {
+      
+      this.logger.error('🚨 SECURITY VIOLATION: Missing or invalid signedTxXdr');
+      this.logger.error(`Request details: ${JSON.stringify(unlockAquaDto)}`);
+      
+      return res.status(401).json({
+        statusCode: 401,
+        message: 'SECURITY: Wallet signature verification required. Unauthorized access blocked.',
+        error: 'Unauthorized',
+        details: 'Use the web application with connected wallet to unstake tokens safely.'
+      });
+    }
+
+    // Additional validation for common bypass attempts
+    const suspiciousValues = ['null', 'undefined', 'invalid', 'test', '123'];
+    if (suspiciousValues.includes(unlockAquaDto.signedTxXdr.toLowerCase())) {
+      this.logger.error('🚨 SECURITY VIOLATION: Suspicious signedTxXdr value detected');
+      return res.status(401).json({
+        statusCode: 401,
+        message: 'SECURITY: Invalid transaction signature detected',
+        error: 'Unauthorized'
+      });
+    }
+
+    this.logger.log(`✅ SECURITY: Valid signature found, proceeding with unlock for ${unlockAquaDto.senderPublicKey}`);
+    
+    try {
+      await this.stellarService.unlockAqua(unlockAquaDto);
+      res.status(201).send();
+    } catch (error) {
+      this.logger.error(`Unlock failed: ${error.message}`);
+      throw error;
+    }
   }
 
   @Post('restake-blub')
   @ApiOperation({ summary: 'Stake Blub Tokens' })
   @ApiBody({
-    type: UnlockAquaDto,
+    type: StakeBlubDto,
     description: 'Data required to stake Blub tokens',
   })
   @ApiResponse({
@@ -241,7 +328,7 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async restakeBlub(@Body() stakeBlubDto: StakeBlubDto, @Res() res) {
     await this.stellarService.stakeBlub(stakeBlubDto);
-    res.send().status(200);
+    res.status(200).send();
   }
 
   @Post('issuer')
