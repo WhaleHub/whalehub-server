@@ -1,14 +1,15 @@
 [workspace]
+resolver = "2"
 members = [
-    "contracts/shared",
-    "contracts/staking", 
-    "contracts/rewards",
+    "contracts/staking",
+    "contracts/rewards", 
     "contracts/liquidity",
-    "contracts/governance"
+    "contracts/governance",
+    "contracts/shared"
 ]
 
 [workspace.dependencies]
-soroban-sdk = "21.7.0"
+soroban-sdk = "20.3.1"
 whalehub-shared = { path = "contracts/shared" }
 
 [profile.release]

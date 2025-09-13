@@ -1,29 +1,34 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, log, symbol_short, Address, Env, Map, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, Vec, Bytes,
 };
 
-// Data Types
+// Simplified data types
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiquidityPool {
+    pub pool_id: Bytes,
     pub token_a: Address,
     pub token_b: Address,
     pub total_liquidity: i128,
     pub reserve_a: i128,
     pub reserve_b: i128,
-    pub fee_rate: i128, // Basis points (100 = 1%)
+    pub fee_rate: i128, // Basis points (30 = 0.3%)
     pub created_at: u64,
+    pub active: bool,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LPStakeInfo {
-    pub pool_id: u64,
+pub struct LPPosition {
+    pub user: Address,
+    pub pool_id: Bytes,
     pub lp_amount: i128,
+    pub asset_a_deposited: i128,
+    pub asset_b_deposited: i128,
     pub timestamp: u64,
-    pub lock_period: u64,
-    pub reward_multiplier: i128,
+    pub last_reward_claim: u64,
+    pub total_fees_earned: i128,
 }
 
 #[contracttype]
@@ -35,20 +40,33 @@ pub struct LiquidityConfig {
     pub min_liquidity: i128,
     pub default_fee_rate: i128,
     pub emergency_pause: bool,
+    pub treasury_address: Address,
+    pub max_pools: u32, // Gas optimization limit
 }
 
-// Storage Keys
+// Gas-optimized global tracking
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalLiquidityStats {
+    pub total_value_locked: i128,
+    pub total_pools: u32,
+    pub total_lp_providers: u32,
+    pub total_fees_collected: i128,
+    pub last_update: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Config,
-    Pool(u64),
-    UserLPStake(Address, u64),
+    Pool(Bytes), // Use Bytes for pool ID for gas efficiency
+    UserLPPosition(Address, Bytes), // user, pool_id
+    UserPools(Address), // List of pools user participates in
     PoolCount,
-    TotalLPStaked,
-    PoolRewards(u64),
+    GlobalStats,
+    PoolSnapshot(Bytes, u64), // pool_id, day - for analytics
+    FeesCollected(Bytes, u64), // pool_id, day - for reward calculation
 }
 
-// Error Types
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiquidityError {
@@ -58,19 +76,19 @@ pub enum LiquidityError {
     PoolNotFound = 4,
     InsufficientLiquidity = 5,
     InvalidTokens = 6,
-    InsufficientReserves = 7,
-    SlippageTooHigh = 8,
-    ContractPaused = 9,
     InvalidFeeRate = 10,
-    StakeNotFound = 11,
-    LockPeriodNotExpired = 12,
+    ContractPaused = 9,
+    PoolLimitReached = 11,
+    InvalidPoolId = 12,
+    PositionNotFound = 13,
+    NumericOverflow = 14,
 }
 
-// Events
+// Simplified events
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PoolCreatedEvent {
-    pub pool_id: u64,
+pub struct PoolRegisteredEvent {
+    pub pool_id: Bytes,
     pub token_a: Address,
     pub token_b: Address,
     pub creator: Address,
@@ -79,9 +97,9 @@ pub struct PoolCreatedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LiquidityAddedEvent {
-    pub pool_id: u64,
+pub struct LiquidityRecordedEvent {
     pub user: Address,
+    pub pool_id: Bytes,
     pub amount_a: i128,
     pub amount_b: i128,
     pub lp_tokens: i128,
@@ -90,21 +108,9 @@ pub struct LiquidityAddedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LPStakedEvent {
-    pub pool_id: u64,
-    pub user: Address,
-    pub lp_amount: i128,
-    pub lock_period: u64,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LPUnstakedEvent {
-    pub pool_id: u64,
-    pub user: Address,
-    pub lp_amount: i128,
-    pub reward: i128,
+pub struct FeesCollectedEvent {
+    pub pool_id: Bytes,
+    pub total_fees: i128,
     pub timestamp: u64,
 }
 
@@ -113,24 +119,31 @@ pub struct LiquidityContract;
 
 #[contractimpl]
 impl LiquidityContract {
-    /// Initialize the liquidity contract
+    // liquidity pool integration
+    
     pub fn initialize(
         env: Env,
         admin: Address,
         staking_contract: Address,
         rewards_contract: Address,
+        treasury_address: Address,
         min_liquidity: i128,
         default_fee_rate: i128,
+        max_pools: u32,
     ) -> Result<(), LiquidityError> {
-        // Check if already initialized
         if env.storage().instance().has(&DataKey::Config) {
             return Err(LiquidityError::AlreadyInitialized);
         }
 
         admin.require_auth();
 
+        // Validate parameters
         if default_fee_rate > 1000 { // Max 10% fee
             return Err(LiquidityError::InvalidFeeRate);
+        }
+
+        if min_liquidity <= 0 {
+            return Err(LiquidityError::InsufficientLiquidity);
         }
 
         let config = LiquidityConfig {
@@ -140,54 +153,75 @@ impl LiquidityContract {
             min_liquidity,
             default_fee_rate,
             emergency_pause: false,
+            treasury_address,
+            max_pools,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
-        env.storage().instance().set(&DataKey::PoolCount, &0u64);
-        env.storage().instance().set(&DataKey::TotalLPStaked, &0i128);
+        env.storage().instance().set(&DataKey::PoolCount, &0u32);
 
-        log!(&env, "Liquidity contract initialized by admin: {}", admin);
+        // Initialize global stats
+        let global_stats = GlobalLiquidityStats {
+            total_value_locked: 0,
+            total_pools: 0,
+            total_lp_providers: 0,
+            total_fees_collected: 0,
+            last_update: env.ledger().timestamp(),
+        };
+        env.storage().instance().set(&DataKey::GlobalStats, &global_stats);
         
         Ok(())
     }
 
-    /// Create a new liquidity pool
-    pub fn create_pool(
+    // Register a pool from AMM contract (admin-only)
+    pub fn register_pool(
         env: Env,
-        creator: Address,
+        admin: Address,
+        pool_id: Bytes,
         token_a: Address,
         token_b: Address,
         initial_a: i128,
         initial_b: i128,
         fee_rate: Option<i128>,
-    ) -> Result<u64, LiquidityError> {
-        creator.require_auth();
+    ) -> Result<(), LiquidityError> {
+        admin.require_auth();
 
         let config = Self::get_config(&env)?;
         
+        if config.admin != admin {
+            return Err(LiquidityError::Unauthorized);
+        }
+
         if config.emergency_pause {
             return Err(LiquidityError::ContractPaused);
         }
 
+        // Check pool limit for gas optimization
+        let pool_count: u32 = env.storage().instance().get(&DataKey::PoolCount).unwrap_or(0);
+        if pool_count >= config.max_pools {
+            return Err(LiquidityError::PoolLimitReached);
+        }
+
+        // Validate tokens are different
         if token_a == token_b {
             return Err(LiquidityError::InvalidTokens);
         }
 
-        if initial_a < config.min_liquidity || initial_b < config.min_liquidity {
-            return Err(LiquidityError::InsufficientLiquidity);
+        // Check if pool already exists
+        if env.storage().instance().has(&DataKey::Pool(pool_id.clone())) {
+            return Err(LiquidityError::AlreadyInitialized);
         }
-
-        let pool_count: u64 = env.storage().instance().get(&DataKey::PoolCount).unwrap_or(0);
-        let pool_id = pool_count + 1;
 
         let fee = fee_rate.unwrap_or(config.default_fee_rate);
         if fee > 1000 {
             return Err(LiquidityError::InvalidFeeRate);
         }
 
-        let initial_liquidity = (initial_a * initial_b).integer_sqrt();
+        // Calculate initial liquidity (AMM logic)
+        let initial_liquidity = Self::calculate_lp_tokens(initial_a, initial_b, 0);
 
         let pool = LiquidityPool {
+            pool_id: pool_id.clone(),
             token_a: token_a.clone(),
             token_b: token_b.clone(),
             total_liquidity: initial_liquidity,
@@ -195,281 +229,317 @@ impl LiquidityContract {
             reserve_b: initial_b,
             fee_rate: fee,
             created_at: env.ledger().timestamp(),
+            active: true,
         };
 
-        env.storage().instance().set(&DataKey::Pool(pool_id), &pool);
-        env.storage().instance().set(&DataKey::PoolCount, &pool_id);
+        env.storage().instance().set(&DataKey::Pool(pool_id.clone()), &pool);
+        
+        let new_count = pool_count.saturating_add(1);
+        env.storage().instance().set(&DataKey::PoolCount, &new_count);
 
-        // Emit event
-        let event = PoolCreatedEvent {
-            pool_id,
+        // Update global stats
+        Self::update_global_stats(&env, initial_a + initial_b, 1, 0, 0)?;
+
+        let event = PoolRegisteredEvent {
+            pool_id: pool_id.clone(),
             token_a,
             token_b,
-            creator: creator.clone(),
+            creator: admin.clone(),
             timestamp: env.ledger().timestamp(),
         };
-        env.events().publish((symbol_short!("poolcrt"),), event);
-
-        log!(&env, "Pool {} created by {} for tokens {} and {}", pool_id, creator, pool.token_a, pool.token_b);
-
-        Ok(pool_id)
-    }
-
-    /// Add liquidity to an existing pool
-    pub fn add_liquidity(
-        env: Env,
-        user: Address,
-        pool_id: u64,
-        amount_a: i128,
-        amount_b: i128,
-        min_liquidity: i128,
-    ) -> Result<i128, LiquidityError> {
-        user.require_auth();
-
-        let config = Self::get_config(&env)?;
-        
-        if config.emergency_pause {
-            return Err(LiquidityError::ContractPaused);
-        }
-
-        let mut pool: LiquidityPool = env.storage().instance()
-            .get(&DataKey::Pool(pool_id))
-            .ok_or(LiquidityError::PoolNotFound)?;
-
-        if amount_a <= 0 || amount_b <= 0 {
-            return Err(LiquidityError::InsufficientLiquidity);
-        }
-
-        // Calculate optimal amounts based on current reserves
-        let optimal_b = (amount_a * pool.reserve_b) / pool.reserve_a;
-        let optimal_a = (amount_b * pool.reserve_a) / pool.reserve_b;
-
-        let (final_a, final_b) = if optimal_b <= amount_b {
-            (amount_a, optimal_b)
-        } else {
-            (optimal_a, amount_b)
-        };
-
-        // Calculate LP tokens to mint
-        let lp_tokens = if pool.total_liquidity == 0 {
-            (final_a * final_b).integer_sqrt()
-        } else {
-            ((final_a * pool.total_liquidity) / pool.reserve_a).min(
-                (final_b * pool.total_liquidity) / pool.reserve_b
-            )
-        };
-
-        if lp_tokens < min_liquidity {
-            return Err(LiquidityError::SlippageTooHigh);
-        }
-
-        // Update pool reserves
-        pool.reserve_a += final_a;
-        pool.reserve_b += final_b;
-        pool.total_liquidity += lp_tokens;
-
-        env.storage().instance().set(&DataKey::Pool(pool_id), &pool);
-
-        // Emit event
-        let event = LiquidityAddedEvent {
-            pool_id,
-            user: user.clone(),
-            amount_a: final_a,
-            amount_b: final_b,
-            lp_tokens,
-            timestamp: env.ledger().timestamp(),
-        };
-        env.events().publish((symbol_short!("lpadd"),), event);
-
-        log!(&env, "User {} added liquidity to pool {}: {}A + {}B = {}LP", user, pool_id, final_a, final_b, lp_tokens);
-
-        Ok(lp_tokens)
-    }
-
-    /// Stake LP tokens
-    pub fn stake_lp(
-        env: Env,
-        user: Address,
-        pool_id: u64,
-        lp_amount: i128,
-        lock_period: u64,
-    ) -> Result<(), LiquidityError> {
-        user.require_auth();
-
-        let config = Self::get_config(&env)?;
-        
-        if config.emergency_pause {
-            return Err(LiquidityError::ContractPaused);
-        }
-
-        // Verify pool exists
-        let _pool: LiquidityPool = env.storage().instance()
-            .get(&DataKey::Pool(pool_id))
-            .ok_or(LiquidityError::PoolNotFound)?;
-
-        if lp_amount <= 0 {
-            return Err(LiquidityError::InsufficientLiquidity);
-        }
-
-        // Check if user already has LP staked in this pool
-        if env.storage().persistent().has(&DataKey::UserLPStake(user.clone(), pool_id)) {
-            return Err(LiquidityError::AlreadyInitialized); // Reusing error for "already staked"
-        }
-
-        let reward_multiplier = Self::calculate_lp_multiplier(lock_period);
-        let timestamp = env.ledger().timestamp();
-
-        let stake_info = LPStakeInfo {
-            pool_id,
-            lp_amount,
-            timestamp,
-            lock_period,
-            reward_multiplier,
-        };
-
-        env.storage().persistent().set(&DataKey::UserLPStake(user.clone(), pool_id), &stake_info);
-
-        // Update total LP staked
-        let mut total_lp_staked: i128 = env.storage().instance().get(&DataKey::TotalLPStaked).unwrap_or(0);
-        total_lp_staked += lp_amount;
-        env.storage().instance().set(&DataKey::TotalLPStaked, &total_lp_staked);
-
-        // Emit event
-        let event = LPStakedEvent {
-            pool_id,
-            user: user.clone(),
-            lp_amount,
-            lock_period,
-            timestamp,
-        };
-        env.events().publish((symbol_short!("lpstake"),), event);
-
-        log!(&env, "User {} staked {} LP tokens from pool {} for {} seconds", user, lp_amount, pool_id, lock_period);
+        env.events().publish((symbol_short!("poolreg"),), event);
 
         Ok(())
     }
 
-    /// Unstake LP tokens
-    pub fn unstake_lp(
+    // Record liquidity addition (admin-only, called after backend confirms AMM transaction)
+    pub fn record_liquidity_addition(
         env: Env,
+        admin: Address,
         user: Address,
-        pool_id: u64,
-    ) -> Result<i128, LiquidityError> {
-        user.require_auth();
-
-        let stake_info: LPStakeInfo = env.storage().persistent()
-            .get(&DataKey::UserLPStake(user.clone(), pool_id))
-            .ok_or(LiquidityError::StakeNotFound)?;
-
-        let current_time = env.ledger().timestamp();
-        let unlock_time = stake_info.timestamp + stake_info.lock_period;
-
-        // Check if lock period has expired
-        if current_time < unlock_time {
-            return Err(LiquidityError::LockPeriodNotExpired);
-        }
-
-        // Calculate rewards (simplified)
-        let time_staked = current_time - stake_info.timestamp;
-        let base_reward = (stake_info.lp_amount * time_staked as i128) / 1_000_000; // Simple reward calculation
-        let reward = (base_reward * stake_info.reward_multiplier) / 10000;
-
-        // Remove stake
-        env.storage().persistent().remove(&DataKey::UserLPStake(user.clone(), pool_id));
-
-        // Update total LP staked
-        let mut total_lp_staked: i128 = env.storage().instance().get(&DataKey::TotalLPStaked).unwrap_or(0);
-        total_lp_staked -= stake_info.lp_amount;
-        env.storage().instance().set(&DataKey::TotalLPStaked, &total_lp_staked);
-
-        // Emit event
-        let event = LPUnstakedEvent {
-            pool_id,
-            user: user.clone(),
-            lp_amount: stake_info.lp_amount,
-            reward,
-            timestamp: current_time,
-        };
-        env.events().publish((symbol_short!("lpunstk"),), event);
-
-        log!(&env, "User {} unstaked {} LP tokens from pool {} with {} reward", user, stake_info.lp_amount, pool_id, reward);
-
-        Ok(stake_info.lp_amount + reward)
-    }
-
-    /// Remove liquidity from pool
-    pub fn remove_liquidity(
-        env: Env,
-        user: Address,
-        pool_id: u64,
-        lp_amount: i128,
-        min_a: i128,
-        min_b: i128,
-    ) -> Result<(i128, i128), LiquidityError> {
-        user.require_auth();
+        pool_id: Bytes,
+        amount_a: i128,
+        amount_b: i128,
+        lp_tokens_minted: i128,
+    ) -> Result<(), LiquidityError> {
+        admin.require_auth();
 
         let config = Self::get_config(&env)?;
         
+        if config.admin != admin {
+            return Err(LiquidityError::Unauthorized);
+        }
+
         if config.emergency_pause {
             return Err(LiquidityError::ContractPaused);
         }
 
-        let mut pool: LiquidityPool = env.storage().instance()
-            .get(&DataKey::Pool(pool_id))
-            .ok_or(LiquidityError::PoolNotFound)?;
-
-        if lp_amount <= 0 || lp_amount > pool.total_liquidity {
+        // Validate inputs
+        if amount_a <= 0 || amount_b <= 0 || lp_tokens_minted <= 0 {
             return Err(LiquidityError::InsufficientLiquidity);
         }
 
-        // Calculate token amounts to return
-        let amount_a = (lp_amount * pool.reserve_a) / pool.total_liquidity;
-        let amount_b = (lp_amount * pool.reserve_b) / pool.total_liquidity;
+        // Check pool exists
+        let mut pool: LiquidityPool = env.storage().instance()
+            .get(&DataKey::Pool(pool_id.clone()))
+            .ok_or(LiquidityError::PoolNotFound)?;
 
-        if amount_a < min_a || amount_b < min_b {
-            return Err(LiquidityError::SlippageTooHigh);
+        if !pool.active {
+            return Err(LiquidityError::ContractPaused);
         }
 
         // Update pool reserves
-        pool.reserve_a -= amount_a;
-        pool.reserve_b -= amount_b;
-        pool.total_liquidity -= lp_amount;
+        pool.reserve_a = pool.reserve_a.saturating_add(amount_a);
+        pool.reserve_b = pool.reserve_b.saturating_add(amount_b);
+        pool.total_liquidity = pool.total_liquidity.saturating_add(lp_tokens_minted);
 
-        env.storage().instance().set(&DataKey::Pool(pool_id), &pool);
+        env.storage().instance().set(&DataKey::Pool(pool_id.clone()), &pool);
 
-        log!(&env, "User {} removed {} LP from pool {}: {}A + {}B", user, lp_amount, pool_id, amount_a, amount_b);
+        // Update or create user LP position
+        let current_time = env.ledger().timestamp();
+        let mut position: LPPosition = env.storage().persistent()
+            .get(&DataKey::UserLPPosition(user.clone(), pool_id.clone()))
+            .unwrap_or(LPPosition {
+                user: user.clone(),
+                pool_id: pool_id.clone(),
+                lp_amount: 0,
+                asset_a_deposited: 0,
+                asset_b_deposited: 0,
+                timestamp: current_time,
+                last_reward_claim: current_time,
+                total_fees_earned: 0,
+            });
 
-        Ok((amount_a, amount_b))
+        // Track if this is a new LP provider
+        let is_new_provider = position.lp_amount == 0;
+
+        position.lp_amount = position.lp_amount.saturating_add(lp_tokens_minted);
+        position.asset_a_deposited = position.asset_a_deposited.saturating_add(amount_a);
+        position.asset_b_deposited = position.asset_b_deposited.saturating_add(amount_b);
+
+        env.storage().persistent().set(&DataKey::UserLPPosition(user.clone(), pool_id.clone()), &position);
+
+        // Add pool to user's pool list if new
+        if is_new_provider {
+            let mut user_pools: Vec<Bytes> = env.storage().persistent()
+                .get(&DataKey::UserPools(user.clone()))
+                .unwrap_or(Vec::new(&env));
+            
+            user_pools.push_back(pool_id.clone());
+            env.storage().persistent().set(&DataKey::UserPools(user.clone()), &user_pools);
+        }
+
+        // Update global stats
+        let tvl_increase = amount_a + amount_b;
+        let new_providers = if is_new_provider { 1 } else { 0 };
+        Self::update_global_stats(&env, tvl_increase, 0, new_providers, 0)?;
+
+        let event = LiquidityRecordedEvent {
+            user: user.clone(),
+            pool_id: pool_id.clone(),
+            amount_a,
+            amount_b,
+            lp_tokens: lp_tokens_minted,
+            timestamp: current_time,
+        };
+        env.events().publish((symbol_short!("lpadd"),), event);
+
+        Ok(())
     }
 
-    /// Get pool information
-    pub fn get_pool(env: Env, pool_id: u64) -> Option<LiquidityPool> {
+    // Record liquidity removal (admin-only, called after backend confirms AMM transaction)
+    pub fn record_liquidity_removal(
+        env: Env,
+        admin: Address,
+        user: Address,
+        pool_id: Bytes,
+        lp_tokens_burned: i128,
+        amount_a_returned: i128,
+        amount_b_returned: i128,
+    ) -> Result<(), LiquidityError> {
+        admin.require_auth();
+
+        let config = Self::get_config(&env)?;
+        
+        if config.admin != admin {
+            return Err(LiquidityError::Unauthorized);
+        }
+
+        if config.emergency_pause {
+            return Err(LiquidityError::ContractPaused);
+        }
+
+        // Get user position
+        let mut position: LPPosition = env.storage().persistent()
+            .get(&DataKey::UserLPPosition(user.clone(), pool_id.clone()))
+            .ok_or(LiquidityError::PositionNotFound)?;
+
+        if position.lp_amount < lp_tokens_burned {
+            return Err(LiquidityError::InsufficientLiquidity);
+        }
+
+        // Update pool reserves
+        let mut pool: LiquidityPool = env.storage().instance()
+            .get(&DataKey::Pool(pool_id.clone()))
+            .ok_or(LiquidityError::PoolNotFound)?;
+
+        pool.reserve_a = pool.reserve_a.saturating_sub(amount_a_returned);
+        pool.reserve_b = pool.reserve_b.saturating_sub(amount_b_returned);
+        pool.total_liquidity = pool.total_liquidity.saturating_sub(lp_tokens_burned);
+
+        env.storage().instance().set(&DataKey::Pool(pool_id.clone()), &pool);
+
+        // Update user position
+        position.lp_amount = position.lp_amount.saturating_sub(lp_tokens_burned);
+        
+        // If position is now empty, clean up
+        if position.lp_amount == 0 {
+            env.storage().persistent().remove(&DataKey::UserLPPosition(user.clone(), pool_id.clone()));
+            
+            // Remove from user pools list
+            let mut user_pools: Vec<Bytes> = env.storage().persistent()
+                .get(&DataKey::UserPools(user.clone()))
+                .unwrap_or(Vec::new(&env));
+            
+            user_pools.retain(|p| p != &pool_id);
+            env.storage().persistent().set(&DataKey::UserPools(user.clone()), &user_pools);
+        } else {
+            env.storage().persistent().set(&DataKey::UserLPPosition(user.clone(), pool_id.clone()), &position);
+        }
+
+        // Update global stats (decrease TVL)
+        let tvl_decrease = amount_a_returned + amount_b_returned;
+        Self::update_global_stats(&env, -tvl_decrease, 0, 0, 0)?;
+
+        Ok(())
+    }
+
+    // Record fees collected for a pool (called during reward distribution)
+    pub fn record_fees_collected(
+        env: Env,
+        admin: Address,
+        pool_id: Bytes,
+        total_fees: i128,
+    ) -> Result<(), LiquidityError> {
+        admin.require_auth();
+
+        let config = Self::get_config(&env)?;
+        
+        if config.admin != admin {
+            return Err(LiquidityError::Unauthorized);
+        }
+
+        if total_fees <= 0 {
+            return Err(LiquidityError::InsufficientLiquidity);
+        }
+
+        // Check pool exists
+        let pool: LiquidityPool = env.storage().instance()
+            .get(&DataKey::Pool(pool_id.clone()))
+            .ok_or(LiquidityError::PoolNotFound)?;
+
+        if !pool.active {
+            return Err(LiquidityError::ContractPaused);
+        }
+
+        let current_time = env.ledger().timestamp();
+        let day = current_time / 86400; // Day-based fee tracking
+
+        // Store daily fee collection for analytics
+        let fees_key = DataKey::FeesCollected(pool_id.clone(), day);
+        let existing_fees: i128 = env.storage().instance().get(&fees_key).unwrap_or(0);
+        let updated_fees = existing_fees.saturating_add(total_fees);
+        env.storage().instance().set(&fees_key, &updated_fees);
+
+        // Update global stats
+        Self::update_global_stats(&env, 0, 0, 0, total_fees)?;
+
+        let event = FeesCollectedEvent {
+            pool_id,
+            total_fees,
+            timestamp: current_time,
+        };
+        env.events().publish((symbol_short!("fees"),), event);
+
+        Ok(())
+    }
+
+    // Gas optimization helpers
+
+    fn update_global_stats(
+        env: &Env, 
+        tvl_delta: i128, 
+        pools_delta: u32, 
+        providers_delta: u32, 
+        fees_delta: i128
+    ) -> Result<(), LiquidityError> {
+        let mut stats: GlobalLiquidityStats = env.storage().instance()
+            .get(&DataKey::GlobalStats)
+            .unwrap_or_default();
+
+        stats.total_value_locked = stats.total_value_locked.saturating_add(tvl_delta);
+        stats.total_pools = stats.total_pools.saturating_add(pools_delta);
+        stats.total_lp_providers = stats.total_lp_providers.saturating_add(providers_delta);
+        stats.total_fees_collected = stats.total_fees_collected.saturating_add(fees_delta);
+        stats.last_update = env.ledger().timestamp();
+
+        env.storage().instance().set(&DataKey::GlobalStats, &stats);
+        Ok(())
+    }
+
+    fn calculate_lp_tokens(amount_a: i128, amount_b: i128, existing_liquidity: i128) -> i128 {
+        if existing_liquidity == 0 {
+            // Initial liquidity: geometric mean
+            Self::integer_sqrt(amount_a.saturating_mul(amount_b))
+        } else {
+            // Subsequent liquidity: maintain ratio
+            amount_a.min(amount_b) // Simplified for gas optimization
+        }
+    }
+
+    fn integer_sqrt(value: i128) -> i128 {
+        if value < 2 { return value; }
+        let mut x = value;
+        let mut y = (x + 1) / 2;
+        while y < x {
+            x = y;
+            y = (x + value / x) / 2;
+        }
+        x
+    }
+
+    // Gas-optimized getters
+    pub fn get_pool(env: Env, pool_id: Bytes) -> Option<LiquidityPool> {
         env.storage().instance().get(&DataKey::Pool(pool_id))
     }
 
-    /// Get user's LP stake info
-    pub fn get_lp_stake(env: Env, user: Address, pool_id: u64) -> Option<LPStakeInfo> {
-        env.storage().persistent().get(&DataKey::UserLPStake(user, pool_id))
+    pub fn get_user_lp_position(env: Env, user: Address, pool_id: Bytes) -> Option<LPPosition> {
+        env.storage().persistent().get(&DataKey::UserLPPosition(user, pool_id))
     }
 
-    /// Get total number of pools
-    pub fn get_pool_count(env: Env) -> u64 {
+    pub fn get_user_pools(env: Env, user: Address) -> Vec<Bytes> {
+        env.storage().persistent().get(&DataKey::UserPools(user)).unwrap_or(Vec::new(&env))
+    }
+
+    pub fn get_pool_count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::PoolCount).unwrap_or(0)
     }
 
-    /// Get total LP tokens staked
-    pub fn get_total_lp_staked(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::TotalLPStaked).unwrap_or(0)
+    pub fn get_global_stats(env: Env) -> Option<GlobalLiquidityStats> {
+        env.storage().instance().get(&DataKey::GlobalStats)
     }
 
-    /// Get contract configuration
-    pub fn get_config(env: Env) -> Result<LiquidityConfig, LiquidityError> {
+    pub fn get_daily_fees(env: Env, pool_id: Bytes, day: u64) -> i128 {
+        env.storage().instance().get(&DataKey::FeesCollected(pool_id, day)).unwrap_or(0)
+    }
+
+    pub fn get_config(env: &Env) -> Result<LiquidityConfig, LiquidityError> {
         env.storage().instance()
             .get(&DataKey::Config)
             .ok_or(LiquidityError::NotInitialized)
     }
 
-    /// Admin function to pause/unpause the contract
+    // Admin functions
     pub fn set_emergency_pause(
         env: Env,
         admin: Address,
@@ -485,69 +555,95 @@ impl LiquidityContract {
 
         config.emergency_pause = paused;
         env.storage().instance().set(&DataKey::Config, &config);
-
-        log!(&env, "Emergency pause set to: {}", paused);
         
         Ok(())
     }
 
-    /// Admin function to update minimum liquidity
-    pub fn update_min_liquidity(
+    pub fn toggle_pool(
         env: Env,
         admin: Address,
-        new_min: i128,
+        pool_id: Bytes,
+        active: bool,
     ) -> Result<(), LiquidityError> {
         admin.require_auth();
 
-        let mut config = Self::get_config(&env)?;
+        let config = Self::get_config(&env)?;
         
         if config.admin != admin {
             return Err(LiquidityError::Unauthorized);
         }
 
-        config.min_liquidity = new_min;
-        env.storage().instance().set(&DataKey::Config, &config);
+        let mut pool: LiquidityPool = env.storage().instance()
+            .get(&DataKey::Pool(pool_id.clone()))
+            .ok_or(LiquidityError::PoolNotFound)?;
 
-        log!(&env, "Minimum liquidity updated to: {}", new_min);
+        pool.active = active;
+        env.storage().instance().set(&DataKey::Pool(pool_id), &pool);
         
         Ok(())
     }
 
-    // Internal helper functions
-    fn calculate_lp_multiplier(lock_period: u64) -> i128 {
-        // Calculate reward multiplier based on lock period
-        match lock_period {
-            0..=86400 => 10000,        // 1x for up to 1 day
-            86401..=604800 => 11000,   // 1.1x for up to 1 week
-            604801..=2592000 => 12000, // 1.2x for up to 1 month
-            2592001..=7776000 => 13000, // 1.3x for up to 3 months
-            _ => 15000,                // 1.5x for longer than 3 months
+    pub fn update_pool_fee_rate(
+        env: Env,
+        admin: Address,
+        pool_id: Bytes,
+        new_fee_rate: i128,
+    ) -> Result<(), LiquidityError> {
+        admin.require_auth();
+
+        let config = Self::get_config(&env)?;
+        
+        if config.admin != admin {
+            return Err(LiquidityError::Unauthorized);
         }
+
+        if new_fee_rate > 1000 { // Max 10%
+            return Err(LiquidityError::InvalidFeeRate);
+        }
+
+        let mut pool: LiquidityPool = env.storage().instance()
+            .get(&DataKey::Pool(pool_id.clone()))
+            .ok_or(LiquidityError::PoolNotFound)?;
+
+        pool.fee_rate = new_fee_rate;
+        env.storage().instance().set(&DataKey::Pool(pool_id), &pool);
+        
+        Ok(())
+    }
+
+    // Calculate user's share of pool fees (for reward estimation)
+    pub fn calculate_user_fee_share(
+        env: Env,
+        user: Address,
+        pool_id: Bytes,
+    ) -> Result<i128, LiquidityError> {
+        let position: LPPosition = env.storage().persistent()
+            .get(&DataKey::UserLPPosition(user, pool_id.clone()))
+            .ok_or(LiquidityError::PositionNotFound)?;
+
+        let pool: LiquidityPool = env.storage().instance()
+            .get(&DataKey::Pool(pool_id))
+            .ok_or(LiquidityError::PoolNotFound)?;
+
+        if pool.total_liquidity == 0 {
+            return Ok(0);
+        }
+
+        // User's percentage of the pool
+        let user_percentage = (position.lp_amount * 10000) / pool.total_liquidity; // basis points
+        Ok(user_percentage)
     }
 }
 
-// Helper trait for integer square root
-trait IntegerSqrt {
-    fn integer_sqrt(self) -> Self;
-}
-
-impl IntegerSqrt for i128 {
-    fn integer_sqrt(self) -> Self {
-        if self < 0 {
-            return 0;
+// Default implementations for gas optimization
+impl Default for GlobalLiquidityStats {
+    fn default() -> Self {
+        Self {
+            total_value_locked: 0,
+            total_pools: 0,
+            total_lp_providers: 0,
+            total_fees_collected: 0,
+            last_update: 0,
         }
-        if self < 2 {
-            return self;
-        }
-        
-        let mut x = self;
-        let mut y = (x + 1) / 2;
-        
-        while y < x {
-            x = y;
-            y = (x + self / x) / 2;
-        }
-        
-        x
     }
 } 

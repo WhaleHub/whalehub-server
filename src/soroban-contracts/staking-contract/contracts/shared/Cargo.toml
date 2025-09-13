@@ -9,20 +9,11 @@ description = "Shared types and utilities for WhaleHub Soroban contracts"
 crate-type = ["cdylib"]
 
 [dependencies]
-soroban-sdk = "21.7.0"
+soroban-sdk = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { version = "21.7.0", features = ["testutils"] }
+soroban-sdk = { workspace = true, features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
-
-[profile.release]
-opt-level = "z"
-overflow-checks = true
-debug = 0
-strip = "symbols"
-debug-assertions = false
-panic = "abort"
-codegen-units = 1
-lto = true
+ 
