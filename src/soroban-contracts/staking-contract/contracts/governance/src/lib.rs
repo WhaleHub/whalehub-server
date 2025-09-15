@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Vec, Bytes,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, Bytes,
 };
 
 // Simplified governance types that mirror the existing ICE token system
@@ -57,6 +57,24 @@ pub enum GovernanceError {
     ContractPaused = 5,
     RecordNotFound = 6,
     NumericOverflow = 7,
+}
+
+impl From<GovernanceError> for soroban_sdk::Error {
+    fn from(error: GovernanceError) -> Self {
+        soroban_sdk::Error::from_contract_error(error as u32)
+    }
+}
+
+impl From<&GovernanceError> for soroban_sdk::Error {
+    fn from(error: &GovernanceError) -> Self {
+        soroban_sdk::Error::from_contract_error(error.clone() as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for GovernanceError {
+    fn from(_: soroban_sdk::Error) -> Self {
+        GovernanceError::InvalidInput
+    }
 }
 
 // Events matching existing system operations

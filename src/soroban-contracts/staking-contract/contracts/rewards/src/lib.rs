@@ -1,8 +1,24 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Vec, Bytes,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, vec,
 };
-use whalehub_shared::{RewardPoolType, validate_positive_amount, MAX_BASIS_POINTS, SECONDS_PER_DAY};
+
+// Inline shared types and constants
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RewardPoolType {
+    Staking,
+    Liquidity,
+    Governance,
+    Bonus,
+}
+
+pub fn validate_positive_amount(amount: i128) -> bool {
+    amount > 0
+}
+
+pub const MAX_BASIS_POINTS: i128 = 10000;
+pub const SECONDS_PER_DAY: u64 = 86400;
 
 // Simplified data types
 #[contracttype]
@@ -78,6 +94,24 @@ pub enum RewardError {
     NumericOverflow = 13,
     InvalidTimestamp = 17,
     RewardPoolInactive = 18,
+}
+
+impl From<RewardError> for soroban_sdk::Error {
+    fn from(error: RewardError) -> Self {
+        soroban_sdk::Error::from_contract_error(error as u32)
+    }
+}
+
+impl From<&RewardError> for soroban_sdk::Error {
+    fn from(error: &RewardError) -> Self {
+        soroban_sdk::Error::from_contract_error(error.clone() as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for RewardError {
+    fn from(_: soroban_sdk::Error) -> Self {
+        RewardError::InvalidConfiguration
+    }
 }
 
 // Simplified events

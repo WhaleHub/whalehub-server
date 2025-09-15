@@ -84,6 +84,24 @@ pub enum LiquidityError {
     NumericOverflow = 14,
 }
 
+impl From<LiquidityError> for soroban_sdk::Error {
+    fn from(error: LiquidityError) -> Self {
+        soroban_sdk::Error::from_contract_error(error as u32)
+    }
+}
+
+impl From<&LiquidityError> for soroban_sdk::Error {
+    fn from(error: &LiquidityError) -> Self {
+        soroban_sdk::Error::from_contract_error(error.clone() as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for LiquidityError {
+    fn from(_: soroban_sdk::Error) -> Self {
+        LiquidityError::ContractPaused
+    }
+}
+
 // Simplified events
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -397,12 +415,20 @@ impl LiquidityContract {
             env.storage().persistent().remove(&DataKey::UserLPPosition(user.clone(), pool_id.clone()));
             
             // Remove from user pools list
-            let mut user_pools: Vec<Bytes> = env.storage().persistent()
+            let user_pools: Vec<Bytes> = env.storage().persistent()
                 .get(&DataKey::UserPools(user.clone()))
                 .unwrap_or(Vec::new(&env));
             
-            user_pools.retain(|p| p != &pool_id);
-            env.storage().persistent().set(&DataKey::UserPools(user.clone()), &user_pools);
+            // Manual filtering since Soroban Vec doesn't have retain
+            let mut new_pools = Vec::new(&env);
+            for i in 0..user_pools.len() {
+                if let Some(p) = user_pools.get(i) {
+                    if p != pool_id {
+                        new_pools.push_back(p);
+                    }
+                }
+            }
+            env.storage().persistent().set(&DataKey::UserPools(user.clone()), &new_pools);
         } else {
             env.storage().persistent().set(&DataKey::UserLPPosition(user.clone(), pool_id.clone()), &position);
         }

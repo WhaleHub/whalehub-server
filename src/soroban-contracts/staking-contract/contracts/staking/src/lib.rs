@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, String, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
 };
 
 #[contracttype]
@@ -131,6 +131,9 @@ pub enum DataKey {
     RewardSnapshot(u64),
     ProtocolOwnedLiquidity, // POL tracking
     DailyPolSnapshot(u64), // Daily POL performance snapshots
+    UserLockTotals(Address), // User-specific lock totals
+    UserPools(Address), // User pool list
+    UserLp(Address, Bytes), // User LP position by pool
 }
 
 #[contracttype]
@@ -145,6 +148,24 @@ pub enum Error {
     RewardCalculationFailed = 7,
     UnlockNotReady = 8,
     AlreadyClaimed = 9,
+}
+
+impl From<Error> for soroban_sdk::Error {
+    fn from(error: Error) -> Self {
+        soroban_sdk::Error::from_contract_error(error as u32)
+    }
+}
+
+impl From<&Error> for soroban_sdk::Error {
+    fn from(error: &Error) -> Self {
+        soroban_sdk::Error::from_contract_error(error.clone() as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for Error {
+    fn from(_: soroban_sdk::Error) -> Self {
+        Error::InvalidInput
+    }
 }
 
 // Events remain the same but add gas-optimized reward events
@@ -312,7 +333,7 @@ impl StakingRegistry {
         duration_days: u32,
         tx_hash: Bytes,
     ) -> Result<u32, Error> {
-        let config = Self::get_config(&env)?;
+        let config = Self::get_config(env.clone())?;
         admin.require_auth();
         
         if config.admin != admin {
@@ -363,7 +384,7 @@ impl StakingRegistry {
         Self::update_pol_contribution(&env, pol_contribution, pol_contribution)?; // BLUB=AQUA 1:1
 
         // Update global state
-        Self::update_global_state(&env)?;
+        Self::update_global_state(&env, amount, 0, false)?;
 
         // Emit POL contribution event
         let pol = Self::get_pol(&env);
@@ -568,7 +589,7 @@ impl StakingRegistry {
             });
 
         // Calculate pending LP rewards before update
-        let global_state = Self::get_global_state(&env)?;
+        let global_state = Self::get_global_state(env.clone())?;
         let pending_lp_rewards = pos.lp_shares.saturating_mul(global_state.reward_per_lp_token) / 1_000_000 - pos.reward_debt;
 
         pos.total_asset_a = pos.total_asset_a.saturating_add(amount_a);
@@ -641,7 +662,7 @@ impl StakingRegistry {
             .unwrap_or(Vec::new(&env));
 
         let mut total_pending_lp = 0i128;
-        let global_state = Self::get_global_state(&env)?;
+        let global_state = Self::get_global_state(env.clone())?;
 
         for pool_id in pools.iter() {
             if let Some(pos) = env.storage().persistent().get::<DataKey, LpPosition>(&DataKey::UserLp(user.clone(), pool_id.clone())) {
@@ -684,7 +705,7 @@ impl StakingRegistry {
         env.storage().instance().set(&DataKey::DistributionCount, &dcount);
 
         // Estimate user count based on global state
-        let global_state = Self::get_global_state(&env)?;
+        let global_state = Self::get_global_state(env.clone())?;
         let estimated_users = if kind == 0 { 
             global_state.total_users / 2 // Rough estimate for LP users
         } else { 
@@ -768,7 +789,7 @@ impl StakingRegistry {
         reward_amount: i128,
         ice_voting_power: i128,
     ) -> Result<(), Error> {
-        let config = Self::get_config(&env)?;
+        let config = Self::get_config(env.clone())?;
         admin.require_auth();
         
         if config.admin != admin {
@@ -814,7 +835,7 @@ impl StakingRegistry {
     // Gas optimization
 
     fn update_global_state(env: &Env, locked_delta: i128, lp_delta: i128, is_new_user: bool) -> Result<(), Error> {
-        let mut global_state = Self::get_global_state(env)?;
+        let mut global_state = Self::get_global_state(env.clone())?;
         
         global_state.total_locked = global_state.total_locked.saturating_add(locked_delta);
         global_state.total_lp_staked = global_state.total_lp_staked.saturating_add(lp_delta);
@@ -830,7 +851,7 @@ impl StakingRegistry {
     }
 
     fn update_reward_rates(env: &Env, kind: u32, distributed_amount: i128) -> Result<(), Error> {
-        let mut global_state = Self::get_global_state(env)?;
+        let mut global_state = Self::get_global_state(env.clone())?;
         
         if kind == 0 && global_state.total_lp_staked > 0 {
             // Update LP reward rate
@@ -986,7 +1007,7 @@ impl StakingRegistry {
         Ok(weighted_multiplier / total_amount)
     }
 
-    fn get_global_state(env: &Env) -> Result<GlobalState, Error> {
+    pub fn get_global_state(env: Env) -> Result<GlobalState, Error> {
         env.storage()
             .instance()
             .get(&DataKey::GlobalState)
@@ -1040,10 +1061,6 @@ impl StakingRegistry {
 
     pub fn get_distribution_by_index(env: Env, index: u32) -> Option<RewardDistribution> {
         env.storage().instance().get(&DataKey::DistributionByIndex(index))
-    }
-
-    pub fn get_global_state(env: Env) -> Option<GlobalState> {
-        env.storage().instance().get(&DataKey::GlobalState)
     }
 
     /// Get POL state
