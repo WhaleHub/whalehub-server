@@ -198,14 +198,14 @@ impl RewardsContract {
         let pool_types = vec![&env, RewardPoolType::Liquidity, RewardPoolType::Staking];
         
         for pool_type in pool_types.iter() {
-            let reward_pool = RewardPool {
-                total_rewards: 0,
-                distributed_rewards: 0,
-                last_distribution: env.ledger().timestamp(),
-                distribution_rate: 0,
+        let reward_pool = RewardPool {
+            total_rewards: 0,
+            distributed_rewards: 0,
+            last_distribution: env.ledger().timestamp(),
+            distribution_rate: 0,
                 pool_type: pool_type.clone(),
                 active: true,
-            };
+        };
             env.storage().instance().set(&DataKey::RewardPool(pool_type.clone()), &reward_pool);
         }
         
@@ -574,7 +574,7 @@ impl RewardsContract {
 
         pool.active = active;
         env.storage().instance().set(&DataKey::RewardPool(pool_type), &pool);
-        
+
         Ok(())
     }
 

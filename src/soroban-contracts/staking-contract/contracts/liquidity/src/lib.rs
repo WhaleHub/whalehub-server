@@ -209,7 +209,7 @@ impl LiquidityContract {
         if config.admin != admin {
             return Err(LiquidityError::Unauthorized);
         }
-
+        
         if config.emergency_pause {
             return Err(LiquidityError::ContractPaused);
         }
@@ -287,7 +287,7 @@ impl LiquidityContract {
         if config.admin != admin {
             return Err(LiquidityError::Unauthorized);
         }
-
+        
         if config.emergency_pause {
             return Err(LiquidityError::ContractPaused);
         }
@@ -382,7 +382,7 @@ impl LiquidityContract {
         if config.admin != admin {
             return Err(LiquidityError::Unauthorized);
         }
-
+        
         if config.emergency_pause {
             return Err(LiquidityError::ContractPaused);
         }
@@ -413,7 +413,7 @@ impl LiquidityContract {
         // If position is now empty, clean up
         if position.lp_amount == 0 {
             env.storage().persistent().remove(&DataKey::UserLPPosition(user.clone(), pool_id.clone()));
-            
+
             // Remove from user pools list
             let user_pools: Vec<Bytes> = env.storage().persistent()
                 .get(&DataKey::UserPools(user.clone()))
@@ -581,7 +581,7 @@ impl LiquidityContract {
 
         config.emergency_pause = paused;
         env.storage().instance().set(&DataKey::Config, &config);
-        
+
         Ok(())
     }
 
