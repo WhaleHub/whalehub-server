@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TokenModule } from './modules/token/token.module';
+import { CronModule } from './modules/cron/cron.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserEntity } from './utils/typeorm/entities/user.entity';
 import { StakeEntity } from './utils/typeorm/entities/stake.entity';
@@ -57,6 +58,7 @@ import { DataSource, DataSourceOptions } from 'typeorm';
     }),
     ConfigModule.forRoot({ isGlobal: true }),
     TokenModule,
+    CronModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
