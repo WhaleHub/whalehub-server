@@ -1,8 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { Asset, Keypair, Operation, TransactionBuilder, Networks, BASE_FEE } from '@stellar/stellar-sdk';
+import {
+  Asset,
+  Keypair,
+  Operation,
+  TransactionBuilder,
+  Networks,
+  BASE_FEE,
+} from '@stellar/stellar-sdk';
 
 /**
  * ICE Locking Cron Service
@@ -33,7 +40,6 @@ export class IceLockingService {
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
-    const network = this.configService.get<string>('STELLAR_NETWORK');
 
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
     this.horizonServer = new StellarSdk.Horizon.Server(horizonUrl);
@@ -41,7 +47,9 @@ export class IceLockingService {
     const adminSecret = this.configService.get<string>('ADMIN_SECRET_KEY');
     this.adminKeypair = Keypair.fromSecret(adminSecret);
 
-    this.stakingContractId = this.configService.get<string>('STAKING_CONTRACT_ID');
+    this.stakingContractId = this.configService.get<string>(
+      'STAKING_CONTRACT_ID',
+    );
 
     // AQUA asset (Stellar Classic)
     const aquaIssuer = this.configService.get<string>('AQUA_ISSUER');
@@ -49,9 +57,15 @@ export class IceLockingService {
 
     // ICE token SAC addresses
     this.iceTokenId = this.configService.get<string>('ICE_TOKEN_ID');
-    this.governIceTokenId = this.configService.get<string>('GOVERN_ICE_TOKEN_ID');
-    this.upvoteIceTokenId = this.configService.get<string>('UPVOTE_ICE_TOKEN_ID');
-    this.downvoteIceTokenId = this.configService.get<string>('DOWNVOTE_ICE_TOKEN_ID');
+    this.governIceTokenId = this.configService.get<string>(
+      'GOVERN_ICE_TOKEN_ID',
+    );
+    this.upvoteIceTokenId = this.configService.get<string>(
+      'UPVOTE_ICE_TOKEN_ID',
+    );
+    this.downvoteIceTokenId = this.configService.get<string>(
+      'DOWNVOTE_ICE_TOKEN_ID',
+    );
   }
 
   /**
@@ -123,16 +137,22 @@ export class IceLockingService {
   /**
    * Authorize ICE lock in staking contract
    */
-  private async authorizeIceLock(aquaAmount: number, durationYears: number): Promise<number> {
+  private async authorizeIceLock(
+    aquaAmount: number,
+    durationYears: number,
+  ): Promise<number> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
 
-    const aquaAmountI128 = StellarSdk.nativeToScVal(Math.floor(aquaAmount * 1e7), { type: 'i128' });
+    const aquaAmountI128 = StellarSdk.nativeToScVal(
+      Math.floor(aquaAmount * 1e7),
+      { type: 'i128' },
+    );
     const duration = StellarSdk.nativeToScVal(durationYears, { type: 'u64' });
 
     const operation = contract.call(
       'authorize_ice_lock',
       aquaAmountI128,
-      duration
+      duration,
     );
 
     const tx = await this.buildAndSignTransaction(operation);
@@ -165,18 +185,24 @@ export class IceLockingService {
    * Create claimable balance on Stellar Classic for Aquarius to detect
    * Formula: ICE = AQUA × (duration_years / 3) × 10
    */
-  private async createClaimableBalance(aquaAmount: number, durationYears: number): Promise<void> {
-    const account = await this.horizonServer.loadAccount(this.adminKeypair.publicKey());
+  private async createClaimableBalance(
+    aquaAmount: number,
+    durationYears: number,
+  ): Promise<void> {
+    const account = await this.horizonServer.loadAccount(
+      this.adminKeypair.publicKey(),
+    );
 
     // Calculate unlock time (duration_years from now)
-    const unlockTime = Math.floor(Date.now() / 1000) + (durationYears * 365 * 24 * 60 * 60);
+    const unlockTime =
+      Math.floor(Date.now() / 1000) + durationYears * 365 * 24 * 60 * 60;
 
     // Create claimable balance operation
     const claimant = new StellarSdk.Claimant(
       this.adminKeypair.publicKey(),
       StellarSdk.Claimant.predicateNot(
-        StellarSdk.Claimant.predicateBeforeAbsoluteTime(unlockTime.toString())
-      )
+        StellarSdk.Claimant.predicateBeforeAbsoluteTime(unlockTime.toString()),
+      ),
     );
 
     const transaction = new TransactionBuilder(account, {
@@ -188,7 +214,7 @@ export class IceLockingService {
           asset: this.aquaAsset,
           amount: aquaAmount.toFixed(7),
           claimants: [claimant],
-        })
+        }),
       )
       .setTimeout(180)
       .build();
@@ -203,18 +229,26 @@ export class IceLockingService {
    * Wait for Aquarius to detect claimable balance and mint ICE tokens
    * Polls admin wallet balance for ICE tokens
    */
-  private async waitForIceTokens(maxAttempts = 60, intervalMs = 60000): Promise<void> {
+  private async waitForIceTokens(
+    maxAttempts = 60,
+    intervalMs = 60000,
+  ): Promise<void> {
     this.logger.log('Waiting for Aquarius to mint ICE tokens...');
 
     for (let i = 0; i < maxAttempts; i++) {
-      const iceBalance = await this.getTokenBalance(this.iceTokenId, this.adminKeypair.publicKey());
+      const iceBalance = await this.getTokenBalance(
+        this.iceTokenId,
+        this.adminKeypair.publicKey(),
+      );
 
       if (iceBalance > 0) {
         this.logger.log(`ICE tokens detected: ${iceBalance}`);
         return;
       }
 
-      this.logger.log(`Attempt ${i + 1}/${maxAttempts}: No ICE tokens yet, waiting...`);
+      this.logger.log(
+        `Attempt ${i + 1}/${maxAttempts}: No ICE tokens yet, waiting...`,
+      );
       await this.sleep(intervalMs);
     }
 
@@ -226,7 +260,9 @@ export class IceLockingService {
    */
   private async transferIceTokensToContract(): Promise<void> {
     const contractAddress = StellarSdk.Address.fromString(
-      StellarSdk.StrKey.encodeContract(Buffer.from(this.stakingContractId, 'hex'))
+      StellarSdk.StrKey.encodeContract(
+        Buffer.from(this.stakingContractId, 'hex'),
+      ),
     );
 
     const tokens = [
@@ -237,7 +273,10 @@ export class IceLockingService {
     ];
 
     for (const token of tokens) {
-      const balance = await this.getTokenBalance(token.id, this.adminKeypair.publicKey());
+      const balance = await this.getTokenBalance(
+        token.id,
+        this.adminKeypair.publicKey(),
+      );
 
       if (balance > 0) {
         await this.transferToken(token.id, contractAddress.toString(), balance);
@@ -265,7 +304,9 @@ export class IceLockingService {
   // Helper Methods
   // ============================================================================
 
-  private async simulateTransaction(operation: StellarSdk.xdr.Operation): Promise<any> {
+  private async simulateTransaction(
+    operation: StellarSdk.xdr.Operation,
+  ): Promise<any> {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     const tx = new TransactionBuilder(account, {
@@ -285,7 +326,9 @@ export class IceLockingService {
     return simulated;
   }
 
-  private async buildAndSignTransaction(operation: StellarSdk.xdr.Operation): Promise<StellarSdk.Transaction> {
+  private async buildAndSignTransaction(
+    operation: StellarSdk.xdr.Operation,
+  ): Promise<StellarSdk.Transaction> {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     let tx = new TransactionBuilder(account, {
@@ -309,7 +352,10 @@ export class IceLockingService {
     return tx;
   }
 
-  private async pollTransactionStatus(hash: string, maxAttempts = 30): Promise<any> {
+  private async pollTransactionStatus(
+    hash: string,
+    maxAttempts = 30,
+  ): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
       const status = await this.server.getTransaction(hash);
 
@@ -327,7 +373,10 @@ export class IceLockingService {
     throw new Error(`Transaction timeout: ${hash}`);
   }
 
-  private async getTokenBalance(tokenId: string, address: string): Promise<number> {
+  private async getTokenBalance(
+    tokenId: string,
+    address: string,
+  ): Promise<number> {
     const contract = new StellarSdk.Contract(tokenId);
     const addressScVal = StellarSdk.nativeToScVal(address, { type: 'address' });
 
@@ -338,17 +387,27 @@ export class IceLockingService {
       const balance = StellarSdk.scValToNative(result.result.retval);
       return Number(balance) / 1e7;
     } catch (error) {
-      this.logger.warn(`Failed to get balance for ${tokenId}: ${error.message}`);
+      this.logger.warn(
+        `Failed to get balance for ${tokenId}: ${error.message}`,
+      );
       return 0;
     }
   }
 
-  private async transferToken(tokenId: string, toAddress: string, amount: number): Promise<void> {
+  private async transferToken(
+    tokenId: string,
+    toAddress: string,
+    amount: number,
+  ): Promise<void> {
     const contract = new StellarSdk.Contract(tokenId);
 
-    const from = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
+    const from = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
+      type: 'address',
+    });
     const to = StellarSdk.nativeToScVal(toAddress, { type: 'address' });
-    const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), { type: 'i128' });
+    const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), {
+      type: 'i128',
+    });
 
     const operation = contract.call('transfer', from, to, amountI128);
 
@@ -359,6 +418,6 @@ export class IceLockingService {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -26,13 +26,17 @@ export class MemoryMonitorService {
 
     // Trigger garbage collection if memory usage is high
     if (memoryUsagePercentage > this.MAX_MEMORY_THRESHOLD) {
-      this.logger.warn(`High memory usage detected: ${(memoryUsagePercentage * 100).toFixed(2)}%`);
+      this.logger.warn(
+        `High memory usage detected: ${(memoryUsagePercentage * 100).toFixed(2)}%`,
+      );
       this.forceGarbageCollection();
     }
 
     // Critical memory usage warning
     if (memoryUsagePercentage > this.CRITICAL_MEMORY_THRESHOLD) {
-      this.logger.error(`CRITICAL: Memory usage at ${(memoryUsagePercentage * 100).toFixed(2)}%`);
+      this.logger.error(
+        `CRITICAL: Memory usage at ${(memoryUsagePercentage * 100).toFixed(2)}%`,
+      );
     }
   }
 
@@ -41,7 +45,9 @@ export class MemoryMonitorService {
       global.gc();
       this.logger.debug('Forced garbage collection executed');
     } else {
-      this.logger.warn('Garbage collection not available. Run with --expose-gc flag');
+      this.logger.warn(
+        'Garbage collection not available. Run with --expose-gc flag',
+      );
     }
   }
 
@@ -49,7 +55,7 @@ export class MemoryMonitorService {
     const memUsage = process.memoryUsage();
     const totalMemory = require('os').totalmem();
     const freeMemory = require('os').freemem();
-    
+
     return {
       rss: memUsage.rss,
       heapUsed: memUsage.heapUsed,
@@ -58,7 +64,7 @@ export class MemoryMonitorService {
       systemTotal: totalMemory,
       systemFree: freeMemory,
       systemUsed: totalMemory - freeMemory,
-      systemUsagePercentage: ((totalMemory - freeMemory) / totalMemory) * 100
+      systemUsagePercentage: ((totalMemory - freeMemory) / totalMemory) * 100,
     };
   }
-} 
+}

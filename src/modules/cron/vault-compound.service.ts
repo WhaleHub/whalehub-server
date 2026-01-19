@@ -2,7 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { Keypair, Networks, BASE_FEE, TransactionBuilder } from '@stellar/stellar-sdk';
+import {
+  Keypair,
+  Networks,
+  BASE_FEE,
+  TransactionBuilder,
+} from '@stellar/stellar-sdk';
 
 /**
  * Vault Compound Cron Service
@@ -27,7 +32,9 @@ export class VaultCompoundService {
     const adminSecret = this.configService.get<string>('ADMIN_SECRET_KEY');
     this.adminKeypair = Keypair.fromSecret(adminSecret);
 
-    this.stakingContractId = this.configService.get<string>('STAKING_CONTRACT_ID');
+    this.stakingContractId = this.configService.get<string>(
+      'STAKING_CONTRACT_ID',
+    );
   }
 
   /**
@@ -59,16 +66,21 @@ export class VaultCompoundService {
           await this.compoundPool(poolId);
           successCount++;
         } catch (error) {
-          this.logger.error(`Failed to compound pool ${poolId}: ${error.message}`);
+          this.logger.error(
+            `Failed to compound pool ${poolId}: ${error.message}`,
+          );
           failCount++;
         }
       }
 
       this.logger.log(
-        `Vault compound completed: ${successCount} succeeded, ${failCount} failed`
+        `Vault compound completed: ${successCount} succeeded, ${failCount} failed`,
       );
     } catch (error) {
-      this.logger.error(`Vault compound process failed: ${error.message}`, error.stack);
+      this.logger.error(
+        `Vault compound process failed: ${error.message}`,
+        error.stack,
+      );
     }
   }
 
@@ -114,7 +126,7 @@ export class VaultCompoundService {
     } else if (events.compounded) {
       this.logger.log(
         `Pool ${poolId} compounded: ${events.lpSharesMinted} LP shares, ` +
-        `Total: ${events.totalLp}, Rewards: ${events.totalRewards}`
+          `Total: ${events.totalLp}, Rewards: ${events.totalRewards}`,
       );
     } else if (events.noReward) {
       this.logger.log(`Pool ${poolId}: No rewards to claim`);
@@ -132,7 +144,9 @@ export class VaultCompoundService {
     const aquaAmount = swapInfo.aquaAmount;
 
     // Get Aquarius Router contract for swaps
-    const routerContractId = this.configService.get<string>('AQUARIUS_ROUTER_CONTRACT_ID');
+    const routerContractId = this.configService.get<string>(
+      'AQUARIUS_ROUTER_CONTRACT_ID',
+    );
 
     if (swapInfo.swapType === 'to_a') {
       // Swap AQUA to token_a
@@ -140,7 +154,7 @@ export class VaultCompoundService {
         routerContractId,
         this.configService.get<string>('AQUA_TOKEN_ID'),
         poolInfo.token_a,
-        aquaAmount / 2 // Swap half
+        aquaAmount / 2, // Swap half
       );
     } else if (swapInfo.swapType === 'to_b') {
       // Swap AQUA to token_b
@@ -148,7 +162,7 @@ export class VaultCompoundService {
         routerContractId,
         this.configService.get<string>('AQUA_TOKEN_ID'),
         poolInfo.token_b,
-        aquaAmount / 2 // Swap half
+        aquaAmount / 2, // Swap half
       );
     } else if (swapInfo.swapType === 'to_both') {
       // Swap half AQUA to token_a, half to token_b
@@ -156,14 +170,14 @@ export class VaultCompoundService {
         routerContractId,
         this.configService.get<string>('AQUA_TOKEN_ID'),
         poolInfo.token_a,
-        aquaAmount / 2
+        aquaAmount / 2,
       );
 
       await this.swapTokens(
         routerContractId,
         this.configService.get<string>('AQUA_TOKEN_ID'),
         poolInfo.token_b,
-        aquaAmount / 2
+        aquaAmount / 2,
       );
     }
 
@@ -177,18 +191,19 @@ export class VaultCompoundService {
     routerContractId: string,
     fromTokenId: string,
     toTokenId: string,
-    amount: number
+    amount: number,
   ): Promise<void> {
     const routerContract = new StellarSdk.Contract(routerContractId);
 
-    const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), { type: 'i128' });
+    const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), {
+      type: 'i128',
+    });
     const minAmount = StellarSdk.nativeToScVal(0, { type: 'i128' }); // Allow any slippage for auto-compound
 
     // Build path: [fromToken, toToken]
-    const path = StellarSdk.nativeToScVal(
-      [fromTokenId, toTokenId],
-      { type: 'vec' }
-    );
+    const path = StellarSdk.nativeToScVal([fromTokenId, toTokenId], {
+      type: 'vec',
+    });
 
     const operation = routerContract.call(
       'swap_exact_tokens_for_tokens',
@@ -196,7 +211,9 @@ export class VaultCompoundService {
       minAmount,
       path,
       StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
-      StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 300, { type: 'u64' }) // 5 min deadline
+      StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 300, {
+        type: 'u64',
+      }), // 5 min deadline
     );
 
     const tx = await this.buildAndSignTransaction(operation);
@@ -220,6 +237,12 @@ export class VaultCompoundService {
 
   /**
    * Parse compound events from transaction result
+   *
+   * According to Stellar's getTransaction API, events are at the top level:
+   * - txResult.events.contractEventsXdr: Array of base64-encoded ContractEvent
+   * - txResult.events.transactionEventsXdr: Array of base64-encoded TransactionEvent
+   *
+   * @see https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getTransaction
    */
   private parseCompoundEvents(txResult: any): any {
     const events = {
@@ -233,27 +256,170 @@ export class VaultCompoundService {
       noReward: false,
     };
 
-    // Parse events from transaction
-    // Event topics: 'need_swap', 'compounded', 'compound'
-    // This is simplified - actual implementation would parse xdr events
-
     try {
-      const resultMeta = txResult.resultMetaXdr;
-      // TODO: Parse events from resultMeta
-      // For now, assuming no swap needed
-      events.compounded = true;
+      // Method 1: Parse from top-level events (new API structure)
+      const contractEventsXdr = txResult.events?.contractEventsXdr || [];
+
+      if (contractEventsXdr.length > 0) {
+        for (const eventXdr of contractEventsXdr) {
+          try {
+            // Decode base64 XDR to ContractEvent
+            const contractEvent = StellarSdk.xdr.ContractEvent.fromXDR(
+              eventXdr,
+              'base64',
+            );
+
+            const body = contractEvent.body();
+            if (!body) continue;
+
+            // Try to access v0 - will throw if not v0 type
+            let v0;
+            try {
+              v0 = body.v0();
+            } catch {
+              continue; // Skip non-v0 events
+            }
+            const topics = v0.topics();
+            if (!topics || topics.length === 0) continue;
+
+            // Get first topic as event name (symbol)
+            const eventName = StellarSdk.scValToNative(topics[0]);
+
+            // Parse event data
+            const eventData = v0.data();
+            const data = eventData ? StellarSdk.scValToNative(eventData) : null;
+
+            this.logger.debug(
+              `Event: ${eventName}, Data: ${JSON.stringify(data)}`,
+            );
+
+            // Handle different event types from claim_and_compound
+            this.processEventData(eventName, data, events);
+          } catch (eventError) {
+            this.logger.debug(
+              `Failed to parse contract event: ${eventError.message}`,
+            );
+          }
+        }
+      }
+
+      // Method 2: Fallback to resultMetaXdr parsing (legacy support)
+      if (
+        contractEventsXdr.length === 0 &&
+        !events.needSwap &&
+        !events.compounded &&
+        !events.noReward
+      ) {
+        const resultMeta = txResult.resultMetaXdr;
+        if (resultMeta) {
+          try {
+            // Check if resultMetaXdr is already parsed or needs decoding
+            const meta =
+              typeof resultMeta === 'string'
+                ? StellarSdk.xdr.TransactionMeta.fromXDR(resultMeta, 'base64')
+                : resultMeta;
+
+            // Access v3 soroban meta if available (switch returns number directly)
+            const metaSwitch = meta.switch() as unknown as number;
+            if (metaSwitch >= 3) {
+              const metaValue = meta.value();
+              const sorobanMeta = metaValue.sorobanMeta?.() || null;
+
+              if (sorobanMeta) {
+                const sorobanEvents = sorobanMeta.events?.() || [];
+
+                for (const contractEvent of sorobanEvents) {
+                  try {
+                    const body = contractEvent.body();
+                    if (!body) continue;
+
+                    // Try to access v0 - will throw if not v0 type
+                    let v0;
+                    try {
+                      v0 = body.v0();
+                    } catch {
+                      continue;
+                    }
+                    const topics = v0.topics();
+                    if (!topics || topics.length === 0) continue;
+
+                    const eventName = StellarSdk.scValToNative(topics[0]);
+                    const eventData = v0.data();
+                    const data = eventData
+                      ? StellarSdk.scValToNative(eventData)
+                      : null;
+
+                    this.logger.debug(
+                      `Event (meta): ${eventName}, Data: ${JSON.stringify(data)}`,
+                    );
+
+                    this.processEventData(eventName, data, events);
+                  } catch (innerError) {
+                    this.logger.debug(
+                      `Failed to parse meta event: ${innerError.message}`,
+                    );
+                  }
+                }
+              }
+            }
+          } catch (metaError) {
+            this.logger.debug(
+              `Failed to parse resultMetaXdr: ${metaError.message}`,
+            );
+          }
+        }
+      }
+
+      // If no events found but transaction succeeded, assume compounded
+      if (!events.needSwap && !events.compounded && !events.noReward) {
+        events.compounded = true;
+      }
     } catch (error) {
       this.logger.warn(`Failed to parse compound events: ${error.message}`);
+      // Default to compounded on parse error (transaction likely succeeded)
+      events.compounded = true;
     }
 
     return events;
+  }
+
+  /**
+   * Process event data and update events object
+   */
+  private processEventData(eventName: string, data: any, events: any): void {
+    switch (eventName) {
+      case 'need_swap':
+        events.needSwap = true;
+        if (data) {
+          events.swapType = data.swap_type || data[0];
+          events.aquaAmount = Number(data.amount || data[1] || 0);
+        }
+        break;
+
+      case 'compound':
+      case 'compounded':
+        events.compounded = true;
+        if (data) {
+          events.lpSharesMinted = Number(data.lp_minted || data[0] || 0);
+          events.totalLp = Number(data.total_lp || data[1] || 0);
+          events.totalRewards = Number(data.rewards || data[2] || 0);
+        }
+        break;
+
+      case 'no_reward':
+      case 'no_rewards':
+        events.noReward = true;
+        break;
+    }
   }
 
   // ============================================================================
   // Helper Methods
   // ============================================================================
 
-  private async simulateTransaction(operation: StellarSdk.xdr.Operation): Promise<any> {
+  private async simulateTransaction(
+    operation: StellarSdk.xdr.Operation,
+  ): Promise<any> {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     const tx = new TransactionBuilder(account, {
@@ -273,7 +439,9 @@ export class VaultCompoundService {
     return simulated;
   }
 
-  private async buildAndSignTransaction(operation: StellarSdk.xdr.Operation): Promise<StellarSdk.Transaction> {
+  private async buildAndSignTransaction(
+    operation: StellarSdk.xdr.Operation,
+  ): Promise<StellarSdk.Transaction> {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     let tx = new TransactionBuilder(account, {
@@ -296,7 +464,10 @@ export class VaultCompoundService {
     return tx;
   }
 
-  private async pollTransactionStatus(hash: string, maxAttempts = 30): Promise<any> {
+  private async pollTransactionStatus(
+    hash: string,
+    maxAttempts = 30,
+  ): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
       const status = await this.server.getTransaction(hash);
 
@@ -315,6 +486,6 @@ export class VaultCompoundService {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -1,5 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsString, Min, IsNotEmpty, IsOptional, IsDefined } from 'class-validator';
+import {
+  IsNumber,
+  IsString,
+  Min,
+  IsNotEmpty,
+  IsOptional,
+  IsDefined,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateStakeDto {

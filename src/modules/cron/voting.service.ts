@@ -2,7 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { Keypair, Networks, BASE_FEE, TransactionBuilder } from '@stellar/stellar-sdk';
+import {
+  Keypair,
+  Networks,
+  BASE_FEE,
+  TransactionBuilder,
+} from '@stellar/stellar-sdk';
 
 /**
  * Voting Cron Service
@@ -30,18 +35,26 @@ export class VotingService {
     const adminSecret = this.configService.get<string>('ADMIN_SECRET_KEY');
     this.adminKeypair = Keypair.fromSecret(adminSecret);
 
-    this.stakingContractId = this.configService.get<string>('STAKING_CONTRACT_ID');
-    this.aquariusRouterContractId = this.configService.get<string>('AQUARIUS_ROUTER_CONTRACT_ID');
+    this.stakingContractId = this.configService.get<string>(
+      'STAKING_CONTRACT_ID',
+    );
+    this.aquariusRouterContractId = this.configService.get<string>(
+      'AQUARIUS_ROUTER_CONTRACT_ID',
+    );
 
     // AQUA-BLUB pool token addresses (sorted)
     const aquaTokenId = this.configService.get<string>('AQUA_TOKEN_ID');
     const blubTokenId = this.configService.get<string>('BLUB_TOKEN_ID');
 
     // Sort token addresses (Aquarius requires sorted pairs)
-    this.aquaBlubPoolTokens = [aquaTokenId, blubTokenId].sort() as [string, string];
+    this.aquaBlubPoolTokens = [aquaTokenId, blubTokenId].sort() as [
+      string,
+      string,
+    ];
 
     // Voting share for AQUA-BLUB pool (default 60%)
-    this.votingShare = this.configService.get<number>('AQUA_BLUB_VOTING_SHARE') || 60;
+    this.votingShare =
+      this.configService.get<number>('AQUA_BLUB_VOTING_SHARE') || 60;
   }
 
   /**
@@ -51,7 +64,7 @@ export class VotingService {
    * Examples:
    * - Daily: '0 3 * * *'
    * - Weekly: '0 3 * * 0'
-   * - Every 3 days: '0 3 */3 * *'
+   * - Every 3 days: '0 3 *\/3 * *'
    */
   @Cron(process.env.VOTING_CRON_SCHEDULE || '0 3 * * 0', {
     name: 'aqua-blub-voting',
@@ -97,14 +110,17 @@ export class VotingService {
    * Allocates voting shares to pools
    */
   private async configureGlobalRewards(): Promise<void> {
-    const routerContract = new StellarSdk.Contract(this.aquariusRouterContractId);
+    const routerContract = new StellarSdk.Contract(
+      this.aquariusRouterContractId,
+    );
 
     // Reward tokens per second (7 decimal precision)
     // Example: 600 AQUA per second = 600_0000000
-    const rewardTps = this.configService.get<number>('REWARD_TPS') || 600_0000000;
+    const rewardTps =
+      this.configService.get<number>('REWARD_TPS') || 600_0000000;
 
     // Expiration timestamp (30 days from now)
-    const expiredAt = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
+    const expiredAt = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
 
     // Voting shares (7 decimal precision)
     // votingShare% to AQUA-BLUB, remaining to other pools
@@ -122,11 +138,13 @@ export class VotingService {
     ];
 
     // Convert to ScVal
-    const rewardTpsScVal = StellarSdk.nativeToScVal(rewardTps, { type: 'u128' });
+    const rewardTpsScVal = StellarSdk.nativeToScVal(rewardTps, {
+      type: 'u128',
+    });
     const expiredAtScVal = StellarSdk.nativeToScVal(expiredAt, { type: 'u64' });
 
     // Build tokens_votes ScVal
-    const tokensVotesVec = tokensVotes.map(tv => {
+    const tokensVotesVec = tokensVotes.map((tv) => {
       const tokensVec = StellarSdk.nativeToScVal(tv.tokens, { type: 'vec' });
       const shareU32 = StellarSdk.nativeToScVal(tv.share, { type: 'u32' });
 
@@ -146,20 +164,23 @@ export class VotingService {
 
     const operation = routerContract.call(
       'config_global_rewards',
-      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
+        type: 'address',
+      }),
       rewardTpsScVal,
       expiredAtScVal,
-      tokensVotesScVal
+      tokensVotesScVal,
     );
 
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
 
-    const confirmed = await this.pollTransactionStatus(response.hash);
+    // Wait for transaction confirmation
+    await this.pollTransactionStatus(response.hash);
 
     this.logger.log(
       `Global rewards configured: ${this.votingShare}% to AQUA-BLUB pool, ` +
-      `TPS: ${rewardTps}, Expires: ${new Date(expiredAt * 1000).toISOString()}`
+        `TPS: ${rewardTps}, Expires: ${new Date(expiredAt * 1000).toISOString()}`,
     );
   }
 
@@ -175,7 +196,9 @@ export class VotingService {
   // Helper Methods
   // ============================================================================
 
-  private async simulateTransaction(operation: StellarSdk.xdr.Operation): Promise<any> {
+  private async simulateTransaction(
+    operation: StellarSdk.xdr.Operation,
+  ): Promise<any> {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     const tx = new TransactionBuilder(account, {
@@ -195,7 +218,9 @@ export class VotingService {
     return simulated;
   }
 
-  private async buildAndSignTransaction(operation: StellarSdk.xdr.Operation): Promise<StellarSdk.Transaction> {
+  private async buildAndSignTransaction(
+    operation: StellarSdk.xdr.Operation,
+  ): Promise<StellarSdk.Transaction> {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     let tx = new TransactionBuilder(account, {
@@ -218,7 +243,10 @@ export class VotingService {
     return tx;
   }
 
-  private async pollTransactionStatus(hash: string, maxAttempts = 30): Promise<any> {
+  private async pollTransactionStatus(
+    hash: string,
+    maxAttempts = 30,
+  ): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
       const status = await this.server.getTransaction(hash);
 
@@ -237,6 +265,6 @@ export class VotingService {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

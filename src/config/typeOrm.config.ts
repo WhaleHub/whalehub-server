@@ -21,7 +21,13 @@ export const typeOrmConfig = async (
   const database = configService.get<string>('POSTGRES_DATABASE');
 
   // Fail fast if critical envs are missing
-  for (const [k, v] of Object.entries({ host, port, username, password, database })) {
+  for (const [k, v] of Object.entries({
+    host,
+    port,
+    username,
+    password,
+    database,
+  })) {
     if (v === undefined || v === null || v === '') {
       throw new Error(`Missing database config: ${k}`);
     }
@@ -65,12 +71,12 @@ export const typeOrmConfig = async (
 
     // Pool config – pg uses `extra` for pool options
     extra: {
-      max: 25,                    // max clients in pool
+      max: 25, // max clients in pool
       min: 5,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 30_000,
-      statement_timeout: 25_000,  // server-side statement timeout
-      query_timeout: 25_000,      // client-side
+      statement_timeout: 25_000, // server-side statement timeout
+      query_timeout: 25_000, // client-side
       application_name: 'whalehub-server',
       keepAlive: true,
       keepAliveInitialDelayMillis: 0,

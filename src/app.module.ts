@@ -1,4 +1,9 @@
-import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -36,21 +41,31 @@ import { DataSource, DataSourceOptions } from 'typeorm';
           console.log('[TypeOrmModule] Attempting to connect to database...');
           const dataSource = new DataSource(options as DataSourceOptions);
           const initializedDataSource = await dataSource.initialize();
-          console.log('[TypeOrmModule] Database connection established successfully');
+          console.log(
+            '[TypeOrmModule] Database connection established successfully',
+          );
           return initializedDataSource;
         } catch (error) {
           console.error('[TypeOrmModule] Database connection failed:', error);
-          
+
           // Log detailed error information
           if (error.code === 'ECONNREFUSED') {
-            console.error('[TypeOrmModule] Connection refused - Database server may not be running or accessible');
-            console.error(`[TypeOrmModule] Host: ${(options as any).host}:${(options as any).port}`);
+            console.error(
+              '[TypeOrmModule] Connection refused - Database server may not be running or accessible',
+            );
+            console.error(
+              `[TypeOrmModule] Host: ${(options as any).host}:${(options as any).port}`,
+            );
           } else if (error.code === 'ENOTFOUND') {
-            console.error('[TypeOrmModule] Host not found - Check database host configuration');
+            console.error(
+              '[TypeOrmModule] Host not found - Check database host configuration',
+            );
           } else if (error.code === 'ECONNRESET') {
-            console.error('[TypeOrmModule] Connection reset - Network or authentication issue');
+            console.error(
+              '[TypeOrmModule] Connection reset - Network or authentication issue',
+            );
           }
-          
+
           // Re-throw the error to prevent application startup with invalid database state
           throw new Error(`Database connection failed: ${error.message}`);
         }

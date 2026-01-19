@@ -12,13 +12,9 @@ import { UserEntity } from '@/utils/typeorm/entities/user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
-import { AQUA_CODE, AQUA_ISSUER } from './stellar.service';
-import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
-import { StakeEntity } from '@/utils/typeorm/entities/stake.entity';
 import { DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from '@/utils/typeorm/entities/lp-balances.entity';
 import { formatAmountToBigInt } from '@/utils/constants';
-import { delay } from 'rxjs/operators';
 
 export const AMM_SMART_CONTACT_ID =
   'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK';
@@ -128,7 +124,7 @@ export class SorobanService {
       this.signerKeyPair.publicKey(),
     );
 
-    let poolsForAsset = await this.getPools(assets);
+    const poolsForAsset = await this.getPools(assets);
 
     if (poolsForAsset.length === 0) {
       const account = await this.server.getAccount(
@@ -259,7 +255,7 @@ export class SorobanService {
             ),
       ];
 
-      let poolsForAsset = await this.getPools(assets);
+      const poolsForAsset = await this.getPools(assets);
 
       const amounts = new Map<string, string>();
       amounts.set(
@@ -365,7 +361,7 @@ export class SorobanService {
     return xdr.ScVal.scvBytes(buffer);
   }
 
-  bigintToIntU28Parts(value: BigInt): xdr.UInt128Parts {
+  bigintToIntU28Parts(value: bigint): xdr.UInt128Parts {
     // Ensure value is a bigint
     if (typeof value !== 'bigint') {
       throw new Error('Value must be a bigint');
@@ -431,10 +427,10 @@ export class SorobanService {
   private orderTokens(assets: Asset[]) {
     for (let i = 0; i < assets.length; i++) {
       for (let j = 0; j < assets.length - 1; j++) {
-        let hash1 = parseInt(this.getAssetContractHash(assets[j]), 16);
-        let hash2 = parseInt(this.getAssetContractHash(assets[j + 1]), 16);
+        const hash1 = parseInt(this.getAssetContractHash(assets[j]), 16);
+        const hash2 = parseInt(this.getAssetContractHash(assets[j + 1]), 16);
         if (hash1 > hash2) {
-          let temp = assets[j];
+          const temp = assets[j];
           assets[j] = assets[j + 1];
           assets[j + 1] = temp;
         }
@@ -649,10 +645,10 @@ export class SorobanService {
   }
 
   u128ToDecimal(hi, lo) {
-    let hiBigInt = BigInt(hi); // Convert hi to BigInt
-    let loBigInt = BigInt(lo); // Convert lo to BigInt
+    const hiBigInt = BigInt(hi); // Convert hi to BigInt
+    const loBigInt = BigInt(lo); // Convert lo to BigInt
 
-    let decimalValue = (hiBigInt << 64n) + loBigInt;
+    const decimalValue = (hiBigInt << 64n) + loBigInt;
     return decimalValue.toString();
   }
 
@@ -816,7 +812,7 @@ export class SorobanService {
 
     console.log({ hi, lo });
 
-    let integerValue = Number(lo) / 10 ** 7;
+    const integerValue = Number(lo) / 10 ** 7;
 
     this.logger.debug(
       `Claimed locked Amount from AQUA AMM: ${integerValue} txn hash: ${response.hash}`,
@@ -946,7 +942,7 @@ export class SorobanService {
     // const hi = returnValues.hi().toBigInt();
     const lo = returnValues.lo().toBigInt();
 
-    let integerValue = Number(lo) / 10 ** 7;
+    const integerValue = Number(lo) / 10 ** 7;
 
     this.logger.debug(
       `Swapped AQUA to WHLAQUA, amount: ${integerValue} txn:${response.hash}`,
@@ -981,7 +977,7 @@ export class SorobanService {
 
         if (transactionResult.status === 'SUCCESS') {
           console.log('Transaction success:', transactionResult.status);
-          let resultXdr = transactionResult.resultXdr;
+          const resultXdr = transactionResult.resultXdr;
           return {
             successful: true,
             results: resultXdr,

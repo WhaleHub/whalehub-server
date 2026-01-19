@@ -7,8 +7,8 @@ export enum KnownPrepareErrors {
 }
 
 function findErrorCode(error: string) {
-  for (let str in KnownPrepareErrors) {
-    let index = error.indexOf(str);
+  for (const str in KnownPrepareErrors) {
+    const index = error.indexOf(str);
     if (index !== -1) {
       return str;
     }

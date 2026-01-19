@@ -63,7 +63,10 @@ export class StellarService {
   private treasureAddress: string;
   private blub: Asset;
   private readonly logger = new Logger(StellarService.name);
-  private readonly userCache = new Map<string, { data: UserEntity; timestamp: number }>();
+  private readonly userCache = new Map<
+    string,
+    { data: UserEntity; timestamp: number }
+  >();
   private readonly failedWallets = new Set<string>();
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private readonly CIRCUIT_BREAKER_TTL = 30 * 60 * 1000; // 30 minutes
@@ -85,7 +88,7 @@ export class StellarService {
     private readonly lpBalanceRepository: Repository<LpBalanceEntity>,
     @InjectRepository(RewardClaimsEntity)
     private readonly rewardClaimsRepository: Repository<RewardClaimsEntity>,
-    private readonly dataSource: DataSource
+    private readonly dataSource: DataSource,
   ) {
     try {
       // Validate and initialize keypairs
@@ -97,7 +100,9 @@ export class StellarService {
 
       const lpSignerSecret = this.configService.get('LP_SIGNER_SECRET_KEY');
       if (!lpSignerSecret) {
-        throw new Error('LP_SIGNER_SECRET_KEY environment variable is required');
+        throw new Error(
+          'LP_SIGNER_SECRET_KEY environment variable is required',
+        );
       }
       this.lpSignerKeypair = Keypair.fromSecret(lpSignerSecret);
 
@@ -110,11 +115,15 @@ export class StellarService {
       // Initialize Soroban RPC URL
       this.rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
       if (!this.rpcUrl) {
-        this.logger.warn('SOROBAN_RPC_ENDPOINT not configured, some features may not work');
+        this.logger.warn(
+          'SOROBAN_RPC_ENDPOINT not configured, some features may not work',
+        );
       }
 
       // Fix: Use Horizon API URL instead of Soroban RPC endpoint for Horizon server
-      const horizonUrl = this.configService.get<string>('HORIZON_URL') || 'https://horizon.stellar.org';
+      const horizonUrl =
+        this.configService.get<string>('HORIZON_URL') ||
+        'https://horizon.stellar.org';
       this.server = new Horizon.Server(horizonUrl, { allowHttp: false });
       this.logger.log(`Horizon server initialized with URL: ${horizonUrl}`);
 
@@ -130,13 +139,15 @@ export class StellarService {
       this.logger.error('Failed to initialize StellarService:', error.message);
       throw error;
     }
-    
+
     // Initialize cleanup for cache
     this.initializeCleanup();
   }
 
   async lock(createStakeDto: CreateStakeDto): Promise<void> {
-    this.logger.log(`🔐 Starting lock process for user: ${createStakeDto.senderPublicKey}`);
+    this.logger.log(
+      `🔐 Starting lock process for user: ${createStakeDto.senderPublicKey}`,
+    );
     this.logger.debug(`🔐 Lock request details:`, {
       assetCode: createStakeDto.assetCode,
       assetIssuer: createStakeDto.assetIssuer,
@@ -146,36 +157,63 @@ export class StellarService {
       treasuryAmountType: typeof createStakeDto.treasuryAmount,
       senderPublicKey: createStakeDto.senderPublicKey,
       signedTxXdrLength: createStakeDto.signedTxXdr?.length || 0,
-      signedTxXdrStart: createStakeDto.signedTxXdr?.substring(0, 20) + '...'
+      signedTxXdrStart: createStakeDto.signedTxXdr?.substring(0, 20) + '...',
     });
 
     try {
       // Basic input validation
-      if (!createStakeDto.senderPublicKey || createStakeDto.senderPublicKey.trim() === '') {
+      if (
+        !createStakeDto.senderPublicKey ||
+        createStakeDto.senderPublicKey.trim() === ''
+      ) {
         this.logger.error('❌ Invalid sender public key');
-        throw new HttpException('Invalid sender public key', HttpStatus.BAD_REQUEST);
-      }
-      
-      if (!createStakeDto.signedTxXdr || createStakeDto.signedTxXdr.trim() === '') {
-        this.logger.error('❌ Invalid signed transaction XDR');
-        throw new HttpException('Invalid signed transaction XDR', HttpStatus.BAD_REQUEST);
-      }
-      
-      if (typeof createStakeDto.amount !== 'number' || isNaN(createStakeDto.amount) || createStakeDto.amount <= 0) {
-        this.logger.error(`❌ Invalid amount: ${createStakeDto.amount} (type: ${typeof createStakeDto.amount})`);
-        throw new HttpException(`Invalid amount: ${createStakeDto.amount}`, HttpStatus.BAD_REQUEST);
+        throw new HttpException(
+          'Invalid sender public key',
+          HttpStatus.BAD_REQUEST,
+        );
       }
 
-      this.logger.debug('✅ Basic validation passed, proceeding with account loading...');
+      if (
+        !createStakeDto.signedTxXdr ||
+        createStakeDto.signedTxXdr.trim() === ''
+      ) {
+        this.logger.error('❌ Invalid signed transaction XDR');
+        throw new HttpException(
+          'Invalid signed transaction XDR',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      if (
+        typeof createStakeDto.amount !== 'number' ||
+        isNaN(createStakeDto.amount) ||
+        createStakeDto.amount <= 0
+      ) {
+        this.logger.error(
+          `❌ Invalid amount: ${createStakeDto.amount} (type: ${typeof createStakeDto.amount})`,
+        );
+        throw new HttpException(
+          `Invalid amount: ${createStakeDto.amount}`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      this.logger.debug(
+        '✅ Basic validation passed, proceeding with account loading...',
+      );
 
       // Load the account details
       let signerAccount;
       try {
-        this.logger.debug(`Loading issuer account: ${this.issuerKeypair.publicKey()}`);
+        this.logger.debug(
+          `Loading issuer account: ${this.issuerKeypair.publicKey()}`,
+        );
         await this.server.loadAccount(this.issuerKeypair.publicKey());
         this.logger.debug('✅ Issuer account loaded successfully');
 
-        this.logger.debug(`Loading signer account: ${this.signerKeyPair.publicKey()}`);
+        this.logger.debug(
+          `Loading signer account: ${this.signerKeyPair.publicKey()}`,
+        );
         signerAccount = await this.server.loadAccount(
           this.signerKeyPair.publicKey(),
         );
@@ -185,11 +223,11 @@ export class StellarService {
           error: accountError.message,
           issuerPublicKey: this.issuerKeypair.publicKey(),
           signerPublicKey: this.signerKeyPair.publicKey(),
-          horizonUrl: this.server.serverURL
+          horizonUrl: this.server.serverURL,
         });
         throw new HttpException(
           `Failed to load Stellar accounts: ${accountError.message}. Please try again later.`,
-          HttpStatus.SERVICE_UNAVAILABLE
+          HttpStatus.SERVICE_UNAVAILABLE,
         );
       }
 
@@ -228,11 +266,15 @@ export class StellarService {
           throw new Error('Transfer AQUA transaction failed.');
         }
 
-        this.logger.debug('AQUA transaction confirmed, proceeding with direct stake recording...');
+        this.logger.debug(
+          'AQUA transaction confirmed, proceeding with direct stake recording...',
+        );
 
         // For Convert & Stake: AQUA is converted directly to staked BLUB
         // We do NOT mint BLUB tokens to user's wallet - they go directly to stake
-        this.logger.debug('Converting AQUA directly to staked BLUB (no wallet minting)');
+        this.logger.debug(
+          'Converting AQUA directly to staked BLUB (no wallet minting)',
+        );
 
         // Ensure the user account exists in the database
         let user = await this.userRepository.findOneBy({
@@ -372,25 +414,28 @@ export class StellarService {
           // === ICE GOVERNANCE TOKEN SYSTEM ===
           // System wallet locks AQUA to receive ICE tokens for DAO governance
           const lockDurationYears = 3; // 2 years lock period
-          const iceAmount = this.calculateIceAmount(createStakeDto.amount, lockDurationYears) * 0.9;
-          
-          this.logger.debug(`System wallet will receive ${iceAmount} ICE tokens for governance from ${createStakeDto.amount} AQUA lock`);
+          const iceAmount =
+            this.calculateIceAmount(createStakeDto.amount, lockDurationYears) *
+            0.9;
+
+          this.logger.debug(
+            `System wallet will receive ${iceAmount} ICE tokens for governance from ${createStakeDto.amount} AQUA lock`,
+          );
 
           // Ensure system wallet has trustlines for ICE tokens
           await this.ensureSystemWalletIceTrustlines();
 
           // // Lock AQUA for ICE tokens (system wallet receives ICE for DAO voting)
-          let balanceId = "N/A";
-          try{
-          balanceId = await this.lockAquaForIceTokens(
-            createStakeDto.amount*0.9,
-            iceAmount,
-            lockDurationYears
-          );
-        }
-        catch(e){
-          this.logger.debug(`lockAquaForIceTokens failed ${e}`);
-        }
+          let balanceId = 'N/A';
+          try {
+            balanceId = await this.lockAquaForIceTokens(
+              createStakeDto.amount * 0.9,
+              iceAmount,
+              lockDurationYears,
+            );
+          } catch (e) {
+            this.logger.debug(`lockAquaForIceTokens failed ${e}`);
+          }
 
           const claimableRecord = new ClaimableRecordsEntity();
           claimableRecord.account = user;
@@ -469,18 +514,27 @@ export class StellarService {
         console.log(err);
         if (err.response && err.response.data) {
           const errorData = err.response.data;
-          
+
           if (errorData.extras) {
-            this.logger.error('Error during staking process:', JSON.stringify(errorData.extras, null, 2));
-            
+            this.logger.error(
+              'Error during staking process:',
+              JSON.stringify(errorData.extras, null, 2),
+            );
+
             if (errorData.extras.result_codes) {
-              console.error("Transaction result code:", errorData.extras.result_codes.transaction);
+              console.error(
+                'Transaction result code:',
+                errorData.extras.result_codes.transaction,
+              );
               if (errorData.extras.result_codes.operations) {
-                console.error("Operation result codes:", errorData.extras.result_codes.operations);
+                console.error(
+                  'Operation result codes:',
+                  errorData.extras.result_codes.operations,
+                );
               }
             }
           }
-        }  else {
+        } else {
           this.logger.error(
             'Error during staking process:',
             err?.data?.extras || err?.data || err?.message || err,
@@ -493,26 +547,31 @@ export class StellarService {
         'Error during staking process:',
         err?.data?.extras || err?.data || err?.message || err,
       );
-      
+
       // Re-throw the error so it can be properly handled by the controller
       if (err instanceof HttpException) {
         throw err;
       }
-      
+
       throw new HttpException(
         `Failed to process staking transaction: ${err?.message || 'Unknown error'}`,
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
 
-  async mintBlubToUser(userPublicKey: string, aquaAmount: number): Promise<void> {
+  async mintBlubToUser(
+    userPublicKey: string,
+    aquaAmount: number,
+  ): Promise<void> {
     try {
-      this.logger.debug(`Minting BLUB tokens to user: ${userPublicKey} for AQUA amount: ${aquaAmount}`);
-      
+      this.logger.debug(
+        `Minting BLUB tokens to user: ${userPublicKey} for AQUA amount: ${aquaAmount}`,
+      );
+
       // Calculate BLUB amount (1:1 ratio with AQUA for now)
       const blubAmount = aquaAmount.toFixed(7);
-      
+
       // Transfer BLUB from issuer to user
       await this.transferAsset(
         this.issuerKeypair,
@@ -520,8 +579,10 @@ export class StellarService {
         blubAmount,
         this.blub,
       );
-      
-      this.logger.debug(`Successfully minted ${blubAmount} BLUB tokens to ${userPublicKey}`);
+
+      this.logger.debug(
+        `Successfully minted ${blubAmount} BLUB tokens to ${userPublicKey}`,
+      );
     } catch (error) {
       this.logger.error(`Error minting BLUB to user ${userPublicKey}:`, error);
       throw error;
@@ -536,7 +597,7 @@ export class StellarService {
         this.issuerKeypair.publicKey(),
       );
 
-      let user = await this.userRepository.findOneBy({
+      const user = await this.userRepository.findOneBy({
         account: stakeBlubDto.senderPublicKey,
       });
 
@@ -603,7 +664,7 @@ export class StellarService {
     results: xdr.OperationResult[];
   }> {
     let attemts = 0;
-    while (attemts < 5 ) {
+    while (attemts < 5) {
       try {
         console.log(attemts);
         attemts++;
@@ -613,12 +674,12 @@ export class StellarService {
           .call();
 
         if (transactionResult.successful) {
-          let txResult = xdr.TransactionResult.fromXDR(
+          const txResult = xdr.TransactionResult.fromXDR(
             transactionResult.result_xdr,
             'base64',
           );
 
-          let results = txResult.result().results();
+          const results = txResult.result().results();
 
           return { successful: transactionResult.successful, results };
         } else {
@@ -665,7 +726,7 @@ export class StellarService {
       senderKeypair.publicKey(),
     );
 
-    let roundedAmount = Number(amount).toFixed(7);
+    const roundedAmount = Number(amount).toFixed(7);
 
     const transaction = new TransactionBuilder(senderAccount, {
       fee: BASE_FEE,
@@ -686,14 +747,16 @@ export class StellarService {
     try {
       const txn = await this.server.submitTransaction(transaction);
       this.logger.debug(`Transfer token successful: ${txn.hash}`);
-      
+
       // Wait a moment to ensure transaction is processed
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
       return txn.hash;
     } catch (error) {
       console.log(error);
-      this.logger.error(`Transaction failed: ${error.response?.data || error.message || error}`);
+      this.logger.error(
+        `Transaction failed: ${error.response?.data || error.message || error}`,
+      );
       throw error;
     }
   }
@@ -739,7 +802,7 @@ export class StellarService {
   async getUser(userPublicKey: string): Promise<UserEntity> {
     try {
       this.logger.debug(`Fetching user data for ${userPublicKey}`);
-      
+
       // Circuit breaker - if wallet has failed recently, return simplified response
       if (this.failedWallets.has(userPublicKey)) {
         this.logger.warn(`Wallet ${userPublicKey} is in circuit breaker mode`);
@@ -757,28 +820,30 @@ export class StellarService {
       const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
         return Promise.race([
           promise,
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
-          )
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Query timeout')), timeoutMs),
+          ),
         ]);
       };
 
       // Start with basic user lookup
       let userRecord = await timeoutPromise(
         this.userRepository.findOne({
-          where: { account: userPublicKey }
+          where: { account: userPublicKey },
         }),
-        5000 // 5 second timeout for user lookup
+        5000, // 5 second timeout for user lookup
       );
 
       if (!userRecord) {
-        this.logger.debug(`User ${userPublicKey} not found, creating new record`);
+        this.logger.debug(
+          `User ${userPublicKey} not found, creating new record`,
+        );
         userRecord = this.userRepository.create({
           account: userPublicKey,
           stakes: [],
           claimableRecords: [],
           pools: [],
-          lpBalances: []
+          lpBalances: [],
         });
         await this.userRepository.save(userRecord);
       }
@@ -786,21 +851,29 @@ export class StellarService {
       // Try to get quick count of total records first
       const recordCounts = await Promise.all([
         timeoutPromise(
-          this.stakeRepository.count({ where: { account: { account: userPublicKey } } }),
-          3000
+          this.stakeRepository.count({
+            where: { account: { account: userPublicKey } },
+          }),
+          3000,
         ),
         timeoutPromise(
-          this.claimableRecordsRepository.count({ where: { account: { account: userPublicKey } } }),
-          3000
+          this.claimableRecordsRepository.count({
+            where: { account: { account: userPublicKey } },
+          }),
+          3000,
         ),
         timeoutPromise(
-          this.poolsRepository.count({ where: { senderPublicKey: userPublicKey } }),
-          3000
+          this.poolsRepository.count({
+            where: { senderPublicKey: userPublicKey },
+          }),
+          3000,
         ),
         timeoutPromise(
-          this.lpBalanceRepository.count({ where: { senderPublicKey: userPublicKey } }),
-          3000
-        )
+          this.lpBalanceRepository.count({
+            where: { senderPublicKey: userPublicKey },
+          }),
+          3000,
+        ),
       ]);
 
       const totalRecords = recordCounts.reduce((sum, count) => sum + count, 0);
@@ -808,7 +881,9 @@ export class StellarService {
 
       // If too many records, use simplified mode
       if (totalRecords > this.SIMPLIFIED_MODE_LIMIT) {
-        this.logger.warn(`Wallet ${userPublicKey} has ${totalRecords} records, using simplified mode`);
+        this.logger.warn(
+          `Wallet ${userPublicKey} has ${totalRecords} records, using simplified mode`,
+        );
         return await this.getSimplifiedUserData(userPublicKey);
       }
 
@@ -818,34 +893,34 @@ export class StellarService {
           this.stakeRepository.find({
             where: { account: { account: userPublicKey } },
             order: { createdAt: 'DESC' },
-            take: 50
+            take: 50,
           }),
-          this.MAX_QUERY_TIMEOUT
+          this.MAX_QUERY_TIMEOUT,
         ),
         timeoutPromise(
           this.claimableRecordsRepository.find({
             where: { account: { account: userPublicKey } },
             order: { createdAt: 'DESC' },
-            take: 50
+            take: 50,
           }),
-          this.MAX_QUERY_TIMEOUT
+          this.MAX_QUERY_TIMEOUT,
         ),
         timeoutPromise(
           this.poolsRepository.find({
             where: { senderPublicKey: userPublicKey },
             order: { createdAt: 'DESC' },
-            take: 50
+            take: 50,
           }),
-          this.MAX_QUERY_TIMEOUT
+          this.MAX_QUERY_TIMEOUT,
         ),
         timeoutPromise(
           this.lpBalanceRepository.find({
             where: { senderPublicKey: userPublicKey },
             order: { createdAt: 'DESC' },
-            take: 50
+            take: 50,
           }),
-          this.MAX_QUERY_TIMEOUT
-        )
+          this.MAX_QUERY_TIMEOUT,
+        ),
       ]);
 
       // Assign relationships to user record
@@ -857,15 +932,14 @@ export class StellarService {
       // Cache the result
       this.userCache.set(userPublicKey, {
         data: userRecord,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       });
 
       this.logger.debug(`Successfully fetched full data for ${userPublicKey}`);
       return userRecord;
-
     } catch (error) {
       this.logger.error(`Error fetching user ${userPublicKey}:`, error.message);
-      
+
       // Add to circuit breaker
       this.failedWallets.add(userPublicKey);
       setTimeout(() => {
@@ -877,13 +951,15 @@ export class StellarService {
     }
   }
 
-  private async getSimplifiedUserData(userPublicKey: string): Promise<UserEntity> {
+  private async getSimplifiedUserData(
+    userPublicKey: string,
+  ): Promise<UserEntity> {
     try {
       this.logger.debug(`Getting simplified data for ${userPublicKey}`);
-      
+
       // Check if user exists, create if not
       let userRecord = await this.userRepository.findOne({
-        where: { account: userPublicKey }
+        where: { account: userPublicKey },
       });
 
       if (!userRecord) {
@@ -892,7 +968,7 @@ export class StellarService {
           stakes: [],
           claimableRecords: [],
           pools: [],
-          lpBalances: []
+          lpBalances: [],
         });
         await this.userRepository.save(userRecord);
       }
@@ -905,17 +981,19 @@ export class StellarService {
 
       this.logger.debug(`Returned simplified data for ${userPublicKey}`);
       return userRecord;
-
     } catch (error) {
-      this.logger.error(`Error getting simplified data for ${userPublicKey}:`, error.message);
-      
+      this.logger.error(
+        `Error getting simplified data for ${userPublicKey}:`,
+        error.message,
+      );
+
       // Create minimal user object as last resort
       const tempUser = this.userRepository.create({
         account: userPublicKey,
         stakes: [],
         claimableRecords: [],
         pools: [],
-        lpBalances: []
+        lpBalances: [],
       });
       return tempUser;
     }
@@ -946,20 +1024,23 @@ export class StellarService {
   }> {
     try {
       this.logger.debug(`Fetching staking balance for ${userPublicKey}`);
-      
+
       // Create timeout wrapper function
       const timeoutPromise = (promise: Promise<any>, timeoutMs: number) => {
         return Promise.race([
           promise,
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Staking balance query timeout')), timeoutMs)
-          )
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Staking balance query timeout')),
+              timeoutMs,
+            ),
+          ),
         ]);
       };
-      
+
       // Get user first
       let user = await this.userRepository.findOne({
-        where: { account: userPublicKey }
+        where: { account: userPublicKey },
       });
 
       if (!user) {
@@ -977,12 +1058,17 @@ export class StellarService {
       const claimableQueryPromise = this.claimableRecordsRepository
         .createQueryBuilder('claimableRecords')
         .where('claimableRecords.account = :userId', { userId: user.id })
-        .andWhere('claimableRecords.claimed = :unclaimed', { unclaimed: CLAIMS.UNCLAIMED })
+        .andWhere('claimableRecords.claimed = :unclaimed', {
+          unclaimed: CLAIMS.UNCLAIMED,
+        })
         .orderBy('claimableRecords.createdAt', 'DESC')
         .take(500) // Limit results
         .getMany();
 
-      const claimableRecords = await timeoutPromise(claimableQueryPromise, 10000) as ClaimableRecordsEntity[];
+      const claimableRecords = (await timeoutPromise(
+        claimableQueryPromise,
+        10000,
+      )) as ClaimableRecordsEntity[];
 
       // Get pool data with optimized query
       const poolsQueryPromise = this.poolsRepository
@@ -994,16 +1080,22 @@ export class StellarService {
         .take(500) // Limit results
         .getMany();
 
-      const pools = await timeoutPromise(poolsQueryPromise, 10000) as PoolsEntity[];
+      const pools = (await timeoutPromise(
+        poolsQueryPromise,
+        10000,
+      )) as PoolsEntity[];
 
       this.logger.debug(`Staking balance data fetched for ${userPublicKey}:`, {
         claimableRecordsCount: claimableRecords.length,
-        poolsCount: pools.length
+        poolsCount: pools.length,
       });
 
       return { claimableRecords, pools };
     } catch (err) {
-      this.logger.error(`Error fetching staking balance for ${userPublicKey}:`, err);
+      this.logger.error(
+        `Error fetching staking balance for ${userPublicKey}:`,
+        err,
+      );
       // Return empty arrays if query fails to prevent frontend errors
       return { claimableRecords: [], pools: [] };
     }
@@ -1012,13 +1104,15 @@ export class StellarService {
   async getPublicKeyLockedRewards(userPublicKey: string): Promise<any> {
     try {
       this.logger.debug(`Fetching locked rewards for ${userPublicKey}`);
-      
+
       const user = await this.userRepository.findOneBy({
         account: userPublicKey,
       });
 
       if (!user) {
-        this.logger.debug(`User ${userPublicKey} not found, returning default locked rewards`);
+        this.logger.debug(
+          `User ${userPublicKey} not found, returning default locked rewards`,
+        );
         return {
           lockedAquaRewardEstimation: '0.0000000',
         };
@@ -1032,7 +1126,9 @@ export class StellarService {
       });
 
       if (!userLockedRecords) {
-        this.logger.debug(`No locked records found for ${userPublicKey}, returning default`);
+        this.logger.debug(
+          `No locked records found for ${userPublicKey}, returning default`,
+        );
         return {
           lockedAquaRewardEstimation: '0.0000000',
         };
@@ -1092,18 +1188,24 @@ export class StellarService {
         );
 
         return {
-          lockedAquaRewardEstimation: (rewardEstimation * userPercentage).toFixed(
-            7,
-          ),
+          lockedAquaRewardEstimation: (
+            rewardEstimation * userPercentage
+          ).toFixed(7),
         };
       } catch (rewardError) {
-        this.logger.error(`Error calculating reward estimation for ${userPublicKey}:`, rewardError);
+        this.logger.error(
+          `Error calculating reward estimation for ${userPublicKey}:`,
+          rewardError,
+        );
         return {
           lockedAquaRewardEstimation: '0.0000000',
         };
       }
     } catch (err) {
-      this.logger.error(`Error fetching locked rewards for ${userPublicKey}:`, err);
+      this.logger.error(
+        `Error fetching locked rewards for ${userPublicKey}:`,
+        err,
+      );
       return {
         lockedAquaRewardEstimation: '0.0000000',
       };
@@ -1141,12 +1243,16 @@ export class StellarService {
 
   async unlockAqua(unlockAquaDto: UnlockAquaDto) {
     // SECURITY: Multiple validation layers to ensure signedTxXdr is provided
-    if (!unlockAquaDto || 
-        !unlockAquaDto.signedTxXdr || 
-        unlockAquaDto.signedTxXdr.trim() === '' ||
-        unlockAquaDto.signedTxXdr === 'undefined' ||
-        unlockAquaDto.signedTxXdr === 'null') {
-      this.logger.error('SECURITY ALERT: Unauthorized unstake attempt blocked in service layer');
+    if (
+      !unlockAquaDto ||
+      !unlockAquaDto.signedTxXdr ||
+      unlockAquaDto.signedTxXdr.trim() === '' ||
+      unlockAquaDto.signedTxXdr === 'undefined' ||
+      unlockAquaDto.signedTxXdr === 'null'
+    ) {
+      this.logger.error(
+        'SECURITY ALERT: Unauthorized unstake attempt blocked in service layer',
+      );
       this.logger.error(`Request details: ${JSON.stringify(unlockAquaDto)}`);
       throw new HttpException(
         'SECURITY: Wallet signature verification required. Unstaking is only allowed through authenticated wallet connections.',
@@ -1156,7 +1262,9 @@ export class StellarService {
 
     // Additional validation for XDR format
     if (unlockAquaDto.signedTxXdr.length < 20) {
-      this.logger.error('SECURITY ALERT: Invalid transaction XDR format detected');
+      this.logger.error(
+        'SECURITY ALERT: Invalid transaction XDR format detected',
+      );
       throw new HttpException(
         'SECURITY: Invalid transaction format. Please use the web application with a connected wallet.',
         HttpStatus.UNAUTHORIZED,
@@ -1169,19 +1277,24 @@ export class StellarService {
         unlockAquaDto.signedTxXdr,
         Networks.PUBLIC,
       );
-      
+
       // Submit the transaction to validate it's properly signed and from the sender
       const txResponse = await this.server.submitTransaction(unlockTxn);
       const txHash = txResponse.hash;
       this.logger.debug(`Unlock validation transaction hash: ${txHash}`);
-      
+
       // Check if the validation transaction was successful
       const txResult = await this.checkTransactionStatus(this.server, txHash);
       if (!txResult.successful) {
-        throw new HttpException('Transaction validation failed', HttpStatus.UNAUTHORIZED);
+        throw new HttpException(
+          'Transaction validation failed',
+          HttpStatus.UNAUTHORIZED,
+        );
       }
-      
-      this.logger.debug('Transaction validation successful, proceeding with unlock...');
+
+      this.logger.debug(
+        'Transaction validation successful, proceeding with unlock...',
+      );
     } catch (error) {
       this.logger.error(`Transaction validation failed: ${error.message}`);
       throw new HttpException(
@@ -1207,15 +1320,15 @@ export class StellarService {
     if (!user) throw new HttpException('User not found', HttpStatus.NOT_FOUND);
 
     // Calculate total unclaimed amount from claimable records and pool amounts
-    let totalClaimableRecordsAmount = user.claimableRecords
+    const totalClaimableRecordsAmount = user.claimableRecords
       .filter((record) => record.claimed === CLAIMS.UNCLAIMED)
       .reduce((total, record) => total + parseFloat(record.amount), 0);
 
-    let totalPoolAssetBAmount = user.pools
+    const totalPoolAssetBAmount = user.pools
       .filter((pool) => pool.claimed === CLAIMS.UNCLAIMED)
       .reduce((total, pool) => total + parseFloat(pool.assetBAmount), 0);
 
-    let totalAmount = totalClaimableRecordsAmount + totalPoolAssetBAmount;
+    const totalAmount = totalClaimableRecordsAmount + totalPoolAssetBAmount;
     console.log({ totalClaimableRecordsAmount });
     console.log({ totalPoolAssetBAmount });
     console.log({ totalAmount });
@@ -1231,11 +1344,11 @@ export class StellarService {
     //let amountToDeductFromClaimableRecords = amountToUnstake * 0.9;
 
     //need to deduct full
-    let amountToDeductFromClaimableRecords = amountToUnstake * 1.0;
-    let amountToDeductFromPool = amountToUnstake * 0.1;
+    const amountToDeductFromClaimableRecords = amountToUnstake * 1.0;
+    const amountToDeductFromPool = amountToUnstake * 0.1;
 
     let remainingClaimableAdjustment = amountToDeductFromClaimableRecords;
-    let remainingPoolAdjustment = amountToDeductFromPool;
+    const remainingPoolAdjustment = amountToDeductFromPool;
 
     // Adjust claimable records (90%)
     try {
@@ -1244,7 +1357,7 @@ export class StellarService {
           record.claimed === CLAIMS.UNCLAIMED &&
           remainingClaimableAdjustment > 0
         ) {
-          let recordAmount = parseFloat(record.amount);
+          const recordAmount = parseFloat(record.amount);
           if (remainingClaimableAdjustment >= recordAmount) {
             // Fully consume this record
             remainingClaimableAdjustment -= recordAmount;
@@ -1345,9 +1458,9 @@ export class StellarService {
 
     this.logger.debug('Trying to distribute LP AQUA/WHLAQUA LP rewards');
 
-    let groupedBySender = {};
-    let totalPoolPerPairAmount = {};
-    let userTotalAmountForAsset = {};
+    const groupedBySender = {};
+    const totalPoolPerPairAmount = {};
+    const userTotalAmountForAsset = {};
     let totalPoolAmountForAllAssets = 0;
     let totalAquaPoolRewardAmount;
     let lastPoolKey: string;
@@ -1522,9 +1635,9 @@ export class StellarService {
 
     this.logger.debug('Trying to distribute locked AQUA/WHLAQUA pool rewards');
 
-    let groupedBySender = {};
-    let totalPoolPerPairAmount = {};
-    let userTotalAmountForAsset = {};
+    const groupedBySender = {};
+    const totalPoolPerPairAmount = {};
+    const userTotalAmountForAsset = {};
     let totalPoolAmountForAllAssets = 0;
     let to_claim = 0;
     let lastPoolKey: string;
@@ -1829,14 +1942,21 @@ export class StellarService {
    * Formula: ICE = AQUA_AMOUNT * TIME_MULTIPLIER
    * Where TIME_MULTIPLIER increases with lock duration (incentivizing longer locks)
    */
-  private calculateIceAmount(aquaAmount: number, lockDurationYears: number): number {
+  private calculateIceAmount(
+    aquaAmount: number,
+    lockDurationYears: number,
+  ): number {
     // Base multiplier for 2-year lock (can be adjusted based on tokenomics)
     const baseMultiplier = 1.0; // 1:1 ratio for 2 years
     const timeMultiplier = Math.min(lockDurationYears / 2, 2); // Max 2x multiplier for longer locks
-    
-    const iceAmount = Number((aquaAmount * baseMultiplier * timeMultiplier).toFixed(7));
-    this.logger.debug(`Calculated ICE amount: ${iceAmount} for ${aquaAmount} AQUA locked for ${lockDurationYears} years`);
-    
+
+    const iceAmount = Number(
+      (aquaAmount * baseMultiplier * timeMultiplier).toFixed(7),
+    );
+    this.logger.debug(
+      `Calculated ICE amount: ${iceAmount} for ${aquaAmount} AQUA locked for ${lockDurationYears} years`,
+    );
+
     return iceAmount;
   }
 
@@ -1845,7 +1965,9 @@ export class StellarService {
    */
   private async ensureSystemWalletIceTrustlines(): Promise<void> {
     try {
-      const systemAccount = await this.server.loadAccount(this.signerKeyPair.publicKey());
+      const systemAccount = await this.server.loadAccount(
+        this.signerKeyPair.publicKey(),
+      );
       const existingTrustlines = systemAccount.balances
         .filter((balance: any) => balance.asset_type !== 'native')
         .map((balance: any) => balance.asset_code);
@@ -1857,7 +1979,9 @@ export class StellarService {
         { code: DOWN_ICE_CODE, issuer: ICE_ISSUER },
       ];
 
-      const missingTrustlines = assetsToCheck.filter(asset => !existingTrustlines.includes(asset.code));
+      const missingTrustlines = assetsToCheck.filter(
+        (asset) => !existingTrustlines.includes(asset.code),
+      );
 
       if (missingTrustlines.length > 0) {
         const trustlineTransaction = new TransactionBuilder(systemAccount, {
@@ -1872,26 +1996,41 @@ export class StellarService {
               limit: '1000000000',
             }),
           );
-          this.logger.debug(`Adding trustline for system wallet for asset: ${asset.code}`);
+          this.logger.debug(
+            `Adding trustline for system wallet for asset: ${asset.code}`,
+          );
         }
 
         const builtTrustlineTxn = trustlineTransaction.setTimeout(180).build();
         builtTrustlineTxn.sign(this.signerKeyPair);
 
-        const trustlineResponse = await this.server.submitTransaction(builtTrustlineTxn);
-        this.logger.debug(`ICE trustlines created for system wallet. Transaction hash: ${trustlineResponse.hash}`);
+        const trustlineResponse =
+          await this.server.submitTransaction(builtTrustlineTxn);
+        this.logger.debug(
+          `ICE trustlines created for system wallet. Transaction hash: ${trustlineResponse.hash}`,
+        );
 
         // Verify transaction success
-        const trustlineResult = await this.checkTransactionStatus(this.server, trustlineResponse.hash);
+        const trustlineResult = await this.checkTransactionStatus(
+          this.server,
+          trustlineResponse.hash,
+        );
         if (!trustlineResult.successful) {
           throw new Error('Failed to create ICE trustlines for system wallet');
         }
       } else {
-        this.logger.debug('System wallet already has all required ICE trustlines');
+        this.logger.debug(
+          'System wallet already has all required ICE trustlines',
+        );
       }
     } catch (error) {
-      this.logger.error(`Failed to ensure system wallet ICE trustlines: ${error.message}`, error);
-      throw new Error(`Failed to ensure system wallet ICE trustlines: ${error.message}`);
+      this.logger.error(
+        `Failed to ensure system wallet ICE trustlines: ${error.message}`,
+        error,
+      );
+      throw new Error(
+        `Failed to ensure system wallet ICE trustlines: ${error.message}`,
+      );
     }
   }
 
@@ -1902,18 +2041,20 @@ export class StellarService {
   private async lockAquaForIceTokens(
     aquaAmount: number,
     expectedIceAmount: number,
-    lockDurationYears: number
+    lockDurationYears: number,
   ): Promise<string> {
     try {
       const aquaAmountNum = Number(aquaAmount);
       const expectedIceAmountNum = Number(expectedIceAmount);
-      
+
       this.logger.debug(
-        `Locking ${aquaAmountNum} AQUA for ICE tokens. System wallet will receive ~${expectedIceAmountNum} ICE for DAO governance.`
+        `Locking ${aquaAmountNum} AQUA for ICE tokens. System wallet will receive ~${expectedIceAmountNum} ICE for DAO governance.`,
       );
 
       // Load system account
-      const systemAccount = await this.server.loadAccount(this.signerKeyPair.publicKey());
+      const systemAccount = await this.server.loadAccount(
+        this.signerKeyPair.publicKey(),
+      );
 
       // Create a claimable balance for ICE locking (separate from user's claimable balance)
       // This locks AQUA on behalf of the system for ICE governance participation
@@ -1929,7 +2070,10 @@ export class StellarService {
       // The system wallet locks its AQUA to participate in ICE DAO
       iceClaimableTransaction.addOperation(
         Operation.createClaimableBalance({
-          asset: new Asset('AQUA', 'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA'),
+          asset: new Asset(
+            'AQUA',
+            'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA',
+          ),
           amount: aquaAmountNum.toFixed(7),
           claimants: [
             new Claimant(
@@ -1944,29 +2088,38 @@ export class StellarService {
         }),
       );
 
-      const builtIceClaimableTx = iceClaimableTransaction.setTimeout(180).build();
+      const builtIceClaimableTx = iceClaimableTransaction
+        .setTimeout(180)
+        .build();
       builtIceClaimableTx.sign(this.signerKeyPair);
 
       // Submit the ICE AQUA lock transaction
-      const iceClaimableResponse = await this.server.submitTransaction(builtIceClaimableTx);
+      const iceClaimableResponse =
+        await this.server.submitTransaction(builtIceClaimableTx);
       const iceClaimableHash = iceClaimableResponse.hash;
 
       this.logger.debug(`ICE AQUA lock transaction hash: ${iceClaimableHash}`);
 
       // Check transaction status
-      const iceClaimableResult = await this.checkTransactionStatus(this.server, iceClaimableHash);
-      
+      const iceClaimableResult = await this.checkTransactionStatus(
+        this.server,
+        iceClaimableHash,
+      );
+
       if (!iceClaimableResult.successful) {
         throw new Error('ICE AQUA lock transaction failed');
       }
 
       // Extract claimable balance ID for ICE locking
       const iceOperationResult = iceClaimableResult.results[0].value() as any;
-      const iceCreateClaimableBalanceResult = iceOperationResult.createClaimableBalanceResult();
-      const iceClaimableBalanceId = iceCreateClaimableBalanceResult.balanceId().toXDR('hex');
+      const iceCreateClaimableBalanceResult =
+        iceOperationResult.createClaimableBalanceResult();
+      const iceClaimableBalanceId = iceCreateClaimableBalanceResult
+        .balanceId()
+        .toXDR('hex');
 
       this.logger.debug(
-        `AQUA locked successfully for ICE governance. System wallet (${this.signerKeyPair.publicKey()}) created claimable balance: ${iceClaimableBalanceId}`
+        `AQUA locked successfully for ICE governance. System wallet (${this.signerKeyPair.publicKey()}) created claimable balance: ${iceClaimableBalanceId}`,
       );
 
       // Log governance capabilities gained
@@ -1976,7 +2129,7 @@ export class StellarService {
         - Farming Boost: Enhanced yield farming multipliers  
         - Protocol Governance: Increased influence in ICE ecosystem decisions
         - AQUA Locked until: ${unlockDate.toISOString()}
-        - Claimable Balance ID: ${iceClaimableBalanceId}`
+        - Claimable Balance ID: ${iceClaimableBalanceId}`,
       );
 
       // TODO: In a real implementation, this locked AQUA would be reported to ICE platform
@@ -1985,7 +2138,6 @@ export class StellarService {
       // 2. Receive ICE governance tokens in return
       // 3. Use those tokens for DAO voting and farming boosts
       return iceClaimableBalanceId;
-
     } catch (error) {
       this.logger.error(`Failed to lock AQUA for ICE: ${error.message}`, error);
       throw new Error(`AQUA to ICE lock failed: ${error.message}`);

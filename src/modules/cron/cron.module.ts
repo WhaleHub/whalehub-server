@@ -4,15 +4,7 @@ import { VaultCompoundService } from './vault-compound.service';
 import { VotingService } from './voting.service';
 
 @Module({
-  providers: [
-    IceLockingService,
-    VaultCompoundService,
-    VotingService,
-  ],
-  exports: [
-    IceLockingService,
-    VaultCompoundService,
-    VotingService,
-  ],
+  providers: [IceLockingService, VaultCompoundService, VotingService],
+  exports: [IceLockingService, VaultCompoundService, VotingService],
 })
 export class CronModule {}
