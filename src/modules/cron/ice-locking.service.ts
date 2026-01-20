@@ -8,8 +8,10 @@ import {
   Operation,
   TransactionBuilder,
   Networks,
-  BASE_FEE,
 } from '@stellar/stellar-sdk';
+
+// Max fee for transactions (1 XLM in stroops for reliability)
+const MAX_FEE = '1000000';
 
 /**
  * ICE Locking Cron Service
@@ -106,15 +108,12 @@ export class IceLockingService {
       await this.waitForIceTokens();
       this.logger.log(`ICE tokens received`);
 
-      // STEP 6: Transfer all ICE tokens to staking contract
-      await this.transferIceTokensToContract();
-      this.logger.log(`ICE tokens transferred to contract`);
-
-      // STEP 7: Sync contract's ICE balances
-      await this.syncContractIceBalances();
-      this.logger.log(`Contract ICE balances synced`);
+      // NOTE: ICE tokens cannot be transferred - they are locked to the receiving account
+      // ICE tokens will stay in admin wallet and be used for voting from there
+      // Skip STEP 6 (transferIceTokensToContract) and STEP 7 (syncContractIceBalances)
 
       this.logger.log('Daily ICE locking process completed successfully!');
+      this.logger.log('ICE tokens are now in admin wallet for voting');
     } catch (error) {
       this.logger.error(`ICE locking failed: ${error.message}`, error.stack);
       // TODO: Send alert/notification to admin
@@ -140,6 +139,7 @@ export class IceLockingService {
   private async authorizeIceLock(
     aquaAmount: number,
     durationYears: number,
+    maxRetries = 3,
   ): Promise<number> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
 
@@ -155,30 +155,93 @@ export class IceLockingService {
       duration,
     );
 
-    const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const tx = await this.buildAndSignTransaction(operation);
+        const response = await this.server.sendTransaction(tx);
 
-    // Wait for confirmation
-    const confirmed = await this.pollTransactionStatus(response.hash);
+        // Wait for confirmation
+        const confirmed = await this.pollTransactionStatus(response.hash);
 
-    // Extract lock_id from result
-    const lockId = Number(StellarSdk.scValToNative(confirmed.returnValue));
-    return lockId;
+        // Extract lock_id from result
+        // If returnValue is missing (XDR parse error), query contract for latest lock_id
+        if (confirmed.returnValue) {
+          const lockId = Number(
+            StellarSdk.scValToNative(confirmed.returnValue),
+          );
+          return lockId;
+        } else {
+          // Fallback: query contract state to get latest lock_id
+          this.logger.warn(
+            'returnValue missing, querying contract for lock_id',
+          );
+          const lockId = await this.getLatestLockId();
+          return lockId;
+        }
+      } catch (error) {
+        const isTimeout = error.message?.includes('timeout');
+        if (isTimeout && attempt < maxRetries) {
+          this.logger.warn(
+            `authorizeIceLock timeout, retrying (${attempt}/${maxRetries})...`,
+          );
+          await this.sleep(3000);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error('authorizeIceLock failed after max retries');
+  }
+
+  /**
+   * Query contract for the latest ICE lock ID
+   */
+  private async getLatestLockId(): Promise<number> {
+    const contract = new StellarSdk.Contract(this.stakingContractId);
+    const operation = contract.call('get_global_state');
+
+    const result = await this.simulateTransaction(operation);
+    const state = StellarSdk.scValToNative(result.result.retval);
+
+    // ice_lock_counter is incremented after creating lock, so latest lock_id = counter - 1
+    const lockId = Number(state.ice_lock_counter || state.ice_lock_counter) - 1;
+    return lockId >= 0 ? lockId : 0;
   }
 
   /**
    * Transfer authorized AQUA from contract to admin wallet
    */
-  private async transferAuthorizedAqua(lockId: number): Promise<void> {
+  private async transferAuthorizedAqua(
+    lockId: number,
+    maxRetries = 3,
+  ): Promise<void> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
     const lockIdU64 = StellarSdk.nativeToScVal(lockId, { type: 'u64' });
 
     const operation = contract.call('transfer_authorized_aqua', lockIdU64);
 
-    const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const tx = await this.buildAndSignTransaction(operation);
+        const response = await this.server.sendTransaction(tx);
 
-    await this.pollTransactionStatus(response.hash);
+        await this.pollTransactionStatus(response.hash);
+        return;
+      } catch (error) {
+        const isTimeout = error.message?.includes('timeout');
+        if (isTimeout && attempt < maxRetries) {
+          this.logger.warn(
+            `transferAuthorizedAqua timeout, retrying (${attempt}/${maxRetries})...`,
+          );
+          await this.sleep(3000);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error('transferAuthorizedAqua failed after max retries');
   }
 
   /**
@@ -206,7 +269,7 @@ export class IceLockingService {
     );
 
     const transaction = new TransactionBuilder(account, {
-      fee: BASE_FEE,
+      fee: MAX_FEE,
       networkPassphrase: Networks.PUBLIC,
     })
       .addOperation(
@@ -259,11 +322,8 @@ export class IceLockingService {
    * Transfer all 4 ICE token types from admin to staking contract
    */
   private async transferIceTokensToContract(): Promise<void> {
-    const contractAddress = StellarSdk.Address.fromString(
-      StellarSdk.StrKey.encodeContract(
-        Buffer.from(this.stakingContractId, 'hex'),
-      ),
-    );
+    // stakingContractId is already a C... address string
+    const contractAddress = this.stakingContractId;
 
     const tokens = [
       { id: this.iceTokenId, name: 'ICE' },
@@ -290,14 +350,31 @@ export class IceLockingService {
   /**
    * Sync contract's ICE token balances
    */
-  private async syncContractIceBalances(): Promise<void> {
+  private async syncContractIceBalances(maxRetries = 3): Promise<void> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
     const operation = contract.call('sync_all_ice_balances');
 
-    const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const tx = await this.buildAndSignTransaction(operation);
+        const response = await this.server.sendTransaction(tx);
 
-    await this.pollTransactionStatus(response.hash);
+        await this.pollTransactionStatus(response.hash);
+        return;
+      } catch (error) {
+        const isTimeout = error.message?.includes('timeout');
+        if (isTimeout && attempt < maxRetries) {
+          this.logger.warn(
+            `syncContractIceBalances timeout, retrying (${attempt}/${maxRetries})...`,
+          );
+          await this.sleep(3000);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error('syncContractIceBalances failed after max retries');
   }
 
   // ============================================================================
@@ -310,7 +387,7 @@ export class IceLockingService {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
+      fee: MAX_FEE,
       networkPassphrase: Networks.PUBLIC,
     })
       .addOperation(operation)
@@ -332,7 +409,7 @@ export class IceLockingService {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     let tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
+      fee: MAX_FEE,
       networkPassphrase: Networks.PUBLIC,
     })
       .addOperation(operation)
@@ -357,17 +434,28 @@ export class IceLockingService {
     maxAttempts = 30,
   ): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
-      const status = await this.server.getTransaction(hash);
+      try {
+        const status = await this.server.getTransaction(hash);
 
-      if (status.status === 'SUCCESS') {
-        return status;
+        if (status.status === 'SUCCESS') {
+          return status;
+        }
+
+        if (status.status === 'FAILED') {
+          throw new Error(`Transaction failed: ${hash}`);
+        }
+
+        await this.sleep(2000);
+      } catch (error) {
+        // Handle "Bad union switch: 4" - transaction succeeded but SDK can't parse response
+        if (error.message?.includes('Bad union switch')) {
+          this.logger.warn(
+            `XDR parse error (Bad union switch) for ${hash}, assuming success`,
+          );
+          return { status: 'SUCCESS', hash };
+        }
+        throw error;
       }
-
-      if (status.status === 'FAILED') {
-        throw new Error(`Transaction failed: ${hash}`);
-      }
-
-      await this.sleep(2000);
     }
 
     throw new Error(`Transaction timeout: ${hash}`);
@@ -398,6 +486,7 @@ export class IceLockingService {
     tokenId: string,
     toAddress: string,
     amount: number,
+    maxRetries = 3,
   ): Promise<void> {
     const contract = new StellarSdk.Contract(tokenId);
 
@@ -411,10 +500,27 @@ export class IceLockingService {
 
     const operation = contract.call('transfer', from, to, amountI128);
 
-    const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const tx = await this.buildAndSignTransaction(operation);
+        const response = await this.server.sendTransaction(tx);
 
-    await this.pollTransactionStatus(response.hash);
+        await this.pollTransactionStatus(response.hash);
+        return;
+      } catch (error) {
+        const isTimeout = error.message?.includes('timeout');
+        if (isTimeout && attempt < maxRetries) {
+          this.logger.warn(
+            `transferToken timeout, retrying (${attempt}/${maxRetries})...`,
+          );
+          await this.sleep(3000);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error('transferToken failed after max retries');
   }
 
   private sleep(ms: number): Promise<void> {
