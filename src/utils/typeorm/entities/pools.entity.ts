@@ -1,8 +1,13 @@
-import { Column, Entity, Index, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
+import {
+  Column,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  OneToMany,
+} from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
-import { StakeEntity } from './stake.entity';
-import { ClaimableRecordsEntity } from './claimableRecords.entity';
 import { CLAIMS, DepositType } from '@/utils/models/enums';
 import { LpBalanceEntity } from './lp-balances.entity';
 

@@ -1,4 +1,10 @@
-import { Injectable, NestMiddleware, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NestMiddleware,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 
 @Injectable()
@@ -9,7 +15,7 @@ export class UnlockAquaSecurityMiddleware implements NestMiddleware {
     // Only apply security to unlock-aqua endpoint
     if (req.path === '/token/unlock-aqua' && req.method === 'POST') {
       this.logger.warn(`🔒 SECURITY CHECK: Unlock-aqua request from ${req.ip}`);
-      
+
       const userAgent = (req.get('User-Agent') || '').toLowerCase();
       const body = req.body;
 
@@ -23,22 +29,30 @@ export class UnlockAquaSecurityMiddleware implements NestMiddleware {
 
       // Only block direct curl attempts explicitly when XDR is missing/invalid
       if (userAgent.includes('curl') && !hasValidXdr) {
-        this.logger.error('🚫 SECURITY: Blocked curl client for unlock-aqua endpoint (missing/invalid signedTxXdr)');
-        throw new HttpException({
-          statusCode: HttpStatus.UNAUTHORIZED,
-          message: 'SECURITY: Direct command-line access without a valid signed transaction is not allowed. Please use the web application with a connected wallet.',
-          error: 'Unauthorized',
-        }, HttpStatus.UNAUTHORIZED);
+        this.logger.error(
+          '🚫 SECURITY: Blocked curl client for unlock-aqua endpoint (missing/invalid signedTxXdr)',
+        );
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.UNAUTHORIZED,
+            message:
+              'SECURITY: Direct command-line access without a valid signed transaction is not allowed. Please use the web application with a connected wallet.',
+            error: 'Unauthorized',
+          },
+          HttpStatus.UNAUTHORIZED,
+        );
       }
 
       if (!hasValidXdr) {
         // Allow request to proceed so controller/DTO validation can return 400 instead of hard 401 here
-        this.logger.warn('⚠️ SECURITY: No valid signedTxXdr found in request body; delegating to controller validation');
+        this.logger.warn(
+          '⚠️ SECURITY: No valid signedTxXdr found in request body; delegating to controller validation',
+        );
       } else {
         this.logger.log('✅ SECURITY: Valid signedTxXdr found, proceeding');
       }
     }
-    
+
     next();
   }
-} 
+}

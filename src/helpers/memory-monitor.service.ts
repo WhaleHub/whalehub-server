@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import * as os from 'os';
 
 @Injectable()
 export class MemoryMonitorService {
@@ -10,8 +11,8 @@ export class MemoryMonitorService {
   @Cron(CronExpression.EVERY_30_SECONDS)
   monitorMemoryUsage() {
     const memUsage = process.memoryUsage();
-    const totalMemory = require('os').totalmem();
-    const freeMemory = require('os').freemem();
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
     const usedMemory = totalMemory - freeMemory;
     const memoryUsagePercentage = usedMemory / totalMemory;
 
@@ -26,13 +27,17 @@ export class MemoryMonitorService {
 
     // Trigger garbage collection if memory usage is high
     if (memoryUsagePercentage > this.MAX_MEMORY_THRESHOLD) {
-      this.logger.warn(`High memory usage detected: ${(memoryUsagePercentage * 100).toFixed(2)}%`);
+      this.logger.warn(
+        `High memory usage detected: ${(memoryUsagePercentage * 100).toFixed(2)}%`,
+      );
       this.forceGarbageCollection();
     }
 
     // Critical memory usage warning
     if (memoryUsagePercentage > this.CRITICAL_MEMORY_THRESHOLD) {
-      this.logger.error(`CRITICAL: Memory usage at ${(memoryUsagePercentage * 100).toFixed(2)}%`);
+      this.logger.error(
+        `CRITICAL: Memory usage at ${(memoryUsagePercentage * 100).toFixed(2)}%`,
+      );
     }
   }
 
@@ -41,15 +46,17 @@ export class MemoryMonitorService {
       global.gc();
       this.logger.debug('Forced garbage collection executed');
     } else {
-      this.logger.warn('Garbage collection not available. Run with --expose-gc flag');
+      this.logger.warn(
+        'Garbage collection not available. Run with --expose-gc flag',
+      );
     }
   }
 
   getMemoryStats() {
     const memUsage = process.memoryUsage();
-    const totalMemory = require('os').totalmem();
-    const freeMemory = require('os').freemem();
-    
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+
     return {
       rss: memUsage.rss,
       heapUsed: memUsage.heapUsed,
@@ -58,7 +65,7 @@ export class MemoryMonitorService {
       systemTotal: totalMemory,
       systemFree: freeMemory,
       systemUsed: totalMemory - freeMemory,
-      systemUsagePercentage: ((totalMemory - freeMemory) / totalMemory) * 100
+      systemUsagePercentage: ((totalMemory - freeMemory) / totalMemory) * 100,
     };
   }
-} 
+}

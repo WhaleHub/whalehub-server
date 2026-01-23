@@ -1,8 +1,17 @@
-import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+  Controller,
+  Post,
+  Get,
+} from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TokenModule } from './modules/token/token.module';
+import { CronModule } from './modules/cron/cron.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserEntity } from './utils/typeorm/entities/user.entity';
 import { StakeEntity } from './utils/typeorm/entities/stake.entity';
@@ -16,8 +25,42 @@ import { MemoryMonitorService } from './helpers/memory-monitor.service';
 import { UnlockAquaSecurityMiddleware } from './middleware/unlock-aqua-security.middleware';
 import { DataSource, DataSourceOptions } from 'typeorm';
 
+// Import ICE locking and Vault compound services
+import { IceLockingService } from './modules/cron/ice-locking.service';
+import { VaultCompoundService } from './modules/cron/vault-compound.service';
+
+// Test controller for manual trigger of ICE/Vault services
+@Controller('test')
+class TestController {
+  constructor(
+    private readonly iceLockingService: IceLockingService,
+    private readonly vaultCompoundService: VaultCompoundService,
+  ) {}
+
+  @Post('ice-locking')
+  async triggerIceLocking() {
+    console.log('[TestController] Manually triggering ICE locking...');
+    await this.iceLockingService.handleDailyIceLocking();
+    return { message: 'ICE locking completed' };
+  }
+
+  @Post('vault-compound')
+  async triggerVaultCompound() {
+    console.log('[TestController] Manually triggering vault compound...');
+    await this.vaultCompoundService.handleVaultCompound();
+    return { message: 'Vault compound completed' };
+  }
+
+  @Get('health')
+  health() {
+    return { status: 'ok', time: new Date().toISOString() };
+  }
+}
+
 @Module({
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     TypeOrmModule.forFeature([
       UserEntity,
       StakeEntity,
@@ -35,32 +78,26 @@ import { DataSource, DataSourceOptions } from 'typeorm';
           console.log('[TypeOrmModule] Attempting to connect to database...');
           const dataSource = new DataSource(options as DataSourceOptions);
           const initializedDataSource = await dataSource.initialize();
-          console.log('[TypeOrmModule] Database connection established successfully');
+          console.log(
+            '[TypeOrmModule] Database connection established successfully',
+          );
           return initializedDataSource;
         } catch (error) {
           console.error('[TypeOrmModule] Database connection failed:', error);
-          
-          // Log detailed error information
-          if (error.code === 'ECONNREFUSED') {
-            console.error('[TypeOrmModule] Connection refused - Database server may not be running or accessible');
-            console.error(`[TypeOrmModule] Host: ${(options as any).host}:${(options as any).port}`);
-          } else if (error.code === 'ENOTFOUND') {
-            console.error('[TypeOrmModule] Host not found - Check database host configuration');
-          } else if (error.code === 'ECONNRESET') {
-            console.error('[TypeOrmModule] Connection reset - Network or authentication issue');
-          }
-          
-          // Re-throw the error to prevent application startup with invalid database state
           throw new Error(`Database connection failed: ${error.message}`);
         }
       },
     }),
-    ConfigModule.forRoot({ isGlobal: true }),
     TokenModule,
-    ScheduleModule.forRoot(),
+    CronModule,
   ],
-  controllers: [AppController],
-  providers: [AppService, MemoryMonitorService],
+  controllers: [AppController, TestController],
+  providers: [
+    AppService,
+    MemoryMonitorService,
+    IceLockingService,
+    VaultCompoundService,
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
