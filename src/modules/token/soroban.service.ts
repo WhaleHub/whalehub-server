@@ -193,11 +193,8 @@ export class SorobanService {
       const mainTx = await this.server.sendTransaction(tx);
       this.logger.debug(`deposit into pool hash: ${mainTx.hash}`);
       await sleep(1000);
-      const result = await this.checkTransactionStatus(
-        this.server,
-        mainTx.hash,
-      );
-      // ommiting succesful check, as it might be infinite pool
+      await this.checkTransactionStatus(this.server, mainTx.hash);
+      // omitting successful check, as it might be infinite pool
       //if (result.successful) {
       const user = await this.userRepository.findOneBy({
         account: senderPublicKey,
@@ -535,7 +532,6 @@ export class SorobanService {
       })
       .then(({ result }) => {
         if (result) {
-          // @ts-ignore
           return result.retval.value();
         }
         return 0;
@@ -592,7 +588,7 @@ export class SorobanService {
         ASSET_CONTRACT_METHOD.NAME,
       )
         .then((tx) => this.simulateTx(tx))
-        // @ts-ignore
+        // @ts-expect-error - Dynamic Stellar SDK type
         .then(({ result }) => {
           const [code, issuer] = result.retval.value().toString().split(':');
           const asset = issuer
@@ -619,7 +615,7 @@ export class SorobanService {
       .then(({ result }) => {
         return this.getAssetFromContractId(
           this.getContactIdFromHash(
-            // @ts-ignore
+            // @ts-expect-error - Dynamic Stellar SDK type
             result.retval.value().value().toString('hex'),
           ),
         );
@@ -628,9 +624,9 @@ export class SorobanService {
 
   i128ToInt(val: xdr.Int128Parts): string {
     return (
-      // @ts-ignore
+      // @ts-expect-error - Dynamic Stellar SDK type
       new BigNumber(val.hi()._value)
-        // @ts-ignore
+        // @ts-expect-error - Dynamic Stellar SDK type
         .plus(val.lo()._value)
         .div(1e7)
         .toString()
@@ -696,7 +692,7 @@ export class SorobanService {
       )
       .then(({ result }) => {
         if (result) {
-          // @ts-ignore
+          // @ts-expect-error - Dynamic Stellar SDK type
           return result.retval.value().reduce((acc, val) => {
             const key = val.key().value().toString();
             if (key === 'exp_at' || key === 'last_time') {
@@ -724,10 +720,8 @@ export class SorobanService {
 
     const poolAddresses = await this.getPools(assets);
 
-    const totalPoolRewardAmount = await this.getPoolRewards(
-      account.accountId(),
-      poolAddresses[1][0],
-    );
+    // Get pool rewards info (currently unused but kept for potential future use)
+    await this.getPoolRewards(account.accountId(), poolAddresses[1][0]);
 
     const tx = await this.getClaimRewardsTx(
       account.accountId(),
@@ -1011,7 +1005,7 @@ export class SorobanService {
       )
       .then(({ result }) => {
         if (result) {
-          // @ts-ignore
+          // @ts-expect-error - Dynamic Stellar SDK type
           return result.retval.value().reduce((acc, val) => {
             acc[val.key().value().toString()] =
               typeof val.val().value() === 'number'

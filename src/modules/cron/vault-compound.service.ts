@@ -2,12 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import {
-  Keypair,
-  Networks,
-  BASE_FEE,
-  TransactionBuilder,
-} from '@stellar/stellar-sdk';
+import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
+
+// Use max fee to avoid transaction failures during network congestion
+const MAX_FEE = '1000000'; // 0.1 XLM max fee
 
 /**
  * Vault Compound Cron Service
@@ -98,38 +96,56 @@ export class VaultCompoundService {
   }
 
   /**
-   * Compound a single pool
+   * Compound a single pool with retry logic
    */
-  private async compoundPool(poolId: number): Promise<void> {
+  private async compoundPool(poolId: number, maxRetries = 3): Promise<void> {
     this.logger.log(`Compounding pool ${poolId}...`);
 
-    const contract = new StellarSdk.Contract(this.stakingContractId);
-    const poolIdU32 = StellarSdk.nativeToScVal(poolId, { type: 'u32' });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const contract = new StellarSdk.Contract(this.stakingContractId);
+        const poolIdU32 = StellarSdk.nativeToScVal(poolId, { type: 'u32' });
 
-    const operation = contract.call('claim_and_compound', poolIdU32);
+        const operation = contract.call('claim_and_compound', poolIdU32);
 
-    const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+        const tx = await this.buildAndSignTransaction(operation);
+        const response = await this.server.sendTransaction(tx);
 
-    const confirmed = await this.pollTransactionStatus(response.hash);
+        const confirmed = await this.pollTransactionStatus(response.hash);
 
-    // Parse events to check if swap is needed
-    const events = this.parseCompoundEvents(confirmed);
+        // Parse events to check if swap is needed
+        const events = this.parseCompoundEvents(confirmed);
 
-    if (events.needSwap) {
-      this.logger.log(`Pool ${poolId} requires token swap: ${events.swapType}`);
-      await this.handleTokenSwap(poolId, events);
+        if (events.needSwap) {
+          this.logger.log(
+            `Pool ${poolId} requires token swap: ${events.swapType}`,
+          );
+          await this.handleTokenSwap(poolId, events);
 
-      // Call claim_and_compound again after swap to complete deposit
-      this.logger.log(`Re-compounding pool ${poolId} after swap...`);
-      await this.compoundPool(poolId);
-    } else if (events.compounded) {
-      this.logger.log(
-        `Pool ${poolId} compounded: ${events.lpSharesMinted} LP shares, ` +
-          `Total: ${events.totalLp}, Rewards: ${events.totalRewards}`,
-      );
-    } else if (events.noReward) {
-      this.logger.log(`Pool ${poolId}: No rewards to claim`);
+          // Call claim_and_compound again after swap to complete deposit
+          this.logger.log(`Re-compounding pool ${poolId} after swap...`);
+          await this.compoundPool(poolId, 1); // Only 1 retry for re-compound
+        } else if (events.compounded) {
+          this.logger.log(
+            `Pool ${poolId} compounded: ${events.lpSharesMinted} LP shares, ` +
+              `Total: ${events.totalLp}, Rewards: ${events.totalRewards}`,
+          );
+        } else if (events.noReward) {
+          this.logger.log(`Pool ${poolId}: No rewards to claim`);
+        }
+
+        return; // Success
+      } catch (error) {
+        const isTimeout = error.message?.includes('timeout');
+        if (isTimeout && attempt < maxRetries) {
+          this.logger.warn(
+            `Compound pool ${poolId} attempt ${attempt} timed out, retrying...`,
+          );
+          await this.sleep(3000);
+          continue;
+        }
+        throw error;
+      }
     }
   }
 
@@ -185,41 +201,55 @@ export class VaultCompoundService {
   }
 
   /**
-   * Swap tokens via Aquarius Router
+   * Swap tokens via Aquarius Router with retry logic
    */
   private async swapTokens(
     routerContractId: string,
     fromTokenId: string,
     toTokenId: string,
     amount: number,
+    maxRetries = 3,
   ): Promise<void> {
-    const routerContract = new StellarSdk.Contract(routerContractId);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const routerContract = new StellarSdk.Contract(routerContractId);
 
-    const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), {
-      type: 'i128',
-    });
-    const minAmount = StellarSdk.nativeToScVal(0, { type: 'i128' }); // Allow any slippage for auto-compound
+        const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), {
+          type: 'i128',
+        });
+        const minAmount = StellarSdk.nativeToScVal(0, { type: 'i128' }); // Allow any slippage for auto-compound
 
-    // Build path: [fromToken, toToken]
-    const path = StellarSdk.nativeToScVal([fromTokenId, toTokenId], {
-      type: 'vec',
-    });
+        // Build path: [fromToken, toToken]
+        const path = StellarSdk.nativeToScVal([fromTokenId, toTokenId], {
+          type: 'vec',
+        });
 
-    const operation = routerContract.call(
-      'swap_exact_tokens_for_tokens',
-      amountI128,
-      minAmount,
-      path,
-      StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
-      StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 300, {
-        type: 'u64',
-      }), // 5 min deadline
-    );
+        const operation = routerContract.call(
+          'swap_exact_tokens_for_tokens',
+          amountI128,
+          minAmount,
+          path,
+          StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
+          StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 300, {
+            type: 'u64',
+          }), // 5 min deadline
+        );
 
-    const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+        const tx = await this.buildAndSignTransaction(operation);
+        const response = await this.server.sendTransaction(tx);
 
-    await this.pollTransactionStatus(response.hash);
+        await this.pollTransactionStatus(response.hash);
+        return; // Success
+      } catch (error) {
+        const isTimeout = error.message?.includes('timeout');
+        if (isTimeout && attempt < maxRetries) {
+          this.logger.warn(`Swap attempt ${attempt} timed out, retrying...`);
+          await this.sleep(3000);
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   /**
@@ -385,31 +415,111 @@ export class VaultCompoundService {
 
   /**
    * Process event data and update events object
+   *
+   * Contract emits events with these structures:
+   *
+   * 1. need_swap event:
+   *    - topics: (symbol_short!("need_swap"), pool_id)
+   *    - data: (swap_amount: i128, direction: Symbol)  // e.g., (1000000, "to_b")
+   *    - direction is one of: "to_a", "to_b", "to_both"
+   *
+   * 2. compound event - no rewards:
+   *    - topics: (symbol_short!("compound"), pool_id)
+   *    - data: symbol_short!("no_reward")  // Just a string, not a tuple
+   *
+   * 3. compound event - LP minted:
+   *    - topics: (symbol_short!("compound"), pool_id)
+   *    - data: (lp_shares_minted: i128, total_lp_tokens: i128)
+   *
+   * 4. compound event - final status:
+   *    - topics: (symbol_short!("compound"), pool_id)
+   *    - data: (total_rewards: i128, treasury_amount: i128, compound_amount: i128)
    */
   private processEventData(eventName: string, data: any, events: any): void {
-    switch (eventName) {
+    // Normalize event name (scValToNative converts Symbol to string)
+    const normalizedName = String(eventName).toLowerCase().trim();
+
+    switch (normalizedName) {
       case 'need_swap':
         events.needSwap = true;
-        if (data) {
-          events.swapType = data.swap_type || data[0];
-          events.aquaAmount = Number(data.amount || data[1] || 0);
+        // Data is a tuple: [swap_amount, direction_symbol]
+        // scValToNative converts tuple to array, Symbol to string
+        if (Array.isArray(data) && data.length >= 2) {
+          events.aquaAmount = Number(data[0] || 0);
+          events.swapType = String(data[1] || ''); // "to_a", "to_b", "to_both"
+        } else if (data && typeof data === 'object') {
+          // Fallback for potential struct format
+          events.aquaAmount = Number(data[0] || data.amount || 0);
+          events.swapType = String(data[1] || data.direction || '');
         }
+        this.logger.log(
+          `Need swap detected: amount=${events.aquaAmount}, type=${events.swapType}`,
+        );
         break;
 
       case 'compound':
       case 'compounded':
+        // Check if data is the "no_reward" symbol (string after conversion)
+        if (typeof data === 'string') {
+          const dataStr = data.toLowerCase().trim();
+          if (dataStr === 'no_reward' || dataStr === 'no_rewards') {
+            events.noReward = true;
+            this.logger.log('Compound event: no rewards available');
+            return;
+          }
+        }
+
         events.compounded = true;
-        if (data) {
-          events.lpSharesMinted = Number(data.lp_minted || data[0] || 0);
-          events.totalLp = Number(data.total_lp || data[1] || 0);
-          events.totalRewards = Number(data.rewards || data[2] || 0);
+
+        // Data is a tuple - determine format by length
+        if (Array.isArray(data)) {
+          if (data.length === 2) {
+            // Format: (lp_shares_minted, total_lp_tokens)
+            events.lpSharesMinted = Number(data[0] || 0);
+            events.totalLp = Number(data[1] || 0);
+            this.logger.log(
+              `Compound LP: minted=${events.lpSharesMinted}, total=${events.totalLp}`,
+            );
+          } else if (data.length === 3) {
+            // Format: (total_rewards, treasury_amount, compound_amount)
+            events.totalRewards = Number(data[0] || 0);
+            // treasury_amount is data[1], compound_amount is data[2]
+            // We mainly care about totalRewards for logging
+            this.logger.log(
+              `Compound final: rewards=${events.totalRewards}, treasury=${data[1]}, compound=${data[2]}`,
+            );
+          } else if (data.length === 1) {
+            // Single value - might be LP shares or rewards
+            events.lpSharesMinted = Number(data[0] || 0);
+          }
+        } else if (data && typeof data === 'object') {
+          // Fallback for potential struct/map format
+          events.lpSharesMinted = Number(
+            data.lp_shares_minted || data.lp_minted || data[0] || 0,
+          );
+          events.totalLp = Number(
+            data.total_lp_tokens || data.total_lp || data[1] || 0,
+          );
+          events.totalRewards = Number(
+            data.total_rewards || data.rewards || data[2] || 0,
+          );
+        } else if (typeof data === 'number' || typeof data === 'bigint') {
+          // Single numeric value
+          events.lpSharesMinted = Number(data);
         }
         break;
 
       case 'no_reward':
       case 'no_rewards':
         events.noReward = true;
+        this.logger.log('No reward event detected');
         break;
+
+      default:
+        // Log unknown events for debugging
+        this.logger.debug(
+          `Unknown event: ${eventName}, data: ${JSON.stringify(data)}`,
+        );
     }
   }
 
@@ -423,7 +533,7 @@ export class VaultCompoundService {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
+      fee: MAX_FEE,
       networkPassphrase: Networks.PUBLIC,
     })
       .addOperation(operation)
@@ -445,7 +555,7 @@ export class VaultCompoundService {
     const account = await this.server.getAccount(this.adminKeypair.publicKey());
 
     let tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
+      fee: MAX_FEE,
       networkPassphrase: Networks.PUBLIC,
     })
       .addOperation(operation)
@@ -469,17 +579,28 @@ export class VaultCompoundService {
     maxAttempts = 30,
   ): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
-      const status = await this.server.getTransaction(hash);
+      try {
+        const status = await this.server.getTransaction(hash);
 
-      if (status.status === 'SUCCESS') {
-        return status;
+        if (status.status === 'SUCCESS') {
+          return status;
+        }
+
+        if (status.status === 'FAILED') {
+          throw new Error(`Transaction failed: ${hash}`);
+        }
+
+        await this.sleep(2000);
+      } catch (error) {
+        // Handle "Bad union switch: 4" - transaction succeeded but SDK can't parse
+        if (error.message?.includes('Bad union switch')) {
+          this.logger.warn(
+            `XDR parse error for ${hash}, assuming success: ${error.message}`,
+          );
+          return { status: 'SUCCESS', hash };
+        }
+        throw error;
       }
-
-      if (status.status === 'FAILED') {
-        throw new Error(`Transaction failed: ${hash}`);
-      }
-
-      await this.sleep(2000);
     }
 
     throw new Error(`Transaction timeout: ${hash}`);

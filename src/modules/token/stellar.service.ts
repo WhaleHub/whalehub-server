@@ -353,8 +353,8 @@ export class StellarService {
           console.log('No new trustline was added.');
         }
 
-        const unlockTime =
-          Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; //2 years
+        // const unlockTime =
+        //   Math.floor(Date.now() / 1000) + 2 * 365 * 24 * 60 * 60; //2 years
 
         // const claimableTransaction = new TransactionBuilder(signerAccount, {
         //   fee: BASE_FEE,
@@ -591,11 +591,8 @@ export class StellarService {
 
   async stakeBlub(stakeBlubDto: StakeBlubDto): Promise<void> {
     try {
+      // Verify account exists
       await this.server.loadAccount(this.issuerKeypair.publicKey());
-
-      const signerAccount = await this.server.loadAccount(
-        this.issuerKeypair.publicKey(),
-      );
 
       const user = await this.userRepository.findOneBy({
         account: stakeBlubDto.senderPublicKey,
@@ -1216,11 +1213,8 @@ export class StellarService {
     const assets = [new Asset(AQUA_CODE, AQUA_ISSUER), this.blub];
     const poolId = 'CBL7MWLEZ4SU6YC5XL4T3WXKNKNO2UQVDVONOQSW5VVCYFWORROHY4AM';
 
-    // get pool reserves
-    const poolReserves = await this.sorobanService.getPoolReserves(
-      assets,
-      poolId,
-    );
+    // get pool reserves (for debugging/logging purposes)
+    await this.sorobanService.getPoolReserves(assets, poolId);
 
     const aquaAddress = this.sorobanService.getAssetContractId(
       new Asset(AQUA_CODE, AQUA_ISSUER),
@@ -1348,7 +1342,8 @@ export class StellarService {
     const amountToDeductFromPool = amountToUnstake * 0.1;
 
     let remainingClaimableAdjustment = amountToDeductFromClaimableRecords;
-    const remainingPoolAdjustment = amountToDeductFromPool;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _remainingPoolAdjustment = amountToDeductFromPool;
 
     // Adjust claimable records (90%)
     try {
@@ -1461,7 +1456,8 @@ export class StellarService {
     const groupedBySender = {};
     const totalPoolPerPairAmount = {};
     const userTotalAmountForAsset = {};
-    let totalPoolAmountForAllAssets = 0;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    let _totalPoolAmountForAllAssets = 0;
     let totalAquaPoolRewardAmount;
     let lastPoolKey: string;
 
@@ -1527,7 +1523,7 @@ export class StellarService {
     // Calculate total pool for each pair
     Object.keys(totalPoolPerPairAmount).forEach((pair) => {
       const { assetA, assetB } = totalPoolPerPairAmount[pair];
-      totalPoolAmountForAllAssets += assetA + assetB;
+      _totalPoolAmountForAllAssets += assetA + assetB;
       totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
     });
 
@@ -1638,7 +1634,8 @@ export class StellarService {
     const groupedBySender = {};
     const totalPoolPerPairAmount = {};
     const userTotalAmountForAsset = {};
-    let totalPoolAmountForAllAssets = 0;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    let _totalPoolAmountForAllAssets = 0;
     let to_claim = 0;
     let lastPoolKey: string;
 
@@ -1706,7 +1703,7 @@ export class StellarService {
     // Calculate total pool for each pair
     Object.keys(totalPoolPerPairAmount).forEach((pair) => {
       const { assetA, assetB } = totalPoolPerPairAmount[pair];
-      totalPoolAmountForAllAssets += assetA + assetB;
+      _totalPoolAmountForAllAssets += assetA + assetB;
       totalPoolPerPairAmount[pair] = (assetA + assetB).toFixed(7);
     });
 

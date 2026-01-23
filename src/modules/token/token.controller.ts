@@ -1,12 +1,19 @@
-import { Controller, Get, Post, Body, Query, Res, HttpStatus, HttpException } from '@nestjs/common';
-import { CreateTokenDto } from './dto/create-token.dto';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Query,
+  Res,
+  HttpStatus,
+  HttpException,
+} from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateStakeDto } from './dto/create-stake.dto';
 import { StellarService } from './stellar.service';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { UnlockAquaDto } from './dto/create-remove-lp.dto';
 import { StakeBlubDto } from './dto/stake-blub.dto';
-import { Asset } from '@stellar/stellar-sdk';
 import { MemoryMonitorService } from '../../helpers/memory-monitor.service';
 import { Response } from 'express';
 import { Logger } from '@nestjs/common';
@@ -20,7 +27,7 @@ export class TokenController {
 
   constructor(
     private readonly stellarService: StellarService,
-    private readonly memoryMonitorService: MemoryMonitorService
+    private readonly memoryMonitorService: MemoryMonitorService,
   ) {}
 
   @Post('lock')
@@ -36,47 +43,60 @@ export class TokenController {
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
   async lock(@Body() createStakeDto: CreateStakeDto) {
     try {
-      this.logger.log(`Lock request received for user: ${createStakeDto.senderPublicKey}`);
-      this.logger.debug(`Lock request data: ${JSON.stringify({
-        assetCode: createStakeDto.assetCode,
-        assetIssuer: createStakeDto.assetIssuer,
-        amount: createStakeDto.amount,
-        treasuryAmount: createStakeDto.treasuryAmount,
-        senderPublicKey: createStakeDto.senderPublicKey,
-        signedTxXdrLength: createStakeDto.signedTxXdr?.length || 0
-      })}`);
-      
+      this.logger.log(
+        `Lock request received for user: ${createStakeDto.senderPublicKey}`,
+      );
+      this.logger.debug(
+        `Lock request data: ${JSON.stringify({
+          assetCode: createStakeDto.assetCode,
+          assetIssuer: createStakeDto.assetIssuer,
+          amount: createStakeDto.amount,
+          treasuryAmount: createStakeDto.treasuryAmount,
+          senderPublicKey: createStakeDto.senderPublicKey,
+          signedTxXdrLength: createStakeDto.signedTxXdr?.length || 0,
+        })}`,
+      );
+
       return await this.stellarService.lock(createStakeDto);
     } catch (error) {
-      this.logger.error(`Error in lock endpoint for user ${createStakeDto?.senderPublicKey}:`, {
-        message: error.message,
-        status: error.status,
-        stack: error.stack
-      });
-      
+      this.logger.error(
+        `Error in lock endpoint for user ${createStakeDto?.senderPublicKey}:`,
+        {
+          message: error.message,
+          status: error.status,
+          stack: error.stack,
+        },
+      );
+
       // Provide more specific error responses
       if (error instanceof HttpException) {
         throw error;
       }
-      
+
       // Handle different types of errors with appropriate status codes
-      if (error.message?.includes('Invalid') || error.message?.includes('validation')) {
+      if (
+        error.message?.includes('Invalid') ||
+        error.message?.includes('validation')
+      ) {
         throw new HttpException(
           `Validation error: ${error.message}`,
-          HttpStatus.BAD_REQUEST
+          HttpStatus.BAD_REQUEST,
         );
       }
-      
-      if (error.message?.includes('account') || error.message?.includes('not found')) {
+
+      if (
+        error.message?.includes('account') ||
+        error.message?.includes('not found')
+      ) {
         throw new HttpException(
           `Account error: ${error.message}`,
-          HttpStatus.NOT_FOUND
+          HttpStatus.NOT_FOUND,
         );
       }
-      
+
       throw new HttpException(
         error.message || 'Failed to lock AQUA tokens',
-        error.status || HttpStatus.INTERNAL_SERVER_ERROR
+        error.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -98,9 +118,18 @@ export class TokenController {
 
   @Get('user')
   @ApiOperation({ summary: 'Get user information' })
-  @ApiResponse({ status: 200, description: 'User information retrieved successfully' })
-  @ApiResponse({ status: 502, description: 'Bad Gateway - Heavy wallet detected' })
-  async getUserInfo(@Query('userPublicKey') userPublicKey: string, @Res() res: Response) {
+  @ApiResponse({
+    status: 200,
+    description: 'User information retrieved successfully',
+  })
+  @ApiResponse({
+    status: 502,
+    description: 'Bad Gateway - Heavy wallet detected',
+  })
+  async getUserInfo(
+    @Query('userPublicKey') userPublicKey: string,
+    @Res() res: Response,
+  ) {
     // EMERGENCY: Block known heavy wallets immediately to prevent crashes
     const HEAVY_WALLETS = [
       'GCKTMO57VPZIOMFW47ZHXNWARPQRO4UGNNLHVFSEKDB2XKC74ZP4EKXD',
@@ -109,7 +138,8 @@ export class TokenController {
 
     const respondWithFallback = async () => {
       try {
-        const stakingData = await this.stellarService.getUserStakingBalance(userPublicKey);
+        const stakingData =
+          await this.stellarService.getUserStakingBalance(userPublicKey);
         const fallbackData = {
           id: null,
           account: userPublicKey,
@@ -123,7 +153,9 @@ export class TokenController {
         };
         return res.status(200).json(fallbackData);
       } catch (e) {
-        this.logger.error(`Fallback user info failed for ${userPublicKey}: ${e?.message}`);
+        this.logger.error(
+          `Fallback user info failed for ${userPublicKey}: ${e?.message}`,
+        );
         return res.status(200).json({
           id: null,
           account: userPublicKey,
@@ -139,7 +171,9 @@ export class TokenController {
     };
 
     if (HEAVY_WALLETS.includes(userPublicKey)) {
-      this.logger.warn(`🚨 EMERGENCY: Heavy wallet ${userPublicKey}; serving fallback data`);
+      this.logger.warn(
+        `🚨 EMERGENCY: Heavy wallet ${userPublicKey}; serving fallback data`,
+      );
       return await respondWithFallback();
     }
 
@@ -147,17 +181,22 @@ export class TokenController {
       // Check memory before processing
       const memUsage = process.memoryUsage();
       const memUsagePercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
-      
+
       if (memUsagePercent > 80) {
-        this.logger.warn(`🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Serving fallback data`);
+        this.logger.warn(
+          `🚨 High memory usage: ${memUsagePercent.toFixed(2)}% - Serving fallback data`,
+        );
         return await respondWithFallback();
       }
 
       // Circuit breaker for known problematic wallets
       if (this.failedWallets.has(userPublicKey)) {
         const lastFail = this.failedWallets.get(userPublicKey);
-        if (Date.now() - lastFail < 300000) { // 5 minutes
-          this.logger.warn(`Circuit breaker active for ${userPublicKey} - Serving fallback data`);
+        if (Date.now() - lastFail < 300000) {
+          // 5 minutes
+          this.logger.warn(
+            `Circuit breaker active for ${userPublicKey} - Serving fallback data`,
+          );
           return await respondWithFallback();
         }
       }
@@ -169,17 +208,16 @@ export class TokenController {
 
       // Wrap the main logic with timeout and memory monitoring
       const userInfoPromise = this.stellarService.getUser(userPublicKey);
-      
+
       const result = await Promise.race([userInfoPromise, timeoutPromise]);
 
       return res.status(200).json(result);
-
     } catch (error) {
       this.logger.error(`Error fetching user ${userPublicKey}:`, error.message);
-      
+
       // Add to failed wallets list
       this.failedWallets.set(userPublicKey, Date.now());
-      
+
       // Force garbage collection if available
       if (global.gc) {
         global.gc();
@@ -190,7 +228,10 @@ export class TokenController {
   }
 
   @Get('user/staking-balance')
-  @ApiOperation({ summary: 'Get user staking balance data (optimized for wallets with many transactions)' })
+  @ApiOperation({
+    summary:
+      'Get user staking balance data (optimized for wallets with many transactions)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Staking balance data retrieved successfully',
@@ -205,17 +246,21 @@ export class TokenController {
         return {
           error: 'Invalid user public key',
           claimableRecords: [],
-          pools: []
+          pools: [],
         };
       }
-      const result = await this.stellarService.getUserStakingBalance(userPublicKey);
+      const result =
+        await this.stellarService.getUserStakingBalance(userPublicKey);
       return result;
     } catch (error) {
-      console.error(`Error fetching staking balance for ${userPublicKey}:`, error);
+      console.error(
+        `Error fetching staking balance for ${userPublicKey}:`,
+        error,
+      );
       return {
         error: 'Failed to fetch staking balance',
         claimableRecords: [],
-        pools: []
+        pools: [],
       };
     }
   }
@@ -230,82 +275,104 @@ export class TokenController {
     status: 400,
     description: 'Invalid user public key',
   })
-  async getPublicKeyLockedRewards(@Query('userPublicKey') userPublicKey: string) {
+  async getPublicKeyLockedRewards(
+    @Query('userPublicKey') userPublicKey: string,
+  ) {
     try {
       if (!userPublicKey || userPublicKey.trim() === '') {
         return {
           error: 'Invalid user public key',
-          lockedAquaRewardEstimation: '0.0000000'
+          lockedAquaRewardEstimation: '0.0000000',
         };
       }
-      const result = await this.stellarService.getPublicKeyLockedRewards(userPublicKey);
+      const result =
+        await this.stellarService.getPublicKeyLockedRewards(userPublicKey);
       return result;
     } catch (error) {
-      console.error(`Error fetching locked rewards for ${userPublicKey}:`, error);
+      console.error(
+        `Error fetching locked rewards for ${userPublicKey}:`,
+        error,
+      );
       return {
         error: 'Failed to fetch locked rewards',
-        lockedAquaRewardEstimation: '0.0000000'
+        lockedAquaRewardEstimation: '0.0000000',
       };
     }
   }
 
   @Post('unlock-aqua')
-  @ApiOperation({ summary: 'Unlock AQUA to Public Key - REQUIRES WALLET SIGNATURE' })
+  @ApiOperation({
+    summary: 'Unlock AQUA to Public Key - REQUIRES WALLET SIGNATURE',
+  })
   @ApiBody({
     type: UnlockAquaDto,
-    description: 'Data required to unlock AQUA stakes - signedTxXdr is MANDATORY for security',
+    description:
+      'Data required to unlock AQUA stakes - signedTxXdr is MANDATORY for security',
   })
   @ApiResponse({
     status: 201,
     description: 'Liquidity successfully removed',
   })
   @ApiResponse({ status: 400, description: 'Invalid input, object invalid.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized: Missing or invalid signed transaction.' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized: Missing or invalid signed transaction.',
+  })
   async removeLiquidity(@Body() unlockAquaDto: UnlockAquaDto, @Res() res) {
-
     // SECURITY: CRITICAL - Multiple validation layers to prevent unauthorized access
-    this.logger.warn('🔒 UNLOCK-AQUA SECURITY: Request received, performing validation');
-    
+    this.logger.warn(
+      '🔒 UNLOCK-AQUA SECURITY: Request received, performing validation',
+    );
+
     // Primary security check
     if (!unlockAquaDto || typeof unlockAquaDto !== 'object') {
       this.logger.error('🚨 SECURITY VIOLATION: Invalid request object');
       return res.status(401).json({
         statusCode: 401,
         message: 'SECURITY: Invalid request format',
-        error: 'Unauthorized'
+        error: 'Unauthorized',
       });
     }
 
     // Critical signedTxXdr validation
-    if (!unlockAquaDto.signedTxXdr || 
-        typeof unlockAquaDto.signedTxXdr !== 'string' ||
-        unlockAquaDto.signedTxXdr.trim() === '' ||
-        unlockAquaDto.signedTxXdr.length < 20) {
-      
-      this.logger.error('🚨 SECURITY VIOLATION: Missing or invalid signedTxXdr');
+    if (
+      !unlockAquaDto.signedTxXdr ||
+      typeof unlockAquaDto.signedTxXdr !== 'string' ||
+      unlockAquaDto.signedTxXdr.trim() === '' ||
+      unlockAquaDto.signedTxXdr.length < 20
+    ) {
+      this.logger.error(
+        '🚨 SECURITY VIOLATION: Missing or invalid signedTxXdr',
+      );
       this.logger.error(`Request details: ${JSON.stringify(unlockAquaDto)}`);
-      
+
       return res.status(401).json({
         statusCode: 401,
-        message: 'SECURITY: Wallet signature verification required. Unauthorized access blocked.',
+        message:
+          'SECURITY: Wallet signature verification required. Unauthorized access blocked.',
         error: 'Unauthorized',
-        details: 'Use the web application with connected wallet to unstake tokens safely.'
+        details:
+          'Use the web application with connected wallet to unstake tokens safely.',
       });
     }
 
     // Additional validation for common bypass attempts
     const suspiciousValues = ['null', 'undefined', 'invalid', 'test', '123'];
     if (suspiciousValues.includes(unlockAquaDto.signedTxXdr.toLowerCase())) {
-      this.logger.error('🚨 SECURITY VIOLATION: Suspicious signedTxXdr value detected');
+      this.logger.error(
+        '🚨 SECURITY VIOLATION: Suspicious signedTxXdr value detected',
+      );
       return res.status(401).json({
         statusCode: 401,
         message: 'SECURITY: Invalid transaction signature detected',
-        error: 'Unauthorized'
+        error: 'Unauthorized',
       });
     }
 
-    this.logger.log(`✅ SECURITY: Valid signature found, proceeding with unlock for ${unlockAquaDto.senderPublicKey}`);
-    
+    this.logger.log(
+      `✅ SECURITY: Valid signature found, proceeding with unlock for ${unlockAquaDto.senderPublicKey}`,
+    );
+
     try {
       await this.stellarService.unlockAqua(unlockAquaDto);
       res.status(201).send();

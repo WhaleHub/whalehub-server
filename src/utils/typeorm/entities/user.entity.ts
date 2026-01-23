@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, OneToMany, OneToOne } from 'typeorm';
+import { Column, Entity, OneToMany } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { StakeEntity } from './stake.entity';
 import { ClaimableRecordsEntity } from './claimableRecords.entity';

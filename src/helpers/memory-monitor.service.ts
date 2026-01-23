@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import * as os from 'os';
 
 @Injectable()
 export class MemoryMonitorService {
@@ -10,8 +11,8 @@ export class MemoryMonitorService {
   @Cron(CronExpression.EVERY_30_SECONDS)
   monitorMemoryUsage() {
     const memUsage = process.memoryUsage();
-    const totalMemory = require('os').totalmem();
-    const freeMemory = require('os').freemem();
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
     const usedMemory = totalMemory - freeMemory;
     const memoryUsagePercentage = usedMemory / totalMemory;
 
@@ -53,8 +54,8 @@ export class MemoryMonitorService {
 
   getMemoryStats() {
     const memUsage = process.memoryUsage();
-    const totalMemory = require('os').totalmem();
-    const freeMemory = require('os').freemem();
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
 
     return {
       rss: memUsage.rss,

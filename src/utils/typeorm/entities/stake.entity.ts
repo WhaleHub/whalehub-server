@@ -1,7 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToOne } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { UserEntity } from './user.entity';
-import { PoolsEntity } from './pools.entity';
 
 @Entity({ name: 'stakes' })
 export class StakeEntity extends BaseEntity {
