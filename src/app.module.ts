@@ -25,16 +25,18 @@ import { MemoryMonitorService } from './helpers/memory-monitor.service';
 import { UnlockAquaSecurityMiddleware } from './middleware/unlock-aqua-security.middleware';
 import { DataSource, DataSourceOptions } from 'typeorm';
 
-// Import ICE locking and Vault compound services
+// Import ICE locking, Vault compound, and Staking reward services
 import { IceLockingService } from './modules/cron/ice-locking.service';
 import { VaultCompoundService } from './modules/cron/vault-compound.service';
+import { StakingRewardService } from './modules/cron/staking-reward.service';
 
-// Test controller for manual trigger of ICE/Vault services
+// Test controller for manual trigger of cron services
 @Controller('test')
 class TestController {
   constructor(
     private readonly iceLockingService: IceLockingService,
     private readonly vaultCompoundService: VaultCompoundService,
+    private readonly stakingRewardService: StakingRewardService,
   ) {}
 
   @Post('ice-locking')
@@ -49,6 +51,27 @@ class TestController {
     console.log('[TestController] Manually triggering vault compound...');
     await this.vaultCompoundService.handleVaultCompound();
     return { message: 'Vault compound completed' };
+  }
+
+  @Post('staking-reward')
+  async triggerStakingReward() {
+    console.log(
+      '[TestController] Manually triggering staking reward distribution...',
+    );
+    const result = await this.stakingRewardService.manualTrigger();
+    return result;
+  }
+
+  @Post('pol-deposit')
+  async triggerPolDeposit() {
+    console.log('[TestController] Manually triggering POL deposit...');
+    const result = await this.stakingRewardService.manualPolDeposit();
+    return result;
+  }
+
+  @Get('staking-reward/status')
+  async getStakingRewardStatus() {
+    return await this.stakingRewardService.getRewardStatus();
   }
 
   @Get('health')
@@ -97,6 +120,7 @@ class TestController {
     MemoryMonitorService,
     IceLockingService,
     VaultCompoundService,
+    StakingRewardService,
   ],
 })
 export class AppModule implements NestModule {
