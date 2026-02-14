@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 
@@ -229,7 +229,7 @@ export class StakingRewardService {
    * Runs every 5 minutes to check for pending POL deposits
    * This is a fallback in case event polling misses something
    */
-  @Cron('*/5 * * * *', {
+  @Cron(CronExpression.EVERY_10_SECONDS, {
     name: 'pol-deposit-check',
     timeZone: 'UTC',
   })
@@ -324,7 +324,7 @@ export class StakingRewardService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC (same schedule as vault compound)
    */
-  @Cron('0 0,6,12,18 * * *', {
+  @Cron(CronExpression.EVERY_10_SECONDS, {
     name: 'staking-reward-distribution',
     timeZone: 'UTC',
   })

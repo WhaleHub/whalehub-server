@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 
@@ -38,7 +38,7 @@ export class VaultCompoundService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC
    */
-  @Cron('0 0,6,12,18 * * *', {
+  @Cron(CronExpression.EVERY_10_SECONDS, {
     name: 'vault-compound-4x-daily',
     timeZone: 'UTC',
   })

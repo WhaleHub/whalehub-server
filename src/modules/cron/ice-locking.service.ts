@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import {
   Asset,
@@ -74,7 +74,7 @@ export class IceLockingService {
    * Runs daily at 2:00 AM UTC
    * Can be manually triggered via endpoint if needed
    */
-  @Cron('0 2 * * *', {
+  @Cron(CronExpression.EVERY_10_SECONDS, {
     name: 'ice-locking-daily',
     timeZone: 'UTC',
   })

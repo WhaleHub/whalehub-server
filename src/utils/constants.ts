@@ -46,10 +46,9 @@ function formatAmountToBigInt(amount) {
   return value;
 }
 
-addPool('WHLAQUA:AQUA', {
-  poolHash: 'CD4ASKG2XVZRAUXSXPCGUSBIX4JOC2TNA2FDBAPUNJB7RSUG5YGRQRSF',
-  binary:
-    '<Buffer b2 e0 2f cf ca 6c 96 f8 ad 5c bd 84 e7 78 4a 77 7b 36 d9 c9 6a 24 59 40 2c 4f 45 84 62 aa b7 f0>',
+addPool('BLUB:AQUA', {
+  poolHash: 'NEW_AQUA_BLUB_POOL_HASH', // TODO: Replace with new AQUA/BLUB pool hash after pool creation (Step 9)
+  binary: '', // TODO: Update with new pool binary after pool creation
 });
 
 addPool('XLM:AQUA', {

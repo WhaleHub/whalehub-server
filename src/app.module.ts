@@ -84,34 +84,34 @@ class TestController {
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
-    TypeOrmModule.forFeature([
-      UserEntity,
-      StakeEntity,
-      TokenEntity,
-      PoolsEntity,
-      LpBalanceEntity,
-      ClaimableRecordsEntity,
-    ]),
-    TypeOrmModule.forRootAsync({
-      useFactory: async (configService: ConfigService) =>
-        await typeOrmConfig(configService),
-      inject: [ConfigService],
-      dataSourceFactory: async (options) => {
-        try {
-          console.log('[TypeOrmModule] Attempting to connect to database...');
-          const dataSource = new DataSource(options as DataSourceOptions);
-          const initializedDataSource = await dataSource.initialize();
-          console.log(
-            '[TypeOrmModule] Database connection established successfully',
-          );
-          return initializedDataSource;
-        } catch (error) {
-          console.error('[TypeOrmModule] Database connection failed:', error);
-          throw new Error(`Database connection failed: ${error.message}`);
-        }
-      },
-    }),
-    TokenModule,
+    // TypeOrmModule.forFeature([
+    //   UserEntity,
+    //   StakeEntity,
+    //   TokenEntity,
+    //   PoolsEntity,
+    //   LpBalanceEntity,
+    //   ClaimableRecordsEntity,
+    // ]),
+    // TypeOrmModule.forRootAsync({
+    //   useFactory: async (configService: ConfigService) =>
+    //     await typeOrmConfig(configService),
+    //   inject: [ConfigService],
+    //   dataSourceFactory: async (options) => {
+    //     try {
+    //       console.log('[TypeOrmModule] Attempting to connect to database...');
+    //       const dataSource = new DataSource(options as DataSourceOptions);
+    //       const initializedDataSource = await dataSource.initialize();
+    //       console.log(
+    //         '[TypeOrmModule] Database connection established successfully',
+    //       );
+    //       return initializedDataSource;
+    //     } catch (error) {
+    //       console.error('[TypeOrmModule] Database connection failed:', error);
+    //       throw new Error(`Database connection failed: ${error.message}`);
+    //     }
+    //   },
+    // }),
+    // TokenModule,
     CronModule,
   ],
   controllers: [AppController, TestController],

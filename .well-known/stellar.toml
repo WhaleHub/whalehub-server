@@ -11,7 +11,7 @@ ORG_OFFICIAL_EMAIL = "contact@whalehub.io"
 
 [[CURRENCIES]]
 code = "BLUB"
-issuer = "GCYITYIOHQIDYK5ASX5CC7LVC4WOTHMCMPNDCTPARUUFHYDV2EBX55IQ"
+issuer = "GDERSSCKJQPPXUQOZIOXGRVAGNLVPVZCJ2MAX7RCMVMWGRPVAEG7XGTK"
 display_decimals = 7
 name = "Blubber Token"
 desc = "BLUB is a liquid derivative version of AQUA, which participates in the liquidity mining of the BLUB-AQUA pair. The WhaleHub reward asset is BLUBBER or BLUB for short."
