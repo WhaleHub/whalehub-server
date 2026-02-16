@@ -187,18 +187,18 @@ export class StakingRewardService {
   ): Promise<void> {
     const poolContract = new StellarSdk.Contract(this.aquaBlubPoolId);
 
-    // Build deposit amounts array [aqua, blub] - order depends on pool token order
-    const amounts = [aquaAmount, blubAmount];
+    // Build deposit amounts Vec<u128> [aqua, blub]
+    const amountsVec = StellarSdk.xdr.ScVal.scvVec([
+      StellarSdk.nativeToScVal(aquaAmount, { type: 'u128' }),
+      StellarSdk.nativeToScVal(blubAmount, { type: 'u128' }),
+    ]);
 
     const operation = poolContract.call(
       'deposit',
       StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
         type: 'address',
       }),
-      StellarSdk.nativeToScVal(
-        amounts.map((a) => a.toString()),
-        { type: 'vec' },
-      ),
+      amountsVec,
       StellarSdk.nativeToScVal(0, { type: 'u128' }), // min_shares = 0 (accept any)
     );
 
@@ -229,7 +229,7 @@ export class StakingRewardService {
    * Runs every 5 minutes to check for pending POL deposits
    * This is a fallback in case event polling misses something
    */
-  @Cron(CronExpression.EVERY_10_SECONDS, {
+  @Cron(CronExpression.EVERY_5_MINUTES, {
     name: 'pol-deposit-check',
     timeZone: 'UTC',
   })
@@ -324,7 +324,7 @@ export class StakingRewardService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC (same schedule as vault compound)
    */
-  @Cron(CronExpression.EVERY_10_SECONDS, {
+  @Cron(CronExpression.EVERY_6_HOURS, {
     name: 'staking-reward-distribution',
     timeZone: 'UTC',
   })
@@ -405,11 +405,8 @@ export class StakingRewardService {
       const operation = poolContract.call('get_user_reward', userAddress);
       const result = await this.simulateTransaction(operation);
 
-      const rewardInfo = StellarSdk.scValToNative(result.result.retval);
-
-      // Return to_claim amount
-      const toClaim = rewardInfo?.to_claim || rewardInfo || 0;
-      return BigInt(toClaim);
+      const rewardAmount = StellarSdk.scValToNative(result.result.retval);
+      return BigInt(rewardAmount || 0);
     } catch (error) {
       this.logger.error(`Failed to get pending rewards: ${error.message}`);
       return 0n;
@@ -515,23 +512,32 @@ export class StakingRewardService {
   private async swapAquaToBlub(aquaAmount: bigint): Promise<bigint> {
     const routerContract = new StellarSdk.Contract(this.routerContractId);
 
-    // Build swap path: AQUA -> BLUB
-    const swapPath = [this.aquaTokenId, this.blubTokenId];
+    // Router swap: swap(user, tokens, token_in, token_out, pool_index, in_amount, out_min)
+    const tokensVec = StellarSdk.xdr.ScVal.scvVec([
+      StellarSdk.nativeToScVal(this.aquaTokenId, { type: 'address' }),
+      StellarSdk.nativeToScVal(this.blubTokenId, { type: 'address' }),
+    ]);
 
-    // Allow 1% slippage
-    const minBlubOut = (aquaAmount * 99n) / 100n;
+    // Pool index from pool creation
+    const poolIndex = Buffer.from(
+      '0240dd5b4021e9373c226b8810d95628a38fa8e46a6356c57655688f0f62b5cf',
+      'hex',
+    );
+
+    // Allow 2% slippage
+    const minBlubOut = (aquaAmount * 98n) / 100n;
 
     const operation = routerContract.call(
-      'swap_exact_tokens_for_tokens',
-      StellarSdk.nativeToScVal(aquaAmount, { type: 'i128' }),
-      StellarSdk.nativeToScVal(minBlubOut, { type: 'i128' }),
-      StellarSdk.nativeToScVal(swapPath, { type: 'vec' }),
+      'swap',
       StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
         type: 'address',
       }),
-      StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 300, {
-        type: 'u64',
-      }), // 5 min deadline
+      tokensVec,
+      StellarSdk.nativeToScVal(this.aquaTokenId, { type: 'address' }),
+      StellarSdk.nativeToScVal(this.blubTokenId, { type: 'address' }),
+      StellarSdk.nativeToScVal(poolIndex, { type: 'bytes' }),
+      StellarSdk.nativeToScVal(aquaAmount, { type: 'u128' }),
+      StellarSdk.nativeToScVal(minBlubOut, { type: 'u128' }),
     );
 
     const tx = await this.buildAndSignTransaction(operation);
@@ -761,12 +767,10 @@ export class StakingRewardService {
 
         await this.sleep(2000);
       } catch (error) {
-        // Handle "Bad union switch" - transaction succeeded but SDK can't parse
-        if (error.message?.includes('Bad union switch')) {
-          this.logger.warn(
-            `XDR parse error for ${hash}, assuming success: ${error.message}`,
-          );
-          return { status: 'SUCCESS', hash };
+        if (error.message?.includes('not found') || error.message?.includes('NOT_FOUND')) {
+          // Transaction not yet confirmed, keep polling
+          await this.sleep(2000);
+          continue;
         }
         throw error;
       }
