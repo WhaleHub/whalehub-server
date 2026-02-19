@@ -417,6 +417,11 @@ export class VaultCompoundService {
           await this.sleep(2000);
           continue;
         }
+        if (error.message?.includes('Bad union switch')) {
+          // Stellar SDK XDR parse bug — transaction succeeded on-chain but SDK can't parse result
+          this.logger.warn(`XDR parse error (Bad union switch) for ${hash}, assuming success`);
+          return { status: 'SUCCESS', hash };
+        }
         throw error;
       }
     }

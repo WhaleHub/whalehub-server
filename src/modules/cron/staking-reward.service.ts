@@ -47,6 +47,15 @@ export class StakingRewardService {
   private lastEventLedger: number = 0;
   private processedTxHashes: Set<string> = new Set();
 
+  // Set to true by IceLockingService while an ICE lock is in progress.
+  // POL deposit is paused during this window to prevent it from consuming
+  // the AQUA that was just transferred from the contract for ICE locking.
+  public isIceLockingActive = false;
+
+  // Set to true while reward distribution is running so the POL deposit
+  // fallback cron does not re-deposit claimed AQUA before it can be distributed.
+  private isDistributing = false;
+
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
@@ -75,6 +84,10 @@ export class StakingRewardService {
     this.logger.log('Starting POL deposit event polling...');
 
     setInterval(async () => {
+      if (this.isIceLockingActive) {
+        this.logger.debug('ICE locking in progress, skipping POL event poll');
+        return;
+      }
       try {
         await this.pollAndProcessPolDepositEvents();
       } catch (error) {
@@ -96,7 +109,7 @@ export class StakingRewardService {
           {
             type: 'contract',
             contractIds: [this.stakingContractId],
-            topics: [['AAAADwAAAAdwb2xfZGVw']], // "pol_dep" as SCVal symbol
+            topics: [['AAAADwAAAAdwb2xfZGVwAA==']], // "pol_dep" as SCVal symbol (SCV_SYMBOL, XDR-padded)
           },
         ],
         limit: 100,
@@ -234,6 +247,14 @@ export class StakingRewardService {
     timeZone: 'UTC',
   })
   async handlePolDepositCheck() {
+    if (this.isIceLockingActive) {
+      this.logger.debug('ICE locking in progress, skipping POL deposit check');
+      return;
+    }
+    if (this.isDistributing) {
+      this.logger.debug('Reward distribution in progress, skipping POL deposit check');
+      return;
+    }
     try {
       await this.checkAndDepositPendingPol();
     } catch (error) {
@@ -324,29 +345,40 @@ export class StakingRewardService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC (same schedule as vault compound)
    */
-  @Cron(CronExpression.EVERY_6_HOURS, {
+  @Cron('*/30 * * * *', {
     name: 'staking-reward-distribution',
     timeZone: 'UTC',
   })
   async handleStakingRewardDistribution() {
     this.logger.log('Starting staking reward distribution...');
+    this.isDistributing = true;
 
     try {
       // Step 1: Check pending rewards from AQUA/BLUB pool
       const pendingRewards = await this.getPendingRewards();
       this.logger.log(`Pending AQUA rewards: ${pendingRewards}`);
 
-      if (pendingRewards <= 0) {
+      if (pendingRewards <= 0n) {
         this.logger.log('No rewards to claim. Skipping...');
         return;
       }
 
-      // Step 2: Claim rewards from AQUA/BLUB pool
-      const claimedAmount = await this.claimPoolRewards();
-      this.logger.log(`Claimed AQUA amount: ${claimedAmount}`);
+      // Step 2: Snapshot AQUA balance before claim, then claim.
+      // We use the balance delta to determine how much was received because
+      // the Aquarius claim() return value is unparseable with some SDK versions
+      // (XDR "Bad union switch" → pollTransactionStatus returns no returnValue).
+      const aquaBeforeClaim = await this.getTokenBalance(this.aquaTokenId);
+      await this.claimPoolRewards();
+      const aquaAfterClaim = await this.getTokenBalance(this.aquaTokenId);
 
-      if (claimedAmount <= 0) {
-        this.logger.log('No rewards claimed. Skipping distribution...');
+      const claimedAmount = aquaAfterClaim > aquaBeforeClaim
+        ? aquaAfterClaim - aquaBeforeClaim
+        : 0n;
+
+      this.logger.log(`Claimed AQUA amount (balance delta): ${claimedAmount}`);
+
+      if (claimedAmount <= 0n) {
+        this.logger.log('No rewards received after claim. Skipping distribution...');
         return;
       }
 
@@ -377,8 +409,6 @@ export class StakingRewardService {
       }
 
       this.logger.log('Staking reward distribution completed successfully');
-
-      // Emit summary event
       this.logger.log(
         `Distribution Summary: Claimed=${claimedAmount} AQUA, ` +
           `Treasury=${treasuryAmount} AQUA, Stakers=${blubAmount} BLUB`,
@@ -388,6 +418,8 @@ export class StakingRewardService {
         `Staking reward distribution failed: ${error.message}`,
         error.stack,
       );
+    } finally {
+      this.isDistributing = false;
     }
   }
 
@@ -414,9 +446,11 @@ export class StakingRewardService {
   }
 
   /**
-   * Claim rewards from AQUA/BLUB pool
+   * Claim rewards from AQUA/BLUB pool.
+   * Amount received is determined by the caller via balance delta, not return value,
+   * because the Aquarius claim() XDR result is unparseable in some SDK versions.
    */
-  private async claimPoolRewards(): Promise<bigint> {
+  private async claimPoolRewards(): Promise<void> {
     const poolContract = new StellarSdk.Contract(this.aquaBlubPoolId);
     const userAddress = StellarSdk.nativeToScVal(
       this.adminKeypair.publicKey(),
@@ -427,62 +461,9 @@ export class StakingRewardService {
 
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
-    const confirmed = await this.pollTransactionStatus(response.hash);
+    await this.pollTransactionStatus(response.hash);
 
-    // Parse claimed amount from result
-    const claimedAmount = this.parseClaimedAmount(confirmed);
-    return claimedAmount;
-  }
-
-  /**
-   * Parse claimed amount from transaction result
-   */
-  private parseClaimedAmount(txResult: any): bigint {
-    try {
-      // Try to get return value from result
-      if (txResult.returnValue) {
-        const value = StellarSdk.scValToNative(txResult.returnValue);
-        return BigInt(value || 0);
-      }
-
-      // Fallback: parse from events
-      const contractEventsXdr = txResult.events?.contractEventsXdr || [];
-      for (const eventXdr of contractEventsXdr) {
-        try {
-          const contractEvent = StellarSdk.xdr.ContractEvent.fromXDR(eventXdr, 'base64');
-          const body = contractEvent.body();
-          if (!body) continue;
-
-          let v0;
-          try {
-            v0 = body.v0();
-          } catch {
-            continue;
-          }
-
-          const topics = v0.topics();
-          if (!topics || topics.length === 0) continue;
-
-          const eventName = StellarSdk.scValToNative(topics[0]);
-          if (String(eventName).toLowerCase().includes('claim')) {
-            const eventData = v0.data();
-            const data = eventData ? StellarSdk.scValToNative(eventData) : null;
-            if (data) {
-              // Return the claimed amount from event data
-              const amount = Array.isArray(data) ? data[0] : data;
-              return BigInt(amount || 0);
-            }
-          }
-        } catch {
-          continue;
-        }
-      }
-
-      return 0n;
-    } catch (error) {
-      this.logger.warn(`Failed to parse claimed amount: ${error.message}`);
-      return 0n;
-    }
+    this.logger.log(`Pool claim submitted: tx=${response.hash}`);
   }
 
   /**
@@ -507,7 +488,8 @@ export class StakingRewardService {
   }
 
   /**
-   * Swap AQUA to BLUB via Aquarius Router
+   * Swap AQUA to BLUB via Aquarius Router.
+   * Simulates first to get the real expected output, then submits with 5% slippage.
    */
   private async swapAquaToBlub(aquaAmount: bigint): Promise<bigint> {
     const routerContract = new StellarSdk.Contract(this.routerContractId);
@@ -524,14 +506,40 @@ export class StakingRewardService {
       'hex',
     );
 
-    // Allow 2% slippage
-    const minBlubOut = (aquaAmount * 98n) / 100n;
+    // Simulate with out_min=0 to get real expected output, then apply 5% slippage.
+    // This avoids hardcoding a 1:1 AQUA:BLUB ratio assumption.
+    const simulateOp = routerContract.call(
+      'swap',
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
+      tokensVec,
+      StellarSdk.nativeToScVal(this.aquaTokenId, { type: 'address' }),
+      StellarSdk.nativeToScVal(this.blubTokenId, { type: 'address' }),
+      StellarSdk.nativeToScVal(poolIndex, { type: 'bytes' }),
+      StellarSdk.nativeToScVal(aquaAmount, { type: 'u128' }),
+      StellarSdk.nativeToScVal(0n, { type: 'u128' }),
+    );
+
+    let minBlubOut = 1n; // fallback: accept any output
+    try {
+      const simResult = await this.simulateTransaction(simulateOp);
+      const expectedOut = BigInt(
+        StellarSdk.scValToNative(simResult.result.retval) || 0,
+      );
+      if (expectedOut > 0n) {
+        minBlubOut = (expectedOut * 95n) / 100n; // 5% slippage on real price
+        this.logger.log(
+          `Swap simulation: expected ${expectedOut} BLUB, min ${minBlubOut} BLUB`,
+        );
+      }
+    } catch (simError) {
+      this.logger.warn(
+        `Swap simulation failed, using min=1: ${simError.message}`,
+      );
+    }
 
     const operation = routerContract.call(
       'swap',
-      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
-        type: 'address',
-      }),
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
       tokensVec,
       StellarSdk.nativeToScVal(this.aquaTokenId, { type: 'address' }),
       StellarSdk.nativeToScVal(this.blubTokenId, { type: 'address' }),
@@ -586,7 +594,9 @@ export class StakingRewardService {
     // but we need to approve the transfer first
     const blubContract = new StellarSdk.Contract(this.blubTokenId);
 
-    // Approve staking contract to spend BLUB
+    // Approve staking contract to spend BLUB.
+    // expiry_ledger is a ledger number (not a timestamp); ~720 ledgers ≈ 1 hour at 5s/ledger.
+    const latestLedger = (await this.server.getLatestLedger()).sequence;
     const approveOp = blubContract.call(
       'approve',
       StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
@@ -594,9 +604,7 @@ export class StakingRewardService {
       }),
       StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
       StellarSdk.nativeToScVal(blubAmount, { type: 'i128' }),
-      StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 3600, {
-        type: 'u32',
-      }), // 1 hour expiry
+      StellarSdk.nativeToScVal(latestLedger + 720, { type: 'u32' }),
     );
 
     let approveTx = await this.buildAndSignTransaction(approveOp);
@@ -635,7 +643,7 @@ export class StakingRewardService {
           const body = contractEvent.body();
           if (!body) continue;
 
-          let v0;
+          let v0: StellarSdk.xdr.ContractEventV0;
           try {
             v0 = body.v0();
           } catch {
@@ -771,6 +779,11 @@ export class StakingRewardService {
           // Transaction not yet confirmed, keep polling
           await this.sleep(2000);
           continue;
+        }
+        if (error.message?.includes('Bad union switch')) {
+          // Stellar SDK XDR parse bug — transaction succeeded on-chain but SDK can't parse result
+          this.logger.warn(`XDR parse error (Bad union switch) for ${hash}, assuming success`);
+          return { status: 'SUCCESS', hash };
         }
         throw error;
       }

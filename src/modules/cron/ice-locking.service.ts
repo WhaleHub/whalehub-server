@@ -9,6 +9,7 @@ import {
   TransactionBuilder,
   Networks,
 } from '@stellar/stellar-sdk';
+import { StakingRewardService } from './staking-reward.service';
 
 // Max fee for transactions (1 XLM in stroops for reliability)
 const MAX_FEE = '1000000';
@@ -32,6 +33,7 @@ export class IceLockingService {
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
   private readonly aquaAsset: Asset;
+  private isRunning = false;
 
   // ICE token contract addresses (SAC wrapped)
   private readonly iceTokenId: string;
@@ -39,7 +41,10 @@ export class IceLockingService {
   private readonly upvoteIceTokenId: string;
   private readonly downvoteIceTokenId: string;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private stakingRewardService: StakingRewardService,
+  ) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
 
@@ -74,15 +79,53 @@ export class IceLockingService {
    * Runs daily at 2:00 AM UTC
    * Can be manually triggered via endpoint if needed
    */
-  @Cron(CronExpression.EVERY_10_SECONDS, {
+  @Cron('0 */4 * * *', {
     name: 'ice-locking-daily',
     timeZone: 'UTC',
   })
   async handleDailyIceLocking() {
+    if (this.isRunning) {
+      this.logger.log('ICE locking already in progress, skipping...');
+      return;
+    }
+    this.isRunning = true;
     this.logger.log('Starting daily ICE locking process...');
 
     try {
-      // STEP 1: Get pending AQUA amount
+      // STEP 0a: Deposit any pending POL (AQUA+BLUB) to pool FIRST.
+      // This ensures that AQUA sitting in admin wallet from recent pol_dep events
+      // gets deposited to the AQUA/BLUB pool before ICE locking reads the wallet state.
+      // Without this, Step 0b could mistake POL-destined AQUA for a previous ICE lock attempt.
+      this.logger.log('Running POL deposit check before ICE locking...');
+      try {
+        await this.stakingRewardService.manualPolDeposit();
+      } catch (polError) {
+        this.logger.warn(
+          `POL deposit pre-check failed (non-fatal): ${polError.message}`,
+        );
+      }
+
+      // Pause POL deposits for the duration of ICE locking so the AQUA
+      // transferred from the contract is not consumed by the POL cron.
+      this.stakingRewardService.isIceLockingActive = true;
+
+      // STEP 0b: Check if admin wallet already has AQUA from a previous transfer
+      // (e.g. transfer_authorized_aqua ran but createClaimableBalance never completed)
+      const adminAquaBalance = await this.getAdminAquaBalance();
+      if (adminAquaBalance > 0) {
+        this.logger.log(
+          `Admin wallet has ${adminAquaBalance} AQUA from previous transfer. Creating claimable balance directly...`,
+        );
+        await this.createClaimableBalance(adminAquaBalance, 3);
+        this.logger.log(
+          `Claimable balance created for ${adminAquaBalance} AQUA already in admin wallet`,
+        );
+        await this.waitForIceTokens();
+        this.logger.log('ICE locking process completed for admin AQUA balance');
+        return;
+      }
+
+      // STEP 1: Get pending AQUA amount from staking contract
       const pendingAqua = await this.getPendingAquaForIce();
 
       if (pendingAqua <= 0) {
@@ -117,6 +160,37 @@ export class IceLockingService {
     } catch (error) {
       this.logger.error(`ICE locking failed: ${error.message}`, error.stack);
       // TODO: Send alert/notification to admin
+    } finally {
+      this.stakingRewardService.isIceLockingActive = false;
+      this.isRunning = false;
+    }
+  }
+
+  /**
+   * Check admin wallet's classic Stellar AQUA balance via Horizon.
+   * AQUA transferred from the staking contract lands here as a classic asset.
+   */
+  private async getAdminAquaBalance(): Promise<number> {
+    try {
+      const account = await this.horizonServer.loadAccount(
+        this.adminKeypair.publicKey(),
+      );
+      const aquaIssuer = this.configService.get<string>('AQUA_ISSUER');
+      const aquaBalance = account.balances.find(
+        (b) =>
+          b.asset_type !== 'native' &&
+          (b as any).asset_code === 'AQUA' &&
+          (b as any).asset_issuer === aquaIssuer,
+      );
+      if (!aquaBalance) return 0;
+      const balance = parseFloat(aquaBalance.balance);
+      this.logger.log(`Admin wallet AQUA balance: ${balance}`);
+      return balance;
+    } catch (error) {
+      this.logger.warn(
+        `Failed to get admin AQUA balance: ${error.message}`,
+      );
+      return 0;
     }
   }
 
@@ -284,8 +358,18 @@ export class IceLockingService {
 
     transaction.sign(this.adminKeypair);
 
-    const response = await this.horizonServer.submitTransaction(transaction);
-    this.logger.log(`Claimable balance created: ${response.hash}`);
+    try {
+      const response = await this.horizonServer.submitTransaction(transaction);
+      this.logger.log(`Claimable balance created: ${response.hash}`);
+    } catch (error) {
+      // Extract Horizon result codes for easier debugging
+      const resultCodes =
+        error?.response?.data?.extras?.result_codes ?? error?.message;
+      this.logger.error(
+        `Horizon submitTransaction failed. Result codes: ${JSON.stringify(resultCodes)}`,
+      );
+      throw error;
+    }
   }
 
   /**
