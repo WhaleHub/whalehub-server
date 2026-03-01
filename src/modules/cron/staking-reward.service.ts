@@ -56,6 +56,11 @@ export class StakingRewardService {
   // fallback cron does not re-deposit claimed AQUA before it can be distributed.
   private isDistributing = false;
 
+  // Tracks BLUB swapped but not yet distributed (for resume if add_rewards fails).
+  // NEVER use getTokenBalance(blubTokenId) for this — blub-issuer-v2 is the SAC issuer
+  // and balance() returns i64::MAX as a sentinel for the issuer account.
+  private pendingBlubDistribution = 0n;
+
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
@@ -343,7 +348,13 @@ export class StakingRewardService {
   }
 
   /**
-   * Runs at 00:00, 06:00, 12:00, 18:00 UTC (same schedule as vault compound)
+   * Runs every 30 minutes to distribute POL rewards to stakers.
+   *
+   * LP may be held by either the admin wallet (old setup) or the staking contract (new setup).
+   * We check both and use the appropriate claim path:
+   *  - Admin holds LP  → call claim() directly on the pool, split 30/70, add_rewards
+   *  - Contract holds LP → call claim_and_compound() on staking contract (contract handles
+   *    treasury split), receive 70% AQUA, swap to BLUB, add_rewards
    */
   @Cron('*/30 * * * *', {
     name: 'staking-reward-distribution',
@@ -354,64 +365,111 @@ export class StakingRewardService {
     this.isDistributing = true;
 
     try {
-      // Step 1: Check pending rewards from AQUA/BLUB pool
-      const pendingRewards = await this.getPendingRewards();
-      this.logger.log(`Pending AQUA rewards: ${pendingRewards}`);
+      // Step 0: Resume guard — use in-memory state ONLY.
+      // WARNING: Do NOT check BLUB token balance here. blub-issuer-v2 is the SAC issuer
+      // and balance() returns i64::MAX (9223372036854775807) as a sentinel → catastrophic.
+      if (this.pendingBlubDistribution > 0n) {
+        this.logger.log(`Resume: distributing ${this.pendingBlubDistribution} BLUB from interrupted run`);
+        await this.addRewardsToStakingContract(this.pendingBlubDistribution);
+        this.pendingBlubDistribution = 0n;
+        this.logger.log('Resume complete');
+        return;
+      }
 
-      if (pendingRewards <= 0n) {
+      // Step 1: Check pending rewards — try staking contract first (LP moved there),
+      // fall back to admin wallet (old LP holder).
+      const contractRewards = await this.getPendingRewardsFor(this.stakingContractId);
+      const adminRewards = await this.getPendingRewardsFor(this.adminKeypair.publicKey());
+      this.logger.log(`Pending rewards — contract: ${contractRewards}, admin: ${adminRewards}`);
+
+      const lpInContract = contractRewards > 0n;
+      const lpInAdmin = adminRewards > 0n;
+
+      if (!lpInContract && !lpInAdmin) {
         this.logger.log('No rewards to claim. Skipping...');
         return;
       }
 
-      // Step 2: Snapshot AQUA balance before claim, then claim.
-      // We use the balance delta to determine how much was received because
-      // the Aquarius claim() return value is unparseable with some SDK versions
-      // (XDR "Bad union switch" → pollTransactionStatus returns no returnValue).
+      // Step 2: Claim — method depends on where LP lives.
+      // Use AQUA balance delta to measure received amount (Aquarius claim() XDR is unparseable).
       const aquaBeforeClaim = await this.getTokenBalance(this.aquaTokenId);
-      await this.claimPoolRewards();
+
+      if (lpInContract) {
+        // LP is in staking contract — call claim_and_compound.
+        // Contract claims from Aquarius, sends 30% to treasury, 70% AQUA to manager.
+        this.logger.log('LP in staking contract — using claim_and_compound');
+        await this.claimViaStakingContract();
+      } else {
+        // LP is in admin wallet — claim directly, then split manually.
+        this.logger.log('LP in admin wallet — using direct pool claim');
+        await this.claimPoolRewardsDirect();
+      }
+
       const aquaAfterClaim = await this.getTokenBalance(this.aquaTokenId);
+      const receivedAqua = aquaAfterClaim > aquaBeforeClaim ? aquaAfterClaim - aquaBeforeClaim : 0n;
+      this.logger.log(`AQUA received (balance delta): ${receivedAqua}`);
 
-      const claimedAmount = aquaAfterClaim > aquaBeforeClaim
-        ? aquaAfterClaim - aquaBeforeClaim
-        : 0n;
-
-      this.logger.log(`Claimed AQUA amount (balance delta): ${claimedAmount}`);
-
-      if (claimedAmount <= 0n) {
-        this.logger.log('No rewards received after claim. Skipping distribution...');
+      if (receivedAqua <= 0n) {
+        this.logger.log('No AQUA received after claim. Skipping distribution...');
         return;
       }
 
-      // Step 3: Calculate splits (30% treasury, 70% stakers)
-      const treasuryAmount = (claimedAmount * BigInt(TREASURY_FEE_BPS)) / BigInt(10000);
-      const stakerAmount = claimedAmount - treasuryAmount;
-
-      this.logger.log(`Treasury (30%): ${treasuryAmount} AQUA`);
-      this.logger.log(`Stakers (70%): ${stakerAmount} AQUA`);
-
-      // Step 4: Send 30% to treasury
-      if (treasuryAmount > 0n) {
-        await this.sendToTreasury(treasuryAmount);
-        this.logger.log(`Sent ${treasuryAmount} AQUA to treasury`);
+      // Step 3: Split & distribute.
+      // When LP is in contract, claim_and_compound already sent 30% to treasury — manager
+      // receives only the 70% staker share, so we skip the treasury step.
+      let stakerAqua: bigint;
+      if (lpInContract) {
+        stakerAqua = receivedAqua; // contract already handled treasury
+      } else {
+        const treasuryAmount = (receivedAqua * BigInt(TREASURY_FEE_BPS)) / BigInt(10000);
+        stakerAqua = receivedAqua - treasuryAmount;
+        if (treasuryAmount > 0n) {
+          await this.sendToTreasury(treasuryAmount);
+          this.logger.log(`Sent ${treasuryAmount} AQUA to treasury`);
+        }
       }
 
-      // Step 5: Swap 70% AQUA to BLUB
+      this.logger.log(`Staker AQUA to swap: ${stakerAqua}`);
+
+      // Step 4: Swap AQUA → BLUB
       let blubAmount = 0n;
-      if (stakerAmount > 0n) {
-        blubAmount = await this.swapAquaToBlub(stakerAmount);
+      if (stakerAqua > 0n) {
+        blubAmount = await this.swapAquaToBlub(stakerAqua);
+
+        // Sanity cap: BLUB out should never exceed 10× AQUA in (exchange rate guard).
+        // If it does, something went wrong with parsing — use stakerAqua as conservative estimate.
+        const sanityCap = stakerAqua * 10n;
+        if (blubAmount > sanityCap) {
+          this.logger.error(
+            `BLUB amount ${blubAmount} exceeds sanity cap (10× stakerAqua=${sanityCap}). ` +
+            `Using stakerAqua=${stakerAqua} as conservative fallback.`,
+          );
+          blubAmount = stakerAqua;
+        }
+
         this.logger.log(`Swapped to ${blubAmount} BLUB`);
       }
 
-      // Step 6: Add rewards to staking contract
+      // Step 5: Distribute BLUB to stakers.
+      // Hard cap: never distribute more than 20,000 BLUB in a single run (7 decimals).
+      const MAX_BLUB_PER_RUN = 200_000_000_000n; // 20,000 BLUB
+      if (blubAmount > MAX_BLUB_PER_RUN) {
+        this.logger.error(
+          `BLUB amount ${blubAmount} exceeds hard cap ${MAX_BLUB_PER_RUN} (20,000 BLUB). Capping.`,
+        );
+        blubAmount = MAX_BLUB_PER_RUN;
+      }
+
+      // Save to in-memory state BEFORE submitting so a crash/retry resumes correctly.
       if (blubAmount > 0n) {
+        this.pendingBlubDistribution = blubAmount;
         await this.addRewardsToStakingContract(blubAmount);
+        this.pendingBlubDistribution = 0n; // Clear only after success
         this.logger.log(`Added ${blubAmount} BLUB rewards to staking contract`);
       }
 
-      this.logger.log('Staking reward distribution completed successfully');
       this.logger.log(
-        `Distribution Summary: Claimed=${claimedAmount} AQUA, ` +
-          `Treasury=${treasuryAmount} AQUA, Stakers=${blubAmount} BLUB`,
+        `Distribution complete: receivedAqua=${receivedAqua}, stakers=${blubAmount} BLUB`,
       );
     } catch (error) {
       this.logger.error(
@@ -424,46 +482,54 @@ export class StakingRewardService {
   }
 
   /**
-   * Get pending rewards from AQUA/BLUB pool for admin wallet
+   * Get pending rewards from AQUA/BLUB pool for a specific address (admin or staking contract).
    */
-  private async getPendingRewards(): Promise<bigint> {
+  private async getPendingRewardsFor(address: string): Promise<bigint> {
     try {
       const poolContract = new StellarSdk.Contract(this.aquaBlubPoolId);
-      const userAddress = StellarSdk.nativeToScVal(
-        this.adminKeypair.publicKey(),
-        { type: 'address' },
-      );
-
+      const userAddress = StellarSdk.nativeToScVal(address, { type: 'address' });
       const operation = poolContract.call('get_user_reward', userAddress);
       const result = await this.simulateTransaction(operation);
-
       const rewardAmount = StellarSdk.scValToNative(result.result.retval);
       return BigInt(rewardAmount || 0);
     } catch (error) {
-      this.logger.error(`Failed to get pending rewards: ${error.message}`);
+      this.logger.debug(`getPendingRewardsFor(${address}): ${error.message}`);
       return 0n;
     }
   }
 
   /**
-   * Claim rewards from AQUA/BLUB pool.
-   * Amount received is determined by the caller via balance delta, not return value,
-   * because the Aquarius claim() XDR result is unparseable in some SDK versions.
+   * Claim rewards when LP is in the staking contract.
+   * Calls claim_and_compound on the staking contract (pool_id=0 = BLUB-AQUA).
+   * Contract claims AQUA from Aquarius, sends 30% to treasury, 70% to manager.
    */
-  private async claimPoolRewards(): Promise<void> {
-    const poolContract = new StellarSdk.Contract(this.aquaBlubPoolId);
-    const userAddress = StellarSdk.nativeToScVal(
-      this.adminKeypair.publicKey(),
-      { type: 'address' },
-    );
+  private async claimViaStakingContract(): Promise<void> {
+    const stakingContract = new StellarSdk.Contract(this.stakingContractId);
+    const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
+    const poolIdScVal = StellarSdk.nativeToScVal(0, { type: 'u32' }); // pool 0 = BLUB-AQUA
 
+    const operation = stakingContract.call('claim_and_compound', managerScVal, poolIdScVal);
+    const tx = await this.buildAndSignTransaction(operation);
+    const response = await this.server.sendTransaction(tx);
+    await this.pollTransactionStatus(response.hash);
+
+    this.logger.log(`claim_and_compound submitted: tx=${response.hash}`);
+  }
+
+  /**
+   * Claim rewards when LP is in admin wallet (old setup).
+   * Calls claim() directly on the Aquarius pool.
+   */
+  private async claimPoolRewardsDirect(): Promise<void> {
+    const poolContract = new StellarSdk.Contract(this.aquaBlubPoolId);
+    const userAddress = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
     const operation = poolContract.call('claim', userAddress);
 
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
     await this.pollTransactionStatus(response.hash);
 
-    this.logger.log(`Pool claim submitted: tx=${response.hash}`);
+    this.logger.log(`Direct pool claim submitted: tx=${response.hash}`);
   }
 
   /**
@@ -520,12 +586,14 @@ export class StakingRewardService {
     );
 
     let minBlubOut = 1n; // fallback: accept any output
+    let simulatedExpectedOut = 0n; // track for fallback — prefer over inputAmount
     try {
       const simResult = await this.simulateTransaction(simulateOp);
       const expectedOut = BigInt(
         StellarSdk.scValToNative(simResult.result.retval) || 0,
       );
       if (expectedOut > 0n) {
+        simulatedExpectedOut = expectedOut;
         minBlubOut = (expectedOut * 95n) / 100n; // 5% slippage on real price
         this.logger.log(
           `Swap simulation: expected ${expectedOut} BLUB, min ${minBlubOut} BLUB`,
@@ -552,16 +620,31 @@ export class StakingRewardService {
     const response = await this.server.sendTransaction(tx);
     const confirmed = await this.pollTransactionStatus(response.hash);
 
-    // Parse BLUB amount received from swap
-    return this.parseSwapOutput(confirmed, aquaAmount);
+    // Parse BLUB amount received from swap.
+    // Pass 0n as the fallback indicator — if parsing fails we use the simulation estimate.
+    // NEVER fall back to aquaAmount: BLUB and AQUA are different tokens with different prices.
+    const parsed = this.parseSwapOutput(confirmed, 0n);
+    if (parsed > 0n) {
+      return parsed;
+    }
+    if (simulatedExpectedOut > 0n) {
+      // Apply conservative 5% discount to simulation estimate
+      const conservative = (simulatedExpectedOut * 95n) / 100n;
+      this.logger.warn(`Using simulation estimate as fallback: ${conservative} BLUB`);
+      return conservative;
+    }
+    // Last resort: 0 (caller will skip distribution)
+    this.logger.error('Could not determine BLUB received from swap — returning 0 to skip distribution');
+    return 0n;
   }
 
   /**
-   * Parse swap output amount from transaction result
+   * Parse swap output amount from transaction result.
+   * Returns 0n if parsing fails — caller must handle the fallback, NOT this method.
+   * Never assume 1:1 between input and output tokens.
    */
-  private parseSwapOutput(txResult: any, inputAmount: bigint): bigint {
+  private parseSwapOutput(txResult: any, _fallback: bigint): bigint {
     try {
-      // Try return value first
       if (txResult.returnValue) {
         const value = StellarSdk.scValToNative(txResult.returnValue);
         // Router returns array of amounts [inputAmount, outputAmount]
@@ -570,16 +653,10 @@ export class StakingRewardService {
         }
         return BigInt(value || 0);
       }
-
-      // Fallback: assume 1:1 ratio (will be corrected by actual balance check)
-      this.logger.warn(
-        'Could not parse swap output, using input amount as estimate',
-      );
-      return inputAmount;
     } catch (error) {
       this.logger.warn(`Failed to parse swap output: ${error.message}`);
-      return inputAmount;
     }
+    return 0n; // Caller decides the fallback
   }
 
   /**
@@ -588,28 +665,46 @@ export class StakingRewardService {
    */
   private async addRewardsToStakingContract(blubAmount: bigint): Promise<void> {
     const stakingContract = new StellarSdk.Contract(this.stakingContractId);
-
-    // First, transfer BLUB from admin to staking contract
-    // The add_rewards function will handle the transfer internally,
-    // but we need to approve the transfer first
     const blubContract = new StellarSdk.Contract(this.blubTokenId);
 
+    // Retry helper for 429 rate-limit errors
+    const withRetry = async <T>(fn: () => Promise<T>, label: string, maxTries = 3): Promise<T> => {
+      for (let i = 1; i <= maxTries; i++) {
+        try {
+          return await fn();
+        } catch (err: any) {
+          const is429 = err?.response?.status === 429 || err?.message?.includes('429');
+          if (is429 && i < maxTries) {
+            const delay = 5000 * i;
+            this.logger.warn(`${label}: 429 rate limit, retrying in ${delay}ms (attempt ${i}/${maxTries})`);
+            await this.sleep(delay);
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
+
     // Approve staking contract to spend BLUB.
-    // expiry_ledger is a ledger number (not a timestamp); ~720 ledgers ≈ 1 hour at 5s/ledger.
-    const latestLedger = (await this.server.getLatestLedger()).sequence;
+    // expiry_ledger is a ledger number; ~720 ledgers ≈ 1 hour at 5s/ledger.
+    const latestLedger = await withRetry(
+      () => this.server.getLatestLedger().then(r => r.sequence),
+      'getLatestLedger',
+    );
     const approveOp = blubContract.call(
       'approve',
-      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
-        type: 'address',
-      }),
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
       StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
       StellarSdk.nativeToScVal(blubAmount, { type: 'i128' }),
       StellarSdk.nativeToScVal(latestLedger + 720, { type: 'u32' }),
     );
 
-    let approveTx = await this.buildAndSignTransaction(approveOp);
-    let approveResponse = await this.server.sendTransaction(approveTx);
+    const approveTx = await withRetry(() => this.buildAndSignTransaction(approveOp), 'approve-build');
+    const approveResponse = await withRetry(() => this.server.sendTransaction(approveTx), 'approve-send');
     await this.pollTransactionStatus(approveResponse.hash);
+
+    // Small delay between approve and add_rewards to stay under rate limit
+    await this.sleep(3000);
 
     // Call add_rewards on staking contract
     const addRewardsOp = stakingContract.call(
@@ -698,7 +793,7 @@ export class StakingRewardService {
     adminAddress: string;
     stakingContract: string;
   }> {
-    const pendingRewards = await this.getPendingRewards();
+    const pendingRewards = await this.getPendingRewardsFor(this.stakingContractId) || await this.getPendingRewardsFor(this.adminKeypair.publicKey());
     return {
       pendingRewards: pendingRewards.toString(),
       adminAddress: this.adminKeypair.publicKey(),

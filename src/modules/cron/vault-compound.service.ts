@@ -106,11 +106,12 @@ export class VaultCompoundService {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        // STEP 1: Claim rewards — contract sends 70% AQUA to admin wallet
+        // STEP 1: Claim rewards — contract sends 70% AQUA to manager wallet
         const contract = new StellarSdk.Contract(this.stakingContractId);
+        const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
         const poolIdU32 = StellarSdk.nativeToScVal(poolId, { type: 'u32' });
 
-        const operation = contract.call('claim_and_compound', poolIdU32);
+        const operation = contract.call('claim_and_compound', managerScVal, poolIdU32);
         const tx = await this.buildAndSignTransaction(operation);
         const response = await this.server.sendTransaction(tx);
         const confirmed = await this.pollTransactionStatus(response.hash);
@@ -306,9 +307,11 @@ export class VaultCompoundService {
     amountB: bigint,
   ): Promise<bigint> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
+    const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
 
     const operation = contract.call(
       'admin_compound_deposit',
+      managerScVal,
       StellarSdk.nativeToScVal(poolId, { type: 'u32' }),
       StellarSdk.nativeToScVal(amountA, { type: 'i128' }),
       StellarSdk.nativeToScVal(amountB, { type: 'i128' }),
