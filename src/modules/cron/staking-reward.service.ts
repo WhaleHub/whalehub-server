@@ -378,15 +378,20 @@ export class StakingRewardService {
 
       // Step 1: Check pending rewards — try staking contract first (LP moved there),
       // fall back to admin wallet (old LP holder).
+      // Minimum 10 AQUA (7 decimals) pending before bothering to claim.
+      // Pool rewards accumulate every second — without this threshold,
+      // every cron run would claim dust and waste gas on swap + add_rewards.
+      const MIN_REWARD_THRESHOLD = 100_000_000n; // 10 AQUA
+
       const contractRewards = await this.getPendingRewardsFor(this.stakingContractId);
       const adminRewards = await this.getPendingRewardsFor(this.adminKeypair.publicKey());
       this.logger.log(`Pending rewards — contract: ${contractRewards}, admin: ${adminRewards}`);
 
-      const lpInContract = contractRewards > 0n;
-      const lpInAdmin = adminRewards > 0n;
+      const lpInContract = contractRewards >= MIN_REWARD_THRESHOLD;
+      const lpInAdmin = adminRewards >= MIN_REWARD_THRESHOLD;
 
       if (!lpInContract && !lpInAdmin) {
-        this.logger.log('No rewards to claim. Skipping...');
+        this.logger.log(`No rewards above threshold (${MIN_REWARD_THRESHOLD}). Skipping...`);
         return;
       }
 
@@ -409,8 +414,8 @@ export class StakingRewardService {
       const receivedAqua = aquaAfterClaim > aquaBeforeClaim ? aquaAfterClaim - aquaBeforeClaim : 0n;
       this.logger.log(`AQUA received (balance delta): ${receivedAqua}`);
 
-      if (receivedAqua <= 0n) {
-        this.logger.log('No AQUA received after claim. Skipping distribution...');
+      if (receivedAqua < MIN_REWARD_THRESHOLD) {
+        this.logger.log(`AQUA received (${receivedAqua}) below threshold (${MIN_REWARD_THRESHOLD}). Skipping distribution...`);
         return;
       }
 
@@ -451,11 +456,11 @@ export class StakingRewardService {
       }
 
       // Step 5: Distribute BLUB to stakers.
-      // Hard cap: never distribute more than 20,000 BLUB in a single run (7 decimals).
-      const MAX_BLUB_PER_RUN = 200_000_000_000n; // 20,000 BLUB
+      // Hard cap: never distribute more than 100,000 BLUB in a single run (7 decimals).
+      const MAX_BLUB_PER_RUN = 1_000_000_000_000n; // 100,000 BLUB
       if (blubAmount > MAX_BLUB_PER_RUN) {
         this.logger.error(
-          `BLUB amount ${blubAmount} exceeds hard cap ${MAX_BLUB_PER_RUN} (20,000 BLUB). Capping.`,
+          `BLUB amount ${blubAmount} exceeds hard cap ${MAX_BLUB_PER_RUN} (100,000 BLUB). Capping.`,
         );
         blubAmount = MAX_BLUB_PER_RUN;
       }
