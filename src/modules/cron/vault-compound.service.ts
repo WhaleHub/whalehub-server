@@ -55,11 +55,12 @@ export class VaultCompoundService {
         return;
       }
 
-      // Process each pool
+      // Process each pool (skip pool 0 — handled by StakingRewardService
+      // which splits pool 0 rewards between POL staker distribution and vault compounding)
       let successCount = 0;
       let failCount = 0;
 
-      for (let poolId = 0; poolId < poolCount; poolId++) {
+      for (let poolId = 1; poolId < poolCount; poolId++) {
         try {
           await this.compoundPool(poolId);
           successCount++;
