@@ -139,17 +139,20 @@ export class StakingRewardService {
 
         try {
           await this.processPolDepositEvent(event);
-          this.processedTxHashes.add(eventId);
-
-          // Keep set size manageable
-          if (this.processedTxHashes.size > 10000) {
-            const entries = Array.from(this.processedTxHashes);
-            this.processedTxHashes = new Set(entries.slice(-5000));
-          }
         } catch (error) {
           this.logger.error(
             `Failed to process event ${eventId}: ${error.message}`,
           );
+        }
+
+        // Mark as processed regardless of success/failure to prevent infinite retries
+        // (e.g. admin has 0 AQUA — retrying won't help)
+        this.processedTxHashes.add(eventId);
+
+        // Keep set size manageable
+        if (this.processedTxHashes.size > 10000) {
+          const entries = Array.from(this.processedTxHashes);
+          this.processedTxHashes = new Set(entries.slice(-5000));
         }
       }
 
@@ -183,6 +186,23 @@ export class StakingRewardService {
 
       if (aquaAmount <= 0n || blubAmount <= 0n) {
         this.logger.warn('Invalid POL deposit amounts, skipping');
+        return;
+      }
+
+      // Check admin AQUA balance before attempting deposit
+      const aquaTokenId = this.configService.get<string>('AQUA_TOKEN_ID');
+      const aquaContract = new StellarSdk.Contract(aquaTokenId);
+      const balanceOp = aquaContract.call(
+        'balance',
+        StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
+      );
+      const balanceResult = await this.simulateTransaction(balanceOp);
+      const adminAqua = BigInt(StellarSdk.scValToNative(balanceResult.result.retval) || 0);
+
+      if (adminAqua < aquaAmount) {
+        this.logger.warn(
+          `Insufficient AQUA for POL deposit: need=${aquaAmount}, have=${adminAqua}. Skipping.`,
+        );
         return;
       }
 
