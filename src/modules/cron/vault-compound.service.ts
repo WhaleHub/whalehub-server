@@ -38,8 +38,8 @@ export class VaultCompoundService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC
    */
-  @Cron(CronExpression.EVERY_6_HOURS, {
-    name: 'vault-compound-4x-daily',
+  @Cron(CronExpression.EVERY_2_HOURS, {
+    name: 'vault-compound-every-2h',
     timeZone: 'UTC',
   })
   async handleVaultCompound() {
