@@ -7,16 +7,16 @@ import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
 @Injectable()
 export class AppService {
   constructor(
-    @InjectRepository(PoolsEntity)
-    private poolRepository: Repository<PoolsEntity>,
+    // @InjectRepository(PoolsEntity)
+    // private poolRepository: Repository<PoolsEntity>,
 
-    @InjectRepository(LpBalanceEntity)
-    private lpRepository: Repository<LpBalanceEntity>,
+    // @InjectRepository(LpBalanceEntity)
+    // private lpRepository: Repository<LpBalanceEntity>,
   ) {}
 
   async getAppInfo() {
-    const pools = await this.poolRepository.find();
-    const lp_balances = await this.lpRepository.find();
-    return { pools, lp_balances };
+    // const pools = await this.poolRepository.find();
+    // const lp_balances = await this.lpRepository.find();
+    // return { pools, lp_balances };
   }
 }

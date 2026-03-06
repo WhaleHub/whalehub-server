@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 
@@ -38,7 +38,7 @@ export class VaultCompoundService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC
    */
-  @Cron('0 0,6,12,18 * * *', {
+  @Cron(CronExpression.EVERY_6_HOURS, {
     name: 'vault-compound-4x-daily',
     timeZone: 'UTC',
   })
@@ -55,11 +55,12 @@ export class VaultCompoundService {
         return;
       }
 
-      // Process each pool
+      // Process each pool (skip pool 0 — handled by StakingRewardService
+      // which splits pool 0 rewards between POL staker distribution and vault compounding)
       let successCount = 0;
       let failCount = 0;
 
-      for (let poolId = 0; poolId < poolCount; poolId++) {
+      for (let poolId = 1; poolId < poolCount; poolId++) {
         try {
           await this.compoundPool(poolId);
           successCount++;
@@ -96,43 +97,86 @@ export class VaultCompoundService {
   }
 
   /**
-   * Compound a single pool with retry logic
+   * Compound a single pool:
+   * 1. Call claim_and_compound on contract (claims AQUA, sends 30% to treasury, 70% to admin)
+   * 2. Swap the AQUA in admin wallet to both pool tokens
+   * 3. Call admin_compound_deposit to deposit both tokens back into the pool
    */
   private async compoundPool(poolId: number, maxRetries = 3): Promise<void> {
     this.logger.log(`Compounding pool ${poolId}...`);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // STEP 1: Claim rewards — contract sends 70% AQUA to manager wallet
         const contract = new StellarSdk.Contract(this.stakingContractId);
+        const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
         const poolIdU32 = StellarSdk.nativeToScVal(poolId, { type: 'u32' });
 
-        const operation = contract.call('claim_and_compound', poolIdU32);
-
+        const operation = contract.call('claim_and_compound', managerScVal, poolIdU32);
         const tx = await this.buildAndSignTransaction(operation);
         const response = await this.server.sendTransaction(tx);
-
         const confirmed = await this.pollTransactionStatus(response.hash);
 
-        // Parse events to check if swap is needed
-        const events = this.parseCompoundEvents(confirmed);
+        // Parse return value: (total_rewards, treasury_amount, compound_amount)
+        const returnValue = this.parseClaimReturnValue(confirmed);
 
-        if (events.needSwap) {
-          this.logger.log(
-            `Pool ${poolId} requires token swap: ${events.swapType}`,
-          );
-          await this.handleTokenSwap(poolId, events);
-
-          // Call claim_and_compound again after swap to complete deposit
-          this.logger.log(`Re-compounding pool ${poolId} after swap...`);
-          await this.compoundPool(poolId, 1); // Only 1 retry for re-compound
-        } else if (events.compounded) {
-          this.logger.log(
-            `Pool ${poolId} compounded: ${events.lpSharesMinted} LP shares, ` +
-              `Total: ${events.totalLp}, Rewards: ${events.totalRewards}`,
-          );
-        } else if (events.noReward) {
+        if (returnValue.totalRewards <= 0n) {
           this.logger.log(`Pool ${poolId}: No rewards to claim`);
+          return;
         }
+
+        this.logger.log(
+          `Pool ${poolId} claimed: total=${returnValue.totalRewards}, ` +
+            `treasury=${returnValue.treasuryAmount}, compound=${returnValue.compoundAmount}`,
+        );
+
+        if (returnValue.compoundAmount <= 0n) {
+          this.logger.log(`Pool ${poolId}: No compound amount after treasury split`);
+          return;
+        }
+
+        // STEP 2: Get pool info to know which tokens to swap to
+        const poolInfo = await this.getPoolInfo(poolId);
+        const aquaTokenId = this.configService.get<string>('AQUA_TOKEN_ID');
+        const routerContractId = this.configService.get<string>('AQUARIUS_ROUTER_CONTRACT_ID');
+
+        const tokenAIsAqua = poolInfo.token_a === aquaTokenId;
+        const tokenBIsAqua = poolInfo.token_b === aquaTokenId;
+
+        let amountA = 0n;
+        let amountB = 0n;
+
+        if (tokenAIsAqua && tokenBIsAqua) {
+          // Both tokens are AQUA (shouldn't happen)
+          amountA = returnValue.compoundAmount / 2n;
+          amountB = returnValue.compoundAmount - amountA;
+        } else if (tokenAIsAqua) {
+          // token_a is AQUA — keep half, swap half to token_b
+          amountA = returnValue.compoundAmount / 2n;
+          const swapAmount = returnValue.compoundAmount - amountA;
+          amountB = await this.swapTokens(routerContractId, aquaTokenId, poolInfo.token_b, swapAmount);
+        } else if (tokenBIsAqua) {
+          // token_b is AQUA — keep half, swap half to token_a
+          amountB = returnValue.compoundAmount / 2n;
+          const swapAmount = returnValue.compoundAmount - amountB;
+          amountA = await this.swapTokens(routerContractId, aquaTokenId, poolInfo.token_a, swapAmount);
+        } else {
+          // Neither token is AQUA — swap half to each
+          const halfAmount = returnValue.compoundAmount / 2n;
+          const otherHalf = returnValue.compoundAmount - halfAmount;
+          amountA = await this.swapTokens(routerContractId, aquaTokenId, poolInfo.token_a, halfAmount);
+          amountB = await this.swapTokens(routerContractId, aquaTokenId, poolInfo.token_b, otherHalf);
+        }
+
+        this.logger.log(
+          `Pool ${poolId} swapped: amountA=${amountA}, amountB=${amountB}`,
+        );
+
+        // STEP 3: Deposit both tokens back into the pool via contract
+        const lpMinted = await this.adminCompoundDeposit(poolId, amountA, amountB);
+        this.logger.log(
+          `Pool ${poolId} compound complete: ${lpMinted} LP shares minted`,
+        );
 
         return; // Success
       } catch (error) {
@@ -150,96 +194,77 @@ export class VaultCompoundService {
   }
 
   /**
-   * Handle token swaps for non-AQUA pairs
-   * This function performs swaps via Aquarius AMM
+   * Parse the return value from claim_and_compound: (total_rewards, treasury_amount, compound_amount)
    */
-  private async handleTokenSwap(poolId: number, swapInfo: any): Promise<void> {
-    this.logger.log(`Handling token swap for pool ${poolId}...`);
-
-    const poolInfo = await this.getPoolInfo(poolId);
-    const aquaAmount = swapInfo.aquaAmount;
-
-    // Get Aquarius Router contract for swaps
-    const routerContractId = this.configService.get<string>(
-      'AQUARIUS_ROUTER_CONTRACT_ID',
-    );
-
-    if (swapInfo.swapType === 'to_a') {
-      // Swap AQUA to token_a
-      await this.swapTokens(
-        routerContractId,
-        this.configService.get<string>('AQUA_TOKEN_ID'),
-        poolInfo.token_a,
-        aquaAmount / 2, // Swap half
-      );
-    } else if (swapInfo.swapType === 'to_b') {
-      // Swap AQUA to token_b
-      await this.swapTokens(
-        routerContractId,
-        this.configService.get<string>('AQUA_TOKEN_ID'),
-        poolInfo.token_b,
-        aquaAmount / 2, // Swap half
-      );
-    } else if (swapInfo.swapType === 'to_both') {
-      // Swap half AQUA to token_a, half to token_b
-      await this.swapTokens(
-        routerContractId,
-        this.configService.get<string>('AQUA_TOKEN_ID'),
-        poolInfo.token_a,
-        aquaAmount / 2,
-      );
-
-      await this.swapTokens(
-        routerContractId,
-        this.configService.get<string>('AQUA_TOKEN_ID'),
-        poolInfo.token_b,
-        aquaAmount / 2,
-      );
+  private parseClaimReturnValue(txResult: any): {
+    totalRewards: bigint;
+    treasuryAmount: bigint;
+    compoundAmount: bigint;
+  } {
+    try {
+      if (txResult.returnValue) {
+        const value = StellarSdk.scValToNative(txResult.returnValue);
+        if (Array.isArray(value) && value.length >= 3) {
+          return {
+            totalRewards: BigInt(value[0] || 0),
+            treasuryAmount: BigInt(value[1] || 0),
+            compoundAmount: BigInt(value[2] || 0),
+          };
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to parse claim return value: ${error.message}`);
     }
-
-    this.logger.log(`Token swap completed for pool ${poolId}`);
+    return { totalRewards: 0n, treasuryAmount: 0n, compoundAmount: 0n };
   }
 
   /**
-   * Swap tokens via Aquarius Router with retry logic
+   * Swap tokens via Aquarius Router
+   * Returns the amount of output tokens received
    */
   private async swapTokens(
     routerContractId: string,
     fromTokenId: string,
     toTokenId: string,
-    amount: number,
+    amount: bigint,
     maxRetries = 3,
-  ): Promise<void> {
+  ): Promise<bigint> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const routerContract = new StellarSdk.Contract(routerContractId);
 
-        const amountI128 = StellarSdk.nativeToScVal(Math.floor(amount * 1e7), {
-          type: 'i128',
-        });
-        const minAmount = StellarSdk.nativeToScVal(0, { type: 'i128' }); // Allow any slippage for auto-compound
+        // Build token pair vec
+        const tokensVec = StellarSdk.xdr.ScVal.scvVec([
+          StellarSdk.nativeToScVal(fromTokenId, { type: 'address' }),
+          StellarSdk.nativeToScVal(toTokenId, { type: 'address' }),
+        ]);
 
-        // Build path: [fromToken, toToken]
-        const path = StellarSdk.nativeToScVal([fromTokenId, toTokenId], {
-          type: 'vec',
-        });
+        // Pool index for the pair
+        const poolIndex = Buffer.from(
+          '0240dd5b4021e9373c226b8810d95628a38fa8e46a6356c57655688f0f62b5cf',
+          'hex',
+        );
+
+        // Allow 3% slippage for auto-compound
+        const minOut = (amount * 97n) / 100n;
 
         const operation = routerContract.call(
-          'swap_exact_tokens_for_tokens',
-          amountI128,
-          minAmount,
-          path,
-          StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
-          StellarSdk.nativeToScVal(Math.floor(Date.now() / 1000) + 300, {
-            type: 'u64',
-          }), // 5 min deadline
+          'swap',
+          StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
+          tokensVec,
+          StellarSdk.nativeToScVal(fromTokenId, { type: 'address' }),
+          StellarSdk.nativeToScVal(toTokenId, { type: 'address' }),
+          StellarSdk.nativeToScVal(poolIndex, { type: 'bytes' }),
+          StellarSdk.nativeToScVal(amount, { type: 'u128' }),
+          StellarSdk.nativeToScVal(minOut, { type: 'u128' }),
         );
 
         const tx = await this.buildAndSignTransaction(operation);
         const response = await this.server.sendTransaction(tx);
+        const confirmed = await this.pollTransactionStatus(response.hash);
 
-        await this.pollTransactionStatus(response.hash);
-        return; // Success
+        // Parse output amount
+        return this.parseSwapOutput(confirmed, amount);
       } catch (error) {
         const isTimeout = error.message?.includes('timeout');
         if (isTimeout && attempt < maxRetries) {
@@ -250,6 +275,62 @@ export class VaultCompoundService {
         throw error;
       }
     }
+    return 0n;
+  }
+
+  /**
+   * Parse swap output amount from transaction result
+   */
+  private parseSwapOutput(txResult: any, inputAmount: bigint): bigint {
+    try {
+      if (txResult.returnValue) {
+        const value = StellarSdk.scValToNative(txResult.returnValue);
+        if (Array.isArray(value) && value.length >= 2) {
+          return BigInt(value[value.length - 1] || 0);
+        }
+        return BigInt(value || 0);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to parse swap output: ${error.message}`);
+    }
+    // Fallback: assume 1:1 (will be corrected by actual balance)
+    return inputAmount;
+  }
+
+  /**
+   * Call admin_compound_deposit on the staking contract to deposit
+   * both tokens into the Aquarius pool on behalf of the contract.
+   * Returns LP shares minted.
+   */
+  private async adminCompoundDeposit(
+    poolId: number,
+    amountA: bigint,
+    amountB: bigint,
+  ): Promise<bigint> {
+    const contract = new StellarSdk.Contract(this.stakingContractId);
+    const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
+
+    const operation = contract.call(
+      'admin_compound_deposit',
+      managerScVal,
+      StellarSdk.nativeToScVal(poolId, { type: 'u32' }),
+      StellarSdk.nativeToScVal(amountA, { type: 'i128' }),
+      StellarSdk.nativeToScVal(amountB, { type: 'i128' }),
+    );
+
+    const tx = await this.buildAndSignTransaction(operation);
+    const response = await this.server.sendTransaction(tx);
+    const confirmed = await this.pollTransactionStatus(response.hash);
+
+    try {
+      if (confirmed.returnValue) {
+        const value = StellarSdk.scValToNative(confirmed.returnValue);
+        return BigInt(value || 0);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to parse compound deposit return: ${error.message}`);
+    }
+    return 0n;
   }
 
   /**
@@ -265,263 +346,6 @@ export class VaultCompoundService {
     return StellarSdk.scValToNative(result.result.retval);
   }
 
-  /**
-   * Parse compound events from transaction result
-   *
-   * According to Stellar's getTransaction API, events are at the top level:
-   * - txResult.events.contractEventsXdr: Array of base64-encoded ContractEvent
-   * - txResult.events.transactionEventsXdr: Array of base64-encoded TransactionEvent
-   *
-   * @see https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getTransaction
-   */
-  private parseCompoundEvents(txResult: any): any {
-    const events = {
-      needSwap: false,
-      swapType: null,
-      aquaAmount: 0,
-      compounded: false,
-      lpSharesMinted: 0,
-      totalLp: 0,
-      totalRewards: 0,
-      noReward: false,
-    };
-
-    try {
-      // Method 1: Parse from top-level events (new API structure)
-      const contractEventsXdr = txResult.events?.contractEventsXdr || [];
-
-      if (contractEventsXdr.length > 0) {
-        for (const eventXdr of contractEventsXdr) {
-          try {
-            // Decode base64 XDR to ContractEvent
-            const contractEvent = StellarSdk.xdr.ContractEvent.fromXDR(
-              eventXdr,
-              'base64',
-            );
-
-            const body = contractEvent.body();
-            if (!body) continue;
-
-            // Try to access v0 - will throw if not v0 type
-            let v0;
-            try {
-              v0 = body.v0();
-            } catch {
-              continue; // Skip non-v0 events
-            }
-            const topics = v0.topics();
-            if (!topics || topics.length === 0) continue;
-
-            // Get first topic as event name (symbol)
-            const eventName = StellarSdk.scValToNative(topics[0]);
-
-            // Parse event data
-            const eventData = v0.data();
-            const data = eventData ? StellarSdk.scValToNative(eventData) : null;
-
-            this.logger.debug(
-              `Event: ${eventName}, Data: ${JSON.stringify(data)}`,
-            );
-
-            // Handle different event types from claim_and_compound
-            this.processEventData(eventName, data, events);
-          } catch (eventError) {
-            this.logger.debug(
-              `Failed to parse contract event: ${eventError.message}`,
-            );
-          }
-        }
-      }
-
-      // Method 2: Fallback to resultMetaXdr parsing (legacy support)
-      if (
-        contractEventsXdr.length === 0 &&
-        !events.needSwap &&
-        !events.compounded &&
-        !events.noReward
-      ) {
-        const resultMeta = txResult.resultMetaXdr;
-        if (resultMeta) {
-          try {
-            // Check if resultMetaXdr is already parsed or needs decoding
-            const meta =
-              typeof resultMeta === 'string'
-                ? StellarSdk.xdr.TransactionMeta.fromXDR(resultMeta, 'base64')
-                : resultMeta;
-
-            // Access v3 soroban meta if available (switch returns number directly)
-            const metaSwitch = meta.switch() as unknown as number;
-            if (metaSwitch >= 3) {
-              const metaValue = meta.value();
-              const sorobanMeta = metaValue.sorobanMeta?.() || null;
-
-              if (sorobanMeta) {
-                const sorobanEvents = sorobanMeta.events?.() || [];
-
-                for (const contractEvent of sorobanEvents) {
-                  try {
-                    const body = contractEvent.body();
-                    if (!body) continue;
-
-                    // Try to access v0 - will throw if not v0 type
-                    let v0;
-                    try {
-                      v0 = body.v0();
-                    } catch {
-                      continue;
-                    }
-                    const topics = v0.topics();
-                    if (!topics || topics.length === 0) continue;
-
-                    const eventName = StellarSdk.scValToNative(topics[0]);
-                    const eventData = v0.data();
-                    const data = eventData
-                      ? StellarSdk.scValToNative(eventData)
-                      : null;
-
-                    this.logger.debug(
-                      `Event (meta): ${eventName}, Data: ${JSON.stringify(data)}`,
-                    );
-
-                    this.processEventData(eventName, data, events);
-                  } catch (innerError) {
-                    this.logger.debug(
-                      `Failed to parse meta event: ${innerError.message}`,
-                    );
-                  }
-                }
-              }
-            }
-          } catch (metaError) {
-            this.logger.debug(
-              `Failed to parse resultMetaXdr: ${metaError.message}`,
-            );
-          }
-        }
-      }
-
-      // If no events found but transaction succeeded, assume compounded
-      if (!events.needSwap && !events.compounded && !events.noReward) {
-        events.compounded = true;
-      }
-    } catch (error) {
-      this.logger.warn(`Failed to parse compound events: ${error.message}`);
-      // Default to compounded on parse error (transaction likely succeeded)
-      events.compounded = true;
-    }
-
-    return events;
-  }
-
-  /**
-   * Process event data and update events object
-   *
-   * Contract emits events with these structures:
-   *
-   * 1. need_swap event:
-   *    - topics: (symbol_short!("need_swap"), pool_id)
-   *    - data: (swap_amount: i128, direction: Symbol)  // e.g., (1000000, "to_b")
-   *    - direction is one of: "to_a", "to_b", "to_both"
-   *
-   * 2. compound event - no rewards:
-   *    - topics: (symbol_short!("compound"), pool_id)
-   *    - data: symbol_short!("no_reward")  // Just a string, not a tuple
-   *
-   * 3. compound event - LP minted:
-   *    - topics: (symbol_short!("compound"), pool_id)
-   *    - data: (lp_shares_minted: i128, total_lp_tokens: i128)
-   *
-   * 4. compound event - final status:
-   *    - topics: (symbol_short!("compound"), pool_id)
-   *    - data: (total_rewards: i128, treasury_amount: i128, compound_amount: i128)
-   */
-  private processEventData(eventName: string, data: any, events: any): void {
-    // Normalize event name (scValToNative converts Symbol to string)
-    const normalizedName = String(eventName).toLowerCase().trim();
-
-    switch (normalizedName) {
-      case 'need_swap':
-        events.needSwap = true;
-        // Data is a tuple: [swap_amount, direction_symbol]
-        // scValToNative converts tuple to array, Symbol to string
-        if (Array.isArray(data) && data.length >= 2) {
-          events.aquaAmount = Number(data[0] || 0);
-          events.swapType = String(data[1] || ''); // "to_a", "to_b", "to_both"
-        } else if (data && typeof data === 'object') {
-          // Fallback for potential struct format
-          events.aquaAmount = Number(data[0] || data.amount || 0);
-          events.swapType = String(data[1] || data.direction || '');
-        }
-        this.logger.log(
-          `Need swap detected: amount=${events.aquaAmount}, type=${events.swapType}`,
-        );
-        break;
-
-      case 'compound':
-      case 'compounded':
-        // Check if data is the "no_reward" symbol (string after conversion)
-        if (typeof data === 'string') {
-          const dataStr = data.toLowerCase().trim();
-          if (dataStr === 'no_reward' || dataStr === 'no_rewards') {
-            events.noReward = true;
-            this.logger.log('Compound event: no rewards available');
-            return;
-          }
-        }
-
-        events.compounded = true;
-
-        // Data is a tuple - determine format by length
-        if (Array.isArray(data)) {
-          if (data.length === 2) {
-            // Format: (lp_shares_minted, total_lp_tokens)
-            events.lpSharesMinted = Number(data[0] || 0);
-            events.totalLp = Number(data[1] || 0);
-            this.logger.log(
-              `Compound LP: minted=${events.lpSharesMinted}, total=${events.totalLp}`,
-            );
-          } else if (data.length === 3) {
-            // Format: (total_rewards, treasury_amount, compound_amount)
-            events.totalRewards = Number(data[0] || 0);
-            // treasury_amount is data[1], compound_amount is data[2]
-            // We mainly care about totalRewards for logging
-            this.logger.log(
-              `Compound final: rewards=${events.totalRewards}, treasury=${data[1]}, compound=${data[2]}`,
-            );
-          } else if (data.length === 1) {
-            // Single value - might be LP shares or rewards
-            events.lpSharesMinted = Number(data[0] || 0);
-          }
-        } else if (data && typeof data === 'object') {
-          // Fallback for potential struct/map format
-          events.lpSharesMinted = Number(
-            data.lp_shares_minted || data.lp_minted || data[0] || 0,
-          );
-          events.totalLp = Number(
-            data.total_lp_tokens || data.total_lp || data[1] || 0,
-          );
-          events.totalRewards = Number(
-            data.total_rewards || data.rewards || data[2] || 0,
-          );
-        } else if (typeof data === 'number' || typeof data === 'bigint') {
-          // Single numeric value
-          events.lpSharesMinted = Number(data);
-        }
-        break;
-
-      case 'no_reward':
-      case 'no_rewards':
-        events.noReward = true;
-        this.logger.log('No reward event detected');
-        break;
-
-      default:
-        // Log unknown events for debugging
-        this.logger.debug(
-          `Unknown event: ${eventName}, data: ${JSON.stringify(data)}`,
-        );
-    }
-  }
 
   // ============================================================================
   // Helper Methods
@@ -592,11 +416,14 @@ export class VaultCompoundService {
 
         await this.sleep(2000);
       } catch (error) {
-        // Handle "Bad union switch: 4" - transaction succeeded but SDK can't parse
+        if (error.message?.includes('not found') || error.message?.includes('NOT_FOUND')) {
+          // Transaction not yet confirmed, keep polling
+          await this.sleep(2000);
+          continue;
+        }
         if (error.message?.includes('Bad union switch')) {
-          this.logger.warn(
-            `XDR parse error for ${hash}, assuming success: ${error.message}`,
-          );
+          // Stellar SDK XDR parse bug — transaction succeeded on-chain but SDK can't parse result
+          this.logger.warn(`XDR parse error (Bad union switch) for ${hash}, assuming success`);
           return { status: 'SUCCESS', hash };
         }
         throw error;
