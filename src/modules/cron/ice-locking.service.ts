@@ -231,14 +231,16 @@ export class IceLockingService implements OnModuleInit {
   ): Promise<number> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
 
+    const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
     const aquaAmountI128 = StellarSdk.nativeToScVal(
-      Math.floor(aquaAmount * 1e7),
+      BigInt(Math.floor(aquaAmount * 1e7)),
       { type: 'i128' },
     );
     const duration = StellarSdk.nativeToScVal(durationYears, { type: 'u64' });
 
     const operation = contract.call(
       'authorize_ice_lock',
+      managerScVal,
       aquaAmountI128,
       duration,
     );
@@ -307,7 +309,8 @@ export class IceLockingService implements OnModuleInit {
     const contract = new StellarSdk.Contract(this.stakingContractId);
     const lockIdU64 = StellarSdk.nativeToScVal(lockId, { type: 'u64' });
 
-    const operation = contract.call('transfer_authorized_aqua', lockIdU64);
+    const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
+    const operation = contract.call('transfer_authorized_aqua', managerScVal, lockIdU64);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -450,7 +453,8 @@ export class IceLockingService implements OnModuleInit {
    */
   private async syncContractIceBalances(maxRetries = 3): Promise<void> {
     const contract = new StellarSdk.Contract(this.stakingContractId);
-    const operation = contract.call('sync_all_ice_balances');
+    const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
+    const operation = contract.call('sync_all_ice_balances', managerScVal);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
