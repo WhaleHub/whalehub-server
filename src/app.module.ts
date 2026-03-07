@@ -21,7 +21,7 @@ import { ClaimableRecordsEntity } from './utils/typeorm/entities/claimableRecord
 import { PoolsEntity } from './utils/typeorm/entities/pools.entity';
 import { LpBalanceEntity } from './utils/typeorm/entities/lp-balances.entity';
 import { ScheduleModule } from '@nestjs/schedule';
-import { MemoryMonitorService } from './helpers/memory-monitor.service';
+
 import { UnlockAquaSecurityMiddleware } from './middleware/unlock-aqua-security.middleware';
 import { DataSource, DataSourceOptions } from 'typeorm';
 
@@ -117,7 +117,6 @@ class TestController {
   controllers: [AppController, TestController],
   providers: [
     AppService,
-    MemoryMonitorService,
   ],
 })
 export class AppModule implements NestModule {
