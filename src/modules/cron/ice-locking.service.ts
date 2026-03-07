@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
@@ -26,7 +26,7 @@ const MAX_FEE = '1000000';
  * 6. Sync contract's ICE balances
  */
 @Injectable()
-export class IceLockingService {
+export class IceLockingService implements OnModuleInit {
   private readonly logger = new Logger(IceLockingService.name);
   private readonly server: StellarSdk.SorobanRpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
