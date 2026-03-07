@@ -118,9 +118,6 @@ class TestController {
   providers: [
     AppService,
     MemoryMonitorService,
-    IceLockingService,
-    VaultCompoundService,
-    StakingRewardService,
   ],
 })
 export class AppModule implements NestModule {

@@ -76,11 +76,25 @@ export class IceLockingService {
   }
 
   /**
-   * Runs daily at 2:00 AM UTC
+   * Run once 30 minutes after startup to catch any pending AQUA
+   */
+  private startupTimerDone = false;
+  async onModuleInit() {
+    setTimeout(() => {
+      if (!this.startupTimerDone) {
+        this.startupTimerDone = true;
+        this.logger.log('30-minute startup timer fired, triggering ICE locking...');
+        this.handleDailyIceLocking();
+      }
+    }, 30 * 60 * 1000);
+  }
+
+  /**
+   * Runs every 4 hours
    * Can be manually triggered via endpoint if needed
    */
   @Cron('0 */4 * * *', {
-    name: 'ice-locking-daily',
+    name: 'ice-locking-every-4h',
     timeZone: 'UTC',
   })
   async handleDailyIceLocking() {
