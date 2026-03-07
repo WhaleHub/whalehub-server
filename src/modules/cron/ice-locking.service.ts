@@ -135,8 +135,7 @@ export class IceLockingService {
           `Claimable balance created for ${adminAquaBalance} AQUA already in admin wallet`,
         );
         await this.waitForIceTokens();
-        this.logger.log('ICE locking process completed for admin AQUA balance');
-        return;
+        this.logger.log('ICE locking completed for admin AQUA balance, continuing to check pending...');
       }
 
       // STEP 1: Get pending AQUA amount from staking contract
