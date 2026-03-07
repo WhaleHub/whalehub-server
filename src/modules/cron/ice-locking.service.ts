@@ -76,17 +76,18 @@ export class IceLockingService implements OnModuleInit {
   }
 
   /**
-   * Run once 30 minutes after startup to catch any pending AQUA
+   * Run once 10 minutes after startup to catch any pending AQUA
    */
   private startupTimerDone = false;
   async onModuleInit() {
+    this.logger.log('ICE locking service initialized, scheduling startup trigger in 10 minutes...');
     setTimeout(() => {
       if (!this.startupTimerDone) {
         this.startupTimerDone = true;
-        this.logger.log('30-minute startup timer fired, triggering ICE locking...');
+        this.logger.log('10-minute startup timer fired, triggering ICE locking...');
         this.handleDailyIceLocking();
       }
-    }, 30 * 60 * 1000);
+    }, 10 * 60 * 1000);
   }
 
   /**
