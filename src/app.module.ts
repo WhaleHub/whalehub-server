@@ -6,6 +6,7 @@ import {
   Controller,
   Post,
   Get,
+  Query,
 } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -29,6 +30,7 @@ import { DataSource, DataSourceOptions } from 'typeorm';
 import { IceLockingService } from './modules/cron/ice-locking.service';
 import { VaultCompoundService } from './modules/cron/vault-compound.service';
 import { StakingRewardService } from './modules/cron/staking-reward.service';
+import { StakingApyIndexerService } from './modules/cron/staking-apy-indexer.service';
 
 // Test controller for manual trigger of cron services
 @Controller('test')
@@ -80,6 +82,27 @@ class TestController {
   }
 }
 
+/**
+ * Public read-only endpoints consumed by the frontend.
+ * Kept in app.module.ts so the frontend has a stable path independent of the /test surface.
+ */
+@Controller('public')
+class PublicController {
+  constructor(
+    private readonly stakingApyIndexer: StakingApyIndexerService,
+  ) {}
+
+  @Get('staking-apy')
+  getStakingApy(@Query('window_days') windowDaysRaw?: string) {
+    // Clamp 1..30 — the in-memory buffer retains ~21 days (3× default window).
+    const parsed = windowDaysRaw ? Number(windowDaysRaw) : 7;
+    const windowDays = Number.isFinite(parsed)
+      ? Math.min(30, Math.max(1, Math.floor(parsed)))
+      : 7;
+    return this.stakingApyIndexer.getApyWindow(windowDays);
+  }
+}
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -114,7 +137,7 @@ class TestController {
     // TokenModule,
     CronModule,
   ],
-  controllers: [AppController, TestController],
+  controllers: [AppController, TestController, PublicController],
   providers: [
     AppService,
   ],

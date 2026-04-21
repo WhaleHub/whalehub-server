@@ -221,34 +221,69 @@ export class StakingRewardService {
   }
 
   /**
-   * Deposit AQUA + BLUB to AQUA/BLUB pool from admin wallet
+   * Deposit AQUA + BLUB as protocol-owned liquidity.
+   *
+   * LP shares accrue to the staking contract and are tracked in
+   * `ProtocolOwnedLiquidity.aqua_blub_lp_position`. Vault accounting
+   * (`pool_info.total_lp_tokens`) is untouched.
+   *
+   * Three txs: transfer AQUA, transfer BLUB, manual_deposit_pol.
+   * We cannot bundle because Soroban allows only one InvokeHostFunction per tx,
+   * and `manual_deposit_pol` reads the contract's token balance (not manager's).
    */
   private async depositToPool(
     aquaAmount: bigint,
     blubAmount: bigint,
   ): Promise<void> {
-    const poolContract = new StellarSdk.Contract(this.aquaBlubPoolId);
+    await this.transferFromManagerToContract(this.aquaTokenId, aquaAmount);
+    await this.transferFromManagerToContract(this.blubTokenId, blubAmount);
 
-    // Build deposit amounts Vec<u128> [aqua, blub]
-    const amountsVec = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.nativeToScVal(aquaAmount, { type: 'u128' }),
-      StellarSdk.nativeToScVal(blubAmount, { type: 'u128' }),
-    ]);
+    const stakingContract = new StellarSdk.Contract(this.stakingContractId);
+    const managerScVal = StellarSdk.nativeToScVal(
+      this.adminKeypair.publicKey(),
+      { type: 'address' },
+    );
 
-    const operation = poolContract.call(
-      'deposit',
-      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
-        type: 'address',
-      }),
-      amountsVec,
-      StellarSdk.nativeToScVal(0, { type: 'u128' }), // min_shares = 0 (accept any)
+    const operation = stakingContract.call(
+      'manual_deposit_pol',
+      managerScVal,
+      StellarSdk.nativeToScVal(aquaAmount, { type: 'i128' }),
+      StellarSdk.nativeToScVal(blubAmount, { type: 'i128' }),
     );
 
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
     await this.pollTransactionStatus(response.hash);
 
-    this.logger.log(`Deposited to pool: tx=${response.hash}`);
+    this.logger.log(
+      `POL deposited into staking contract: aqua=${aquaAmount} blub=${blubAmount} tx=${response.hash}`,
+    );
+  }
+
+  /**
+   * SAC transfer from the manager wallet to the staking contract.
+   * Used to stage tokens before calling `manual_deposit_pol`, which expects
+   * them to already be in the contract's balance.
+   */
+  private async transferFromManagerToContract(
+    tokenId: string,
+    amount: bigint,
+  ): Promise<void> {
+    const tokenContract = new StellarSdk.Contract(tokenId);
+    const operation = tokenContract.call(
+      'transfer',
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
+        type: 'address',
+      }),
+      StellarSdk.nativeToScVal(this.stakingContractId, { type: 'address' }),
+      StellarSdk.nativeToScVal(amount, { type: 'i128' }),
+    );
+    const tx = await this.buildAndSignTransaction(operation);
+    const response = await this.server.sendTransaction(tx);
+    await this.pollTransactionStatus(response.hash);
+    this.logger.debug(
+      `Manager → contract transfer: token=${tokenId} amount=${amount} tx=${response.hash}`,
+    );
   }
 
   /**
