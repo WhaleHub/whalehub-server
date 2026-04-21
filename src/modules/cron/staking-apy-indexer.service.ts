@@ -24,6 +24,11 @@ const POLL_INTERVAL_MS = 60_000;
 const LEDGER_SECONDS = 5; // conservative Soroban ledger cadence
 const BACKFILL_LEDGERS = Math.ceil((DEFAULT_WINDOW_SECONDS * 1.2) / LEDGER_SECONDS); // 7d + 20% headroom
 const MAX_BACKFILL_LEDGERS = 120_000; // RPC retention horizon
+// Expected cadence of `add_rewards` calls from StakingRewardService
+// (every 30 minutes via `handleStakingRewardDistribution`).
+// Each event represents rewards accrued over the preceding interval, so we
+// use this as the divisor contribution for the most recent event.
+const TYPICAL_REWARD_INTERVAL_SECONDS = 30 * 60;
 // Base64 of "rwd_add" as SCV_SYMBOL — copied from existing event polling pattern in staking-reward.service
 const RWD_ADD_TOPIC = 'AAAADwAAAAdyd2RfYWRkAA==';
 
@@ -78,11 +83,20 @@ export class StakingApyIndexerService implements OnModuleInit {
 
   /**
    * Rolling APY over the most recent `windowDays` days.
-   * Annualization: APY = (rewards_in_window / avg_total_staked) * (365.25 / windowDays) * 100.
+   * Annualization: APY = (rewards_in_window / avg_total_staked) * (YEAR / divisor) * 100.
+   *
+   * Divisor picks:
+   *   - If the indexer has collected at least `windowDays` of events, divide by the
+   *     full window → honest rolling rate.
+   *   - Otherwise the window isn't full yet (cold start / recent deploy): divide by
+   *     the observed span + one expected-interval tick, floored at MIN_DIVISOR.
+   *     This reports the implied rate from the events we do have, instead of reading
+   *     0% until the buffer fills.
    */
   getApyWindow(windowDays = 7): ApyWindowResult {
     const now = Math.floor(Date.now() / 1000);
-    const cutoff = now - windowDays * 24 * 3600;
+    const windowSeconds = windowDays * 24 * 3600;
+    const cutoff = now - windowSeconds;
     const inWindow = this.events.filter((e) => e.timestamp >= cutoff);
 
     if (inWindow.length === 0) {
@@ -106,12 +120,22 @@ export class StakingApyIndexerService implements OnModuleInit {
     }
     const avgStaked = stakedSum / BigInt(inWindow.length);
 
+    const oldestTs = inWindow[0].timestamp;
+    const latestTs = inWindow[inWindow.length - 1].timestamp;
+    const observedSpan = latestTs - oldestTs;
+    const isWindowFull = observedSpan >= windowSeconds * 0.9;
+    // observedSpan spans the first event to the last; each event covers one
+    // cadence interval of accumulation, so add one interval to the span.
+    const divisorSeconds = isWindowFull
+      ? windowSeconds
+      : observedSpan + TYPICAL_REWARD_INTERVAL_SECONDS;
+
     let apy = '--';
-    if (avgStaked > 0n) {
+    if (avgStaked > 0n && divisorSeconds > 0) {
       // Use floating point for the final ratio — precision loss here is fine for display.
       const rewardsF = Number(totalRewards);
       const stakedF = Number(avgStaked);
-      const rate = (rewardsF / stakedF) * (YEAR_SECONDS / (windowDays * 24 * 3600));
+      const rate = (rewardsF / stakedF) * (YEAR_SECONDS / divisorSeconds);
       apy = (rate * 100).toFixed(2);
     }
 
