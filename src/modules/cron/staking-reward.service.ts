@@ -327,38 +327,45 @@ export class StakingRewardService {
   }
 
   /**
-   * Check admin wallet balances and deposit any pending AQUA/BLUB to pool
-   * Minimum threshold to avoid dust deposits
+   * Check admin wallet balances and deposit any pending AQUA/BLUB to pool.
+   *
+   * Hard cap (`MAX_FALLBACK_AQUA`) prevents the SAC issuer-balance sentinel from
+   * causing an uncapped BLUB mint if this fallback ever fires on AQUA that
+   * `handleStakingRewardDistribution` should have processed itself. (Apr 2026
+   * incident: ~36k BLUB silently minted into POL across ~90 missed runs because
+   * the manager wallet *is* the BLUB issuer, so its `balance()` returns
+   * `i128::MAX` and the previous 1:1 match line minted whatever AQUA happened
+   * to be sitting there.)
    */
   private async checkAndDepositPendingPol(): Promise<void> {
     const MIN_AQUA_THRESHOLD = 1000000n; // 0.1 AQUA (7 decimals)
-    const MIN_BLUB_THRESHOLD = 1000000n; // 0.1 BLUB (7 decimals)
+    // Per-run cap on AQUA (and matched BLUB) the fallback may deposit. Sized to
+    // cover the largest expected single pol_dep event (10% AQUA from a user
+    // lock). Anything larger almost certainly came from a missed reward claim
+    // and should be handled by the reward distribution path, not minted as POL.
+    const MAX_FALLBACK_AQUA = 100_000_000_000n; // 10,000 AQUA
 
     try {
-      // Get admin wallet balances
       const aquaBalance = await this.getTokenBalance(this.aquaTokenId);
-      const blubBalance = await this.getTokenBalance(this.blubTokenId);
 
-      this.logger.debug(
-        `Admin balances: AQUA=${aquaBalance}, BLUB=${blubBalance}`,
-      );
+      this.logger.debug(`Admin AQUA balance: ${aquaBalance}`);
 
-      // Check if we have enough to deposit
-      if (
-        aquaBalance < MIN_AQUA_THRESHOLD ||
-        blubBalance < MIN_BLUB_THRESHOLD
-      ) {
+      if (aquaBalance < MIN_AQUA_THRESHOLD) {
         return; // Not enough to deposit
       }
 
-      // Calculate deposit amounts (use the smaller ratio to balance)
-      // Assume roughly 1:1 ratio for AQUA:BLUB in pool
-      const depositAqua = aquaBalance < blubBalance ? aquaBalance : blubBalance;
-      const depositBlub = depositAqua; // Match AQUA amount
-
-      if (depositAqua < MIN_AQUA_THRESHOLD) {
-        return;
+      // We deliberately do NOT read BLUB balance: blub-issuer-v2 is the SAC
+      // issuer and `balance()` returns the i128::MAX sentinel — meaningless for
+      // sizing a deposit. The matched BLUB is minted by the issuer transfer.
+      let depositAqua = aquaBalance;
+      if (depositAqua > MAX_FALLBACK_AQUA) {
+        this.logger.warn(
+          `POL fallback: AQUA balance ${depositAqua} exceeds cap ${MAX_FALLBACK_AQUA}. Capping. ` +
+            `Excess likely belongs to reward distribution, not POL.`,
+        );
+        depositAqua = MAX_FALLBACK_AQUA;
       }
+      const depositBlub = depositAqua; // 1:1 match (issuer mints to pair)
 
       this.logger.log(
         `Depositing pending POL: ${depositAqua} AQUA + ${depositBlub} BLUB`,
@@ -454,11 +461,10 @@ export class StakingRewardService {
       this.logger.log(`LP ratio — POL: ${polShare}/10000, Vault: ${vaultShare}/10000`);
 
       // Step 3: Claim via claim_and_compound (30% treasury, 70% to manager).
-      const aquaBeforeClaim = await this.getTokenBalance(this.aquaTokenId);
-      await this.claimViaStakingContract();
-      const aquaAfterClaim = await this.getTokenBalance(this.aquaTokenId);
-      const receivedAqua = aquaAfterClaim > aquaBeforeClaim ? aquaAfterClaim - aquaBeforeClaim : 0n;
-      this.logger.log(`AQUA received (balance delta): ${receivedAqua}`);
+      // The contract returns the compound_amount in its tuple — use that directly
+      // rather than a balance delta, which races with stale Soroban simulation state.
+      const receivedAqua = await this.claimViaStakingContract();
+      this.logger.log(`AQUA received from claim: ${receivedAqua}`);
 
       if (receivedAqua < MIN_REWARD_THRESHOLD) {
         this.logger.log(`AQUA received (${receivedAqua}) below threshold. Skipping...`);
@@ -549,9 +555,16 @@ export class StakingRewardService {
   /**
    * Claim rewards when LP is in the staking contract.
    * Calls claim_and_compound on the staking contract (pool_id=0 = BLUB-AQUA).
-   * Contract claims AQUA from Aquarius, sends 30% to treasury, 70% to manager.
+   * Contract claims AQUA from Aquarius, sends 30% to treasury, 70% to manager,
+   * and returns `(total_rewards, treasury_amount, compound_amount)`.
+   *
+   * Returns the `compound_amount` (AQUA sent to manager). Reading the tuple
+   * directly avoids a stale-balance-delta race: a post-claim simulated
+   * `balance()` can return pre-claim state for several seconds, which previously
+   * caused `add_rewards` to be skipped while the POL fallback re-injected
+   * the AQUA as fresh LP (minting matching BLUB).
    */
-  private async claimViaStakingContract(): Promise<void> {
+  private async claimViaStakingContract(): Promise<bigint> {
     const stakingContract = new StellarSdk.Contract(this.stakingContractId);
     const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
     const poolIdScVal = StellarSdk.nativeToScVal(0, { type: 'u32' }); // pool 0 = BLUB-AQUA
@@ -559,9 +572,63 @@ export class StakingRewardService {
     const operation = stakingContract.call('claim_and_compound', managerScVal, poolIdScVal);
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
-    await this.pollTransactionStatus(response.hash);
+    const confirmed = await this.pollTransactionStatus(response.hash);
 
     this.logger.log(`claim_and_compound submitted: tx=${response.hash}`);
+
+    const compoundAmount = this.parseClaimCompoundReturn(confirmed);
+    if (compoundAmount > 0n) {
+      this.logger.log(`claim_and_compound: manager received ${compoundAmount} AQUA (from tuple return)`);
+      return compoundAmount;
+    }
+
+    // Return-value parse failed (e.g. SDK XDR "Bad union switch" — pollTransactionStatus
+    // returns a synthetic SUCCESS without returnValue). Fall back to a retried balance
+    // read so we still pick up the AQUA instead of skipping.
+    return await this.readManagerAquaWithRetry();
+  }
+
+  /**
+   * Parse the `(total_rewards, treasury_amount, compound_amount)` tuple
+   * returned by `claim_and_compound`. Returns the manager-bound amount.
+   */
+  private parseClaimCompoundReturn(txResult: any): bigint {
+    try {
+      if (!txResult?.returnValue) return 0n;
+      const value = StellarSdk.scValToNative(txResult.returnValue);
+      if (Array.isArray(value) && value.length >= 3) {
+        return BigInt(value[2] || 0);
+      }
+      // Older SDK shapes can decode the tuple as an object
+      if (value && typeof value === 'object') {
+        const candidate = (value as any)[2] ?? (value as any).compound_amount;
+        if (candidate != null) return BigInt(candidate);
+      }
+    } catch (err: any) {
+      this.logger.debug(`parseClaimCompoundReturn failed: ${err.message}`);
+    }
+    return 0n;
+  }
+
+  /**
+   * Fallback when claim's tuple return is unavailable: poll the manager's AQUA
+   * balance until it actually changes (Soroban simulated balance can lag a few
+   * seconds after a tx confirms). Returns the observed delta or 0 after the
+   * timeout.
+   */
+  private async readManagerAquaWithRetry(): Promise<bigint> {
+    const baseline = await this.getTokenBalance(this.aquaTokenId);
+    for (let i = 0; i < 8; i++) {
+      await this.sleep(2500);
+      const current = await this.getTokenBalance(this.aquaTokenId);
+      if (current > baseline) {
+        const delta = current - baseline;
+        this.logger.log(`Manager AQUA delta observed after ${(i + 1) * 2.5}s: ${delta}`);
+        return delta;
+      }
+    }
+    this.logger.warn('Manager AQUA balance did not increase within retry window');
+    return 0n;
   }
 
   /**
