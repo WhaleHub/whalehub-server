@@ -23,7 +23,10 @@ const DEFAULT_WINDOW_SECONDS = 7 * 24 * 3600;
 const POLL_INTERVAL_MS = 60_000;
 const LEDGER_SECONDS = 5; // conservative Soroban ledger cadence
 const BACKFILL_LEDGERS = Math.ceil((DEFAULT_WINDOW_SECONDS * 1.2) / LEDGER_SECONDS); // 7d + 20% headroom
-const MAX_BACKFILL_LEDGERS = 120_000; // RPC retention horizon
+// Soroban mainnet RPC retains ~48k ledgers (~2.3d). Asking for more triggers
+// "startLedger must be within the ledger range" (-32600), backfill explodes,
+// and polling stalls forever. 36k ≈ 2d of headroom inside retention.
+const MAX_BACKFILL_LEDGERS = 36_000;
 // Expected cadence of `add_rewards` calls from StakingRewardService
 // (every 30 minutes via `handleStakingRewardDistribution`).
 // Each event represents rewards accrued over the preceding interval, so we
@@ -73,6 +76,14 @@ export class StakingApyIndexerService implements OnModuleInit {
       await this.backfill();
     } catch (err: any) {
       this.logger.warn(`Backfill failed, will catch up on first poll: ${err.message}`);
+      // poll() bails when lastSeenLedger=0, so we'd never recover.
+      // Anchor to the current ledger so polling picks up new events.
+      try {
+        const latest = (await this.server.getLatestLedger()).sequence;
+        this.lastSeenLedger = latest;
+      } catch (e: any) {
+        this.logger.warn(`Could not fetch latest ledger after backfill failure: ${e.message}`);
+      }
     }
     this.pollTimer = setInterval(() => {
       this.poll().catch((err) =>
@@ -85,13 +96,11 @@ export class StakingApyIndexerService implements OnModuleInit {
    * Rolling APY over the most recent `windowDays` days.
    * Annualization: APY = (rewards_in_window / avg_total_staked) * (YEAR / divisor) * 100.
    *
-   * Divisor picks:
-   *   - If the indexer has collected at least `windowDays` of events, divide by the
-   *     full window → honest rolling rate.
-   *   - Otherwise the window isn't full yet (cold start / recent deploy): divide by
-   *     the observed span + one expected-interval tick, floored at MIN_DIVISOR.
-   *     This reports the implied rate from the events we do have, instead of reading
-   *     0% until the buffer fills.
+   * Divisor: when at least 90% of the window is observed, use the full window;
+   * otherwise use observed span + one expected interval. We require a minimum
+   * observed span (`MIN_OBSERVED_SPAN_SECONDS`) before annualizing — otherwise
+   * a single reward event extrapolates to absurd numbers (e.g. 160%+) because
+   * `YEAR_SECONDS / 1800` is a ~17,500x multiplier.
    */
   getApyWindow(windowDays = 7): ApyWindowResult {
     const now = Math.floor(Date.now() / 1000);
@@ -124,14 +133,17 @@ export class StakingApyIndexerService implements OnModuleInit {
     const latestTs = inWindow[inWindow.length - 1].timestamp;
     const observedSpan = latestTs - oldestTs;
     const isWindowFull = observedSpan >= windowSeconds * 0.9;
-    // observedSpan spans the first event to the last; each event covers one
-    // cadence interval of accumulation, so add one interval to the span.
+    // Minimum observed span before we trust the rate enough to annualize.
+    // 6h covers ~12 reward distributions at the 30min cadence — enough to
+    // smooth single-event spikes that would otherwise project to >100% APY.
+    const MIN_OBSERVED_SPAN_SECONDS = 6 * 3600;
     const divisorSeconds = isWindowFull
       ? windowSeconds
       : observedSpan + TYPICAL_REWARD_INTERVAL_SECONDS;
 
     let apy = '--';
-    if (avgStaked > 0n && divisorSeconds > 0) {
+    const hasEnoughHistory = isWindowFull || observedSpan >= MIN_OBSERVED_SPAN_SECONDS;
+    if (hasEnoughHistory && avgStaked > 0n && divisorSeconds > 0) {
       // Use floating point for the final ratio — precision loss here is fine for display.
       const rewardsF = Number(totalRewards);
       const stakedF = Number(avgStaked);
