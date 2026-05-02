@@ -234,7 +234,17 @@ export class StakingApyIndexerService implements OnModuleInit {
   }
 
   private parseEvent(ev: any): RewardEvent | null {
-    const native = StellarSdk.scValToNative(ev.value);
+    // The Soroban RPC `getEvents` response delivers `value` as a base64-encoded
+    // ScVal XDR string. `scValToNative` only accepts a parsed `xdr.ScVal` —
+    // passing the string throws `scv.switch is not a function`, which the
+    // outer debug-level catch swallows, dropping every event silently. Decode
+    // the XDR first. Also tolerate the (rare) pre-parsed-object case.
+    const raw = ev.valueXdr ?? ev.value;
+    const sc =
+      typeof raw === 'string'
+        ? StellarSdk.xdr.ScVal.fromXDR(raw, 'base64')
+        : raw;
+    const native = StellarSdk.scValToNative(sc);
     // RewardsAddedEvent { amount, total_staked, reward_per_token, timestamp }
     const amount = BigInt(native.amount ?? native[0] ?? 0);
     const totalStaked = BigInt(native.total_staked ?? native[1] ?? 0);
