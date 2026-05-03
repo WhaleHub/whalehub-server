@@ -569,6 +569,12 @@ export class StakingRewardService {
     const managerScVal = StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' });
     const poolIdScVal = StellarSdk.nativeToScVal(0, { type: 'u32' }); // pool 0 = BLUB-AQUA
 
+    // Snapshot manager AQUA BEFORE submitting the claim so the fallback
+    // delta-read has a real baseline. Reading after confirmation gives a
+    // baseline that already includes the claimed AQUA → delta=0 → cron
+    // skipped add_rewards and the POL fallback re-injected the AQUA as LP.
+    const preClaimAqua = await this.getTokenBalance(this.aquaTokenId);
+
     const operation = stakingContract.call('claim_and_compound', managerScVal, poolIdScVal);
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
@@ -585,7 +591,7 @@ export class StakingRewardService {
     // Return-value parse failed (e.g. SDK XDR "Bad union switch" — pollTransactionStatus
     // returns a synthetic SUCCESS without returnValue). Fall back to a retried balance
     // read so we still pick up the AQUA instead of skipping.
-    return await this.readManagerAquaWithRetry();
+    return await this.readManagerAquaDelta(preClaimAqua);
   }
 
   /**
@@ -611,21 +617,20 @@ export class StakingRewardService {
   }
 
   /**
-   * Fallback when claim's tuple return is unavailable: poll the manager's AQUA
-   * balance until it actually changes (Soroban simulated balance can lag a few
-   * seconds after a tx confirms). Returns the observed delta or 0 after the
-   * timeout.
+   * Fallback when claim's tuple return is unavailable: read the manager's AQUA
+   * delta against a baseline captured BEFORE the claim transaction was
+   * submitted. Soroban simulated balance can lag a few seconds after a tx
+   * confirms, so we retry until the delta materialises or we time out.
    */
-  private async readManagerAquaWithRetry(): Promise<bigint> {
-    const baseline = await this.getTokenBalance(this.aquaTokenId);
+  private async readManagerAquaDelta(baseline: bigint): Promise<bigint> {
     for (let i = 0; i < 8; i++) {
-      await this.sleep(2500);
       const current = await this.getTokenBalance(this.aquaTokenId);
       if (current > baseline) {
         const delta = current - baseline;
         this.logger.log(`Manager AQUA delta observed after ${(i + 1) * 2.5}s: ${delta}`);
         return delta;
       }
+      await this.sleep(2500);
     }
     this.logger.warn('Manager AQUA balance did not increase within retry window');
     return 0n;
