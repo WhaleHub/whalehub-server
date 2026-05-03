@@ -137,9 +137,19 @@ export class StakingApyIndexerService implements OnModuleInit {
     // 6h covers ~12 reward distributions at the 30min cadence — enough to
     // smooth single-event spikes that would otherwise project to >100% APY.
     const MIN_OBSERVED_SPAN_SECONDS = 6 * 3600;
+    // Two divisor candidates:
+    //   spanDivisor — actual wall time covered by the events. Counts cron
+    //     outages as zero-reward time, dragging APY down (May 2026: a 43h
+    //     cron gap inside a 7d window pushed APY from ~19% to ~6%).
+    //   activeDivisor — each event treated as covering one expected interval,
+    //     so gaps don't count. Reflects the rate stakers earn when the cron
+    //     fires normally.
+    // Use min() so historical outages don't depress the displayed rate.
+    const spanDivisor = observedSpan + TYPICAL_REWARD_INTERVAL_SECONDS;
+    const activeDivisor = inWindow.length * TYPICAL_REWARD_INTERVAL_SECONDS;
     const divisorSeconds = isWindowFull
       ? windowSeconds
-      : observedSpan + TYPICAL_REWARD_INTERVAL_SECONDS;
+      : Math.min(spanDivisor, activeDivisor);
 
     let apy = '--';
     const hasEnoughHistory = isWindowFull || observedSpan >= MIN_OBSERVED_SPAN_SECONDS;
