@@ -197,11 +197,14 @@ export class StakingApyIndexerService implements OnModuleInit {
     let cursor: string | undefined;
     let totalIngested = 0;
     // The Soroban RPC server caps `getEvents` responses at ~24 events per call
-    // regardless of the `limit` we pass. The previous "events.length < limit
-    // → caught up" heuristic therefore broke after the first page and never
-    // paginated, leaving the indexer permanently stuck on the first ~24 events.
-    // Paginate via cursor; only stop when the response is empty or no cursor
-    // is returned. The 50-iteration cap is a safety bound.
+    // regardless of the `limit` we pass, and chunks pagination by ledger range
+    // — so intermediate pages can return 0 events while later pages still hold
+    // matches. Empty-page-as-stop therefore drops events: in May 2026 it left
+    // the indexer permanently 2 days behind because page 2 was empty but page
+    // 3 had today's batch.
+    //
+    // Stop only when the cursor stops advancing. The 50-iteration cap is a
+    // safety bound.
     for (let i = 0; i < 50; i++) {
       const params: any = {
         filters: [
@@ -218,12 +221,12 @@ export class StakingApyIndexerService implements OnModuleInit {
       else params.startLedger = startLedger;
       const resp: any = await this.server.getEvents(params);
 
-      if (!resp.events || resp.events.length === 0) {
-        if (resp.latestLedger) this.lastSeenLedger = resp.latestLedger;
-        break;
-      }
+      if (resp.latestLedger) this.lastSeenLedger = resp.latestLedger;
 
-      for (const ev of resp.events) {
+      const nextCursor: string | undefined = resp.cursor;
+      const events = resp.events || [];
+
+      for (const ev of events) {
         try {
           const parsed = this.parseEvent(ev);
           if (parsed) {
@@ -237,9 +240,9 @@ export class StakingApyIndexerService implements OnModuleInit {
         }
       }
 
-      if (resp.latestLedger) this.lastSeenLedger = resp.latestLedger;
-      cursor = resp.cursor;
-      if (!cursor) break;
+      // Stop when the cursor doesn't advance — that means we've caught up.
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = nextCursor;
     }
     if (totalIngested > 0) {
       this.events.sort((a, b) => a.timestamp - b.timestamp);
