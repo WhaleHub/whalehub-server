@@ -186,10 +186,14 @@ export class StakingApyIndexerService implements OnModuleInit {
   private async fetchAndIngest(startLedger: number): Promise<void> {
     let cursor: string | undefined;
     let totalIngested = 0;
-    // getEvents returns up to 100 per page — paginate via cursor.
+    // The Soroban RPC server caps `getEvents` responses at ~24 events per call
+    // regardless of the `limit` we pass. The previous "events.length < limit
+    // → caught up" heuristic therefore broke after the first page and never
+    // paginated, leaving the indexer permanently stuck on the first ~24 events.
+    // Paginate via cursor; only stop when the response is empty or no cursor
+    // is returned. The 50-iteration cap is a safety bound.
     for (let i = 0; i < 50; i++) {
-      const resp: any = await this.server.getEvents({
-        startLedger,
+      const params: any = {
         filters: [
           {
             type: 'contract',
@@ -198,8 +202,11 @@ export class StakingApyIndexerService implements OnModuleInit {
           },
         ],
         limit: 100,
-        cursor,
-      });
+      };
+      // RPC requires either startLedger OR cursor, not both.
+      if (cursor) params.cursor = cursor;
+      else params.startLedger = startLedger;
+      const resp: any = await this.server.getEvents(params);
 
       if (!resp.events || resp.events.length === 0) {
         if (resp.latestLedger) this.lastSeenLedger = resp.latestLedger;
@@ -221,8 +228,6 @@ export class StakingApyIndexerService implements OnModuleInit {
       }
 
       if (resp.latestLedger) this.lastSeenLedger = resp.latestLedger;
-      // If fewer than page size returned, we're caught up.
-      if (resp.events.length < 100) break;
       cursor = resp.cursor;
       if (!cursor) break;
     }
