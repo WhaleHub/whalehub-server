@@ -24,7 +24,7 @@ const EVENT_POLL_INTERVAL_MS = 30000;
  *    - When user locks AQUA, contract sends 10% AQUA + BLUB to admin
  *    - This service deposits those tokens to AQUA/BLUB pool (with ICE boost)
  *
- * 2. Pool 0 Reward Claim & Split (runs every 30 minutes):
+ * 2. Pool 0 Reward Claim & Split (runs every hour):
  *    - Claims all AQUA rewards from pool 0 (BLUB-AQUA) via claim_and_compound
  *    - Contract sends 30% to treasury, 70% to manager
  *    - Splits the 70% proportionally between POL LP and vault LP:
@@ -414,19 +414,37 @@ export class StakingRewardService {
   }
 
   /**
-   * Runs every 30 minutes to handle pool 0 (BLUB-AQUA) rewards.
+   * Runs every hour to handle pool 0 (BLUB-AQUA) rewards.
    *
    * Pool 0 contains both POL LP and vault user LP. claim_and_compound claims
    * all rewards at once (30% treasury handled by contract, 70% sent to manager).
    * We split the 70% proportionally:
    *   - POL share → swap to BLUB → add_rewards (staker distribution)
    *   - Vault share → swap half to BLUB, keep half AQUA → admin_compound_deposit
+   *
+   * Cadence was '*\/30 * * * *' (every 30 min, 48×/day) until 2026-05-10.
+   * Switched to hourly because the math difference between 24×/day and
+   * 48×/day continuous compounding is < 0.1% APY at any realistic APR, and
+   * halving the cron rate halves Soroban gas spend.
+   *
+   * Offset to minute 30 so we never collide with the ICE locking cron
+   * ('0 *\/4 * * *' at :00). Both grab the manager keypair and modify
+   * its AQUA balance; running them concurrently produces sequence-number
+   * races and lets the pre-flight POL sweep miss in-flight claim AQUA.
    */
-  @Cron('*/30 * * * *', {
+  @Cron('30 * * * *', {
     name: 'staking-reward-distribution',
     timeZone: 'UTC',
   })
   async handleStakingRewardDistribution() {
+    // Belt-and-braces guard. Schedule is already offset 30 min from the
+    // ICE-locking cron, but if that cron runs long, manual triggers fire
+    // mid-window, or someone changes the schedule, this prevents the
+    // sequence-number race outright.
+    if (this.isIceLockingActive) {
+      this.logger.log('ICE locking in progress, skipping reward distribution');
+      return;
+    }
     this.logger.log('Starting pool 0 reward claim & split...');
     this.isDistributing = true;
 

@@ -28,10 +28,11 @@ const BACKFILL_LEDGERS = Math.ceil((DEFAULT_WINDOW_SECONDS * 1.2) / LEDGER_SECON
 // and polling stalls forever. 36k ≈ 2d of headroom inside retention.
 const MAX_BACKFILL_LEDGERS = 36_000;
 // Expected cadence of `add_rewards` calls from StakingRewardService
-// (every 30 minutes via `handleStakingRewardDistribution`).
+// (every hour via `handleStakingRewardDistribution`; was 30 min until
+// 2026-05-10 — kept in sync with the cron schedule there).
 // Each event represents rewards accrued over the preceding interval, so we
 // use this as the divisor contribution for the most recent event.
-const TYPICAL_REWARD_INTERVAL_SECONDS = 30 * 60;
+const TYPICAL_REWARD_INTERVAL_SECONDS = 60 * 60;
 // Base64 of "rwd_add" as SCV_SYMBOL — copied from existing event polling pattern in staking-reward.service
 const RWD_ADD_TOPIC = 'AAAADwAAAAdyd2RfYWRkAA==';
 
