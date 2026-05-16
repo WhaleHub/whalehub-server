@@ -131,7 +131,7 @@ export class IceLockingService implements OnModuleInit {
         this.logger.log(
           `Admin wallet has ${adminAquaBalance} AQUA from previous transfer. Creating claimable balance directly...`,
         );
-        await this.createClaimableBalance(adminAquaBalance, 3);
+        await this.createClaimableBalance(adminAquaBalance, 5);
         this.logger.log(
           `Claimable balance created for ${adminAquaBalance} AQUA already in admin wallet`,
         );
@@ -149,8 +149,8 @@ export class IceLockingService implements OnModuleInit {
 
       this.logger.log(`Pending AQUA for ICE: ${pendingAqua}`);
 
-      // STEP 2: Authorize ICE lock (3 years for maximum ICE)
-      const lockId = await this.authorizeIceLock(pendingAqua, 3);
+      // STEP 2: Authorize ICE lock (5 years for maximum ICE; Aquarius caps multiplier at its own protocol max)
+      const lockId = await this.authorizeIceLock(pendingAqua, 5);
       this.logger.log(`ICE lock authorized with ID: ${lockId}`);
 
       // STEP 3: Transfer AQUA from contract to admin
@@ -158,7 +158,7 @@ export class IceLockingService implements OnModuleInit {
       this.logger.log(`AQUA transferred to admin wallet`);
 
       // STEP 4: Create claimable balance on Stellar Classic
-      await this.createClaimableBalance(pendingAqua, 3);
+      await this.createClaimableBalance(pendingAqua, 5);
       this.logger.log(`Claimable balance created for Aquarius`);
 
       // STEP 5: Wait for Aquarius to process and mint ICE tokens (polling)
@@ -336,8 +336,8 @@ export class IceLockingService implements OnModuleInit {
   }
 
   /**
-   * Create claimable balance on Stellar Classic for Aquarius to detect
-   * Formula: ICE = AQUA × (duration_years / 3) × 10
+   * Create claimable balance on Stellar Classic for Aquarius to detect.
+   * Aquarius mints ICE based on lock duration; multiplier caps at its protocol max.
    */
   private async createClaimableBalance(
     aquaAmount: number,

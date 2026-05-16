@@ -12,7 +12,7 @@ const MAX_FEE = '1000000'; // 0.1 XLM max fee
  *
  * Runs 4 times daily (0:00, 6:00, 12:00, 18:00 UTC) to:
  * 1. Claim boosted rewards from each active vault pool
- * 2. Split rewards: 30% to treasury, 70% auto-compound
+ * 2. Split rewards: 15% to treasury, 85% auto-compound (driven by on-chain `vault_fee_bps`)
  * 3. Handle token swaps if needed (for non-AQUA pairs)
  * 4. Auto-compound by adding liquidity back to pools
  */
@@ -98,7 +98,7 @@ export class VaultCompoundService {
 
   /**
    * Compound a single pool:
-   * 1. Call claim_and_compound on contract (claims AQUA, sends 30% to treasury, 70% to admin)
+   * 1. Call claim_and_compound on contract (claims AQUA, sends `vault_fee_bps` to treasury, remainder to admin)
    * 2. Swap the AQUA in admin wallet to both pool tokens
    * 3. Call admin_compound_deposit to deposit both tokens back into the pool
    */

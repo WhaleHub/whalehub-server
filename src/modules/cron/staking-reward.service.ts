@@ -7,9 +7,10 @@ import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 // Use max fee to avoid transaction failures during network congestion
 const MAX_FEE = '1000000'; // 0.1 XLM max fee
 
-// Treasury fee: 30% profit, 70% to stakers
-const TREASURY_FEE_BPS = 3000; // 30%
-// const STAKER_SHARE_BPS = 7000; // 70%
+// Treasury fee is set on-chain via `update_vault_fee_bps`. Constant retained
+// for documentation only — actual split is parsed from the contract tuple.
+const TREASURY_FEE_BPS = 1500; // 15%
+// const STAKER_SHARE_BPS = 8500; // 85%
 
 // Event polling interval (check for new events every 30 seconds)
 const EVENT_POLL_INTERVAL_MS = 30000;
@@ -26,8 +27,8 @@ const EVENT_POLL_INTERVAL_MS = 30000;
  *
  * 2. Pool 0 Reward Claim & Split (runs every hour):
  *    - Claims all AQUA rewards from pool 0 (BLUB-AQUA) via claim_and_compound
- *    - Contract sends 30% to treasury, 70% to manager
- *    - Splits the 70% proportionally between POL LP and vault LP:
+ *    - Contract sends `vault_fee_bps` (15%) to treasury, remainder (85%) to manager
+ *    - Splits the manager amount proportionally between POL LP and vault LP:
  *      a) POL share → swap to BLUB → add_rewards() (staker distribution)
  *      b) Vault share → swap half to BLUB, keep half AQUA → admin_compound_deposit()
  *    - POL LP = total contract shares - PoolInfo.total_lp_tokens (vault)
@@ -417,8 +418,8 @@ export class StakingRewardService {
    * Runs every hour to handle pool 0 (BLUB-AQUA) rewards.
    *
    * Pool 0 contains both POL LP and vault user LP. claim_and_compound claims
-   * all rewards at once (30% treasury handled by contract, 70% sent to manager).
-   * We split the 70% proportionally:
+   * all rewards at once (treasury cut handled by contract via `vault_fee_bps`,
+   * remainder sent to manager). We split the manager amount proportionally:
    *   - POL share → swap to BLUB → add_rewards (staker distribution)
    *   - Vault share → swap half to BLUB, keep half AQUA → admin_compound_deposit
    *
@@ -478,7 +479,7 @@ export class StakingRewardService {
       const { polShare, vaultShare } = await this.getPool0LpRatio();
       this.logger.log(`LP ratio — POL: ${polShare}/10000, Vault: ${vaultShare}/10000`);
 
-      // Step 3: Claim via claim_and_compound (30% treasury, 70% to manager).
+      // Step 3: Claim via claim_and_compound (`vault_fee_bps` treasury, rest to manager).
       // The contract returns the compound_amount in its tuple — use that directly
       // rather than a balance delta, which races with stale Soroban simulation state.
       const receivedAqua = await this.claimViaStakingContract();
@@ -573,8 +574,8 @@ export class StakingRewardService {
   /**
    * Claim rewards when LP is in the staking contract.
    * Calls claim_and_compound on the staking contract (pool_id=0 = BLUB-AQUA).
-   * Contract claims AQUA from Aquarius, sends 30% to treasury, 70% to manager,
-   * and returns `(total_rewards, treasury_amount, compound_amount)`.
+   * Contract claims AQUA from Aquarius, sends `vault_fee_bps` to treasury and the
+   * remainder to manager, and returns `(total_rewards, treasury_amount, compound_amount)`.
    *
    * Returns the `compound_amount` (AQUA sent to manager). Reading the tuple
    * directly avoids a stale-balance-delta race: a post-claim simulated
