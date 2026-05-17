@@ -7,10 +7,26 @@ import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 // Use max fee to avoid transaction failures during network congestion
 const MAX_FEE = '1000000'; // 0.1 XLM max fee
 
-// Treasury fee is set on-chain via `update_vault_fee_bps`. Constant retained
-// for documentation only — actual split is parsed from the contract tuple.
-const TREASURY_FEE_BPS = 1500; // 15%
-// const STAKER_SHARE_BPS = 8500; // 85%
+// Treasury fee split is asymmetric (decided 2026-05-16):
+//   - Vaults (pools 1+): 15% to treasury (on-chain `vault_fee_bps = 1500`)
+//   - POL/staking (pool 0 POL share): 30% to treasury
+//
+// The contract has a single `vault_fee_bps`, so we set it to the lower of the
+// two (1500) for vault-only pools, and the backend applies an additional cut
+// on the POL share of pool 0 below in `handleStakingRewardDistribution`.
+//
+// To go from 15% effective to 30% effective on POL, we need to send an extra
+// (30 - 15) / (100 - 15) = 17.647...% of the POL share AQUA to treasury before
+// swapping to BLUB. This brings the total cut on POL rewards to 30%.
+const ON_CHAIN_FEE_BPS = 1500;   // 15% — what the contract already deducted
+const POL_TARGET_FEE_BPS = 3000; // 30% — what we want POL to effectively pay
+// Extra basis points to take from the POL share AQUA after the contract's cut.
+// `extra_bps = (target - on_chain) / (10000 - on_chain) * 10000`
+//            = (3000 - 1500) / 8500 * 10000 ≈ 1765
+const POL_EXTRA_TREASURY_BPS = Math.round(
+  ((POL_TARGET_FEE_BPS - ON_CHAIN_FEE_BPS) * 10000) /
+    (10000 - ON_CHAIN_FEE_BPS),
+); // ≈ 1765
 
 // Event polling interval (check for new events every 30 seconds)
 const EVENT_POLL_INTERVAL_MS = 30000;
@@ -28,6 +44,8 @@ const EVENT_POLL_INTERVAL_MS = 30000;
  * 2. Pool 0 Reward Claim & Split (runs every hour):
  *    - Claims all AQUA rewards from pool 0 (BLUB-AQUA) via claim_and_compound
  *    - Contract sends `vault_fee_bps` (15%) to treasury, remainder (85%) to manager
+ *    - Backend then deducts an EXTRA ~17.65% from the POL share AQUA → treasury,
+ *      so POL effectively pays 30% to treasury (vault stays at 15%)
  *    - Splits the manager amount proportionally between POL LP and vault LP:
  *      a) POL share → swap to BLUB → add_rewards() (staker distribution)
  *      b) Vault share → swap half to BLUB, keep half AQUA → admin_compound_deposit()
@@ -45,6 +63,12 @@ export class StakingRewardService {
   private readonly blubTokenId: string;
   private readonly routerContractId: string;
   private readonly treasuryAddress: string;
+  // Vault treasury — same address as contract's `config.vault_treasury`. The
+  // extra POL-side cut sent in `handleStakingRewardDistribution` lands here so
+  // all treasury AQUA consolidates in one place. Default mirrors the address
+  // the contract was deployed with; override via env if `update_vault_treasury`
+  // is called on the contract.
+  private readonly vaultTreasuryAddress: string;
   private readonly pool0ShareTokenId: string;
 
   // Track last processed event cursor to avoid duplicates
@@ -65,6 +89,24 @@ export class StakingRewardService {
   // and balance() returns i64::MAX as a sentinel for the issuer account.
   private pendingBlubDistribution = 0n;
 
+  // Tracks AQUA from observed `pol_dep` events that the event handler couldn't
+  // deposit immediately (e.g. RPC blip, balance read returned stale 0). The
+  // 5-min fallback (`checkAndDepositPendingPol`) only deposits up to this
+  // amount — it will NOT sweep admin AQUA from other sources (claim_and_compound
+  // residue, or ICE-destined AQUA transferred via `transfer_authorized_aqua`).
+  //
+  // Incremented when a `pol_dep` event is seen, decremented when a deposit
+  // (event-driven or fallback) consumes it. Persists in-memory; on process
+  // restart we lose the counter and the fallback won't touch unobserved AQUA,
+  // which is the SAFE behaviour (better than mis-sweeping ICE money).
+  //
+  // Incident 2026-05-16: 100k AQUA lock → 10k legitimately POL-deposited from
+  // the pol_dep event, then 90k ICE-destined AQUA sat in admin wallet after a
+  // failed createClaimableBalance, and the fallback drained it 10k/tick over
+  // 9 cycles, minting 90k BLUB into pool 0 as unintended POL. This tracker
+  // bounds future fallback runs to the legitimately-observed pol_dep total.
+  private pendingPolAqua = 0n;
+
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
@@ -81,6 +123,9 @@ export class StakingRewardService {
     this.blubTokenId = this.configService.get<string>('BLUB_TOKEN_ID');
     this.routerContractId = this.configService.get<string>('AQUARIUS_ROUTER_CONTRACT_ID');
     this.treasuryAddress = this.configService.get<string>('TREASURY_ADDRESS');
+    this.vaultTreasuryAddress =
+      this.configService.get<string>('VAULT_TREASURY_ADDRESS') ||
+      'GBYQWGLZ4X5ZRS7VXVSKSDM72MQ4KFF4EW3PFH6UPUP5INGHMJS7C2R3';
     this.pool0ShareTokenId = this.configService.get<string>('POOL0_SHARE_TOKEN_ID') || 'CDMRHKJCYYHZTRQVR7NY43PR7ISMRBYC2O57IMVAQ7B7P2I2XGIZLI5E';
 
     // Start event polling
@@ -190,6 +235,11 @@ export class StakingRewardService {
         return;
       }
 
+      // Record that this AQUA amount is legitimately POL-destined. Even if the
+      // deposit below fails, the fallback can pick up the remainder later
+      // — bounded by this tracker, so the fallback won't touch ICE AQUA.
+      this.pendingPolAqua += aquaAmount;
+
       // Check admin AQUA balance before attempting deposit
       const aquaTokenId = this.configService.get<string>('AQUA_TOKEN_ID');
       const aquaContract = new StellarSdk.Contract(aquaTokenId);
@@ -210,8 +260,13 @@ export class StakingRewardService {
       // Deposit to AQUA/BLUB pool from admin wallet
       await this.depositToPool(aquaAmount, blubAmount);
 
+      // Successful deposit — drain the matched amount from the pending tracker.
+      this.pendingPolAqua =
+        this.pendingPolAqua > aquaAmount ? this.pendingPolAqua - aquaAmount : 0n;
+
       this.logger.log(
-        `POL deposit completed: ${aquaAmount} AQUA + ${blubAmount} BLUB deposited to pool`,
+        `POL deposit completed: ${aquaAmount} AQUA + ${blubAmount} BLUB deposited to pool ` +
+          `(pendingPolAqua now ${this.pendingPolAqua})`,
       );
     } catch (error) {
       this.logger.error(
@@ -330,51 +385,85 @@ export class StakingRewardService {
   /**
    * Check admin wallet balances and deposit any pending AQUA/BLUB to pool.
    *
-   * Hard cap (`MAX_FALLBACK_AQUA`) prevents the SAC issuer-balance sentinel from
-   * causing an uncapped BLUB mint if this fallback ever fires on AQUA that
-   * `handleStakingRewardDistribution` should have processed itself. (Apr 2026
-   * incident: ~36k BLUB silently minted into POL across ~90 missed runs because
-   * the manager wallet *is* the BLUB issuer, so its `balance()` returns
-   * `i128::MAX` and the previous 1:1 match line minted whatever AQUA happened
-   * to be sitting there.)
+   * This fallback now ONLY deposits up to `pendingPolAqua` — AQUA that was
+   * observed via a `pol_dep` event but not yet successfully deposited. It will
+   * NOT sweep arbitrary admin-wallet AQUA. Reason: admin wallet also receives
+   * AQUA from `transfer_authorized_aqua` (ICE flow) and `claim_and_compound`
+   * (reward distribution); sweeping that AQUA as POL would mis-route protocol
+   * funds AND mint matching BLUB unnecessarily.
+   *
+   * Historical context:
+   * - Apr 2026 incident: ~36k BLUB minted into POL across ~90 missed runs because
+   *   the fallback was unbounded and the manager wallet IS the BLUB SAC issuer
+   *   (its `balance()` returns `i128::MAX`).
+   * - May 2026-05-16: 100k AQUA lock produced one 10k legit `pol_dep`. The
+   *   remaining 90k AQUA went via ICE `transfer_authorized_aqua` to admin and
+   *   never reached a claimable balance — fallback drained it 10k/tick over 9
+   *   cycles. This patch (pendingPolAqua tracker) prevents that recurrence.
    */
   private async checkAndDepositPendingPol(): Promise<void> {
     const MIN_AQUA_THRESHOLD = 1000000n; // 0.1 AQUA (7 decimals)
     // Per-run cap on AQUA (and matched BLUB) the fallback may deposit. Sized to
     // cover the largest expected single pol_dep event (10% AQUA from a user
-    // lock). Anything larger almost certainly came from a missed reward claim
-    // and should be handled by the reward distribution path, not minted as POL.
+    // lock). Together with the `pendingPolAqua` cap, this is belt-and-braces.
     const MAX_FALLBACK_AQUA = 100_000_000_000n; // 10,000 AQUA
 
     try {
       const aquaBalance = await this.getTokenBalance(this.aquaTokenId);
 
-      this.logger.debug(`Admin AQUA balance: ${aquaBalance}`);
+      this.logger.debug(
+        `Admin AQUA balance: ${aquaBalance}, pendingPolAqua: ${this.pendingPolAqua}`,
+      );
 
       if (aquaBalance < MIN_AQUA_THRESHOLD) {
         return; // Not enough to deposit
+      }
+
+      // PRIMARY GATE: only deposit up to what the event poller observed but
+      // hasn't yet drained. If `pendingPolAqua` is 0, admin AQUA isn't ours
+      // to sweep — it likely belongs to ICE or reward distribution.
+      if (this.pendingPolAqua < MIN_AQUA_THRESHOLD) {
+        if (aquaBalance >= MAX_FALLBACK_AQUA) {
+          this.logger.error(
+            `POL fallback: admin has ${aquaBalance} AQUA but pendingPolAqua=${this.pendingPolAqua}. ` +
+              `This AQUA likely belongs to ICE locking (transfer_authorized_aqua) ` +
+              `or reward distribution — NOT depositing as POL. Manual intervention may be required.`,
+          );
+        }
+        return;
       }
 
       // We deliberately do NOT read BLUB balance: blub-issuer-v2 is the SAC
       // issuer and `balance()` returns the i128::MAX sentinel — meaningless for
       // sizing a deposit. The matched BLUB is minted by the issuer transfer.
       let depositAqua = aquaBalance;
+      // Bound by what we actually observed via `pol_dep` events.
+      if (depositAqua > this.pendingPolAqua) {
+        depositAqua = this.pendingPolAqua;
+      }
+      // Belt-and-braces per-run cap on top of the tracker.
       if (depositAqua > MAX_FALLBACK_AQUA) {
         this.logger.warn(
-          `POL fallback: AQUA balance ${depositAqua} exceeds cap ${MAX_FALLBACK_AQUA}. Capping. ` +
-            `Excess likely belongs to reward distribution, not POL.`,
+          `POL fallback: depositAqua ${depositAqua} exceeds per-run cap ${MAX_FALLBACK_AQUA}. Capping.`,
         );
         depositAqua = MAX_FALLBACK_AQUA;
       }
       const depositBlub = depositAqua; // 1:1 match (issuer mints to pair)
 
       this.logger.log(
-        `Depositing pending POL: ${depositAqua} AQUA + ${depositBlub} BLUB`,
+        `Depositing pending POL: ${depositAqua} AQUA + ${depositBlub} BLUB ` +
+          `(pendingPolAqua before: ${this.pendingPolAqua})`,
       );
 
       await this.depositToPool(depositAqua, depositBlub);
 
-      this.logger.log('Pending POL deposit completed');
+      // Drain the consumed amount.
+      this.pendingPolAqua =
+        this.pendingPolAqua > depositAqua ? this.pendingPolAqua - depositAqua : 0n;
+
+      this.logger.log(
+        `Pending POL deposit completed (pendingPolAqua now: ${this.pendingPolAqua})`,
+      );
     } catch (error) {
       this.logger.debug(`POL deposit check: ${error.message}`);
     }
@@ -491,9 +580,38 @@ export class StakingRewardService {
       }
 
       // Step 4: Split received AQUA proportionally.
-      const polAqua = (receivedAqua * BigInt(polShare)) / 10000n;
-      const vaultAqua = receivedAqua - polAqua;
-      this.logger.log(`Split — POL: ${polAqua} AQUA, Vault: ${vaultAqua} AQUA`);
+      const polAquaGross = (receivedAqua * BigInt(polShare)) / 10000n;
+      const vaultAqua = receivedAqua - polAquaGross;
+      this.logger.log(`Split — POL (gross): ${polAquaGross} AQUA, Vault: ${vaultAqua} AQUA`);
+
+      // Step 4b: Apply extra POL-side treasury cut. Contract already deducted
+      // 15% (vault_fee_bps=1500) before sending us anything. POL is supposed to
+      // pay 30% effective, so we route an additional `POL_EXTRA_TREASURY_BPS`
+      // (~17.65%) of `polAquaGross` straight to the vault treasury before the
+      // BLUB swap. Vault share is untouched — it keeps the 85% it should.
+      let polAqua = polAquaGross;
+      if (polAquaGross > 0n) {
+        const polExtraTreasury =
+          (polAquaGross * BigInt(POL_EXTRA_TREASURY_BPS)) / 10000n;
+        if (polExtraTreasury > 0n) {
+          try {
+            await this.sendAquaToTreasury(polExtraTreasury);
+            polAqua = polAquaGross - polExtraTreasury;
+            this.logger.log(
+              `POL extra treasury cut: ${polExtraTreasury} AQUA sent ` +
+                `(${POL_EXTRA_TREASURY_BPS}/10000 of POL share); ` +
+                `net POL to stakers: ${polAqua} AQUA`,
+            );
+          } catch (err: any) {
+            // If the treasury transfer fails, fall back to giving stakers the
+            // full POL share (better than silently keeping AQUA in manager).
+            this.logger.error(
+              `POL extra treasury transfer failed: ${err.message}. ` +
+                `Forwarding full POL share to stakers as fallback.`,
+            );
+          }
+        }
+      }
 
       // Step 5a: POL share → swap ALL to BLUB → add_rewards (staker distribution).
       if (polAqua > 0n) {
@@ -727,18 +845,18 @@ export class StakingRewardService {
   }
 
   /**
-   * Send AQUA to treasury address
+   * Send AQUA to the vault treasury address (same one the contract uses for
+   * its 15% cut). Called from `handleStakingRewardDistribution` to apply the
+   * extra POL-side treasury cut on top of the contract's 15%, bringing POL's
+   * effective treasury rate to 30%. Vault share is untouched.
    */
-  private async sendToTreasury(amount: bigint): Promise<void> {
-    // Use Soroban token transfer
+  private async sendAquaToTreasury(amount: bigint): Promise<void> {
     const aquaContract = new StellarSdk.Contract(this.aquaTokenId);
 
     const operation = aquaContract.call(
       'transfer',
-      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
-        type: 'address',
-      }),
-      StellarSdk.nativeToScVal(this.treasuryAddress, { type: 'address' }),
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
+      StellarSdk.nativeToScVal(this.vaultTreasuryAddress, { type: 'address' }),
       StellarSdk.nativeToScVal(amount, { type: 'i128' }),
     );
 
