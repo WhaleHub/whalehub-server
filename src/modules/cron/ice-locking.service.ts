@@ -339,19 +339,31 @@ export class IceLockingService implements OnModuleInit {
    * Create claimable balance on Stellar Classic for Aquarius to detect.
    * Aquarius mints ICE based on lock duration; multiplier caps at its protocol max.
    */
+  /**
+   * Submit a claimable balance to Stellar Classic with retries.
+   *
+   * Failure modes we care about:
+   * - Transient: Horizon 504 / network timeout / "Transaction submission timed out".
+   *   Tx may still land; retry with a freshly-built tx (new sequence). Before
+   *   retrying we check whether the admin's classic AQUA balance dropped — if it
+   *   did, the previous attempt likely landed and we MUST NOT resubmit.
+   * - Permanent: tx_bad_seq / tx_insufficient_balance / op_low_reserve / etc.
+   *   Don't retry; log the result codes loudly and rethrow so the outer cron
+   *   surfaces an error. The orphan AQUA stays in admin wallet, where Step 0b
+   *   will pick it up on the next 4-hour cron run.
+   *
+   * Failure visibility: on terminal failure we emit a clear banner log line so
+   * it's easy to grep in production. The companion `pendingPolAqua` guard in
+   * `staking-reward.service.ts` keeps the POL fallback from sweeping the
+   * orphaned AQUA between failed attempts (2026-05-16 incident).
+   */
   private async createClaimableBalance(
     aquaAmount: number,
     durationYears: number,
+    maxRetries = 3,
   ): Promise<void> {
-    const account = await this.horizonServer.loadAccount(
-      this.adminKeypair.publicKey(),
-    );
-
-    // Calculate unlock time (duration_years from now)
     const unlockTime =
       Math.floor(Date.now() / 1000) + durationYears * 365 * 24 * 60 * 60;
-
-    // Create claimable balance operation
     const claimant = new StellarSdk.Claimant(
       this.adminKeypair.publicKey(),
       StellarSdk.Claimant.predicateNot(
@@ -359,33 +371,98 @@ export class IceLockingService implements OnModuleInit {
       ),
     );
 
-    const transaction = new TransactionBuilder(account, {
-      fee: MAX_FEE,
-      networkPassphrase: Networks.PUBLIC,
-    })
-      .addOperation(
-        Operation.createClaimableBalance({
-          asset: this.aquaAsset,
-          amount: aquaAmount.toFixed(7),
-          claimants: [claimant],
-        }),
-      )
-      .setTimeout(180)
-      .build();
+    let lastAttemptAqua = aquaAmount;
 
-    transaction.sign(this.adminKeypair);
-
-    try {
-      const response = await this.horizonServer.submitTransaction(transaction);
-      this.logger.log(`Claimable balance created: ${response.hash}`);
-    } catch (error) {
-      // Extract Horizon result codes for easier debugging
-      const resultCodes =
-        error?.response?.data?.extras?.result_codes ?? error?.message;
-      this.logger.error(
-        `Horizon submitTransaction failed. Result codes: ${JSON.stringify(resultCodes)}`,
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Re-load account each attempt for a fresh sequence number.
+      const account = await this.horizonServer.loadAccount(
+        this.adminKeypair.publicKey(),
       );
-      throw error;
+
+      const transaction = new TransactionBuilder(account, {
+        fee: MAX_FEE,
+        networkPassphrase: Networks.PUBLIC,
+      })
+        .addOperation(
+          Operation.createClaimableBalance({
+            asset: this.aquaAsset,
+            amount: aquaAmount.toFixed(7),
+            claimants: [claimant],
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      transaction.sign(this.adminKeypair);
+
+      try {
+        const response = await this.horizonServer.submitTransaction(transaction);
+        this.logger.log(
+          `Claimable balance created (attempt ${attempt}): ${response.hash}`,
+        );
+        return;
+      } catch (error: any) {
+        const resultCodes =
+          error?.response?.data?.extras?.result_codes ?? error?.message;
+        const status = error?.response?.status;
+        const isTimeout =
+          status === 504 ||
+          /timed?[ -]?out/i.test(String(error?.message)) ||
+          /timed?[ -]?out/i.test(JSON.stringify(resultCodes));
+        const isPermanent =
+          !isTimeout &&
+          (resultCodes?.transaction || resultCodes?.operations);
+
+        this.logger.warn(
+          `createClaimableBalance attempt ${attempt}/${maxRetries} failed ` +
+            `(${isTimeout ? 'TIMEOUT' : isPermanent ? 'PERMANENT' : 'UNKNOWN'}). ` +
+            `Result codes: ${JSON.stringify(resultCodes)}`,
+        );
+
+        // Permanent failure — don't retry, the same tx will fail the same way.
+        if (isPermanent) {
+          this.logger.error(
+            '==================================================================\n' +
+              `❌ ICE CLAIMABLE BALANCE FAILED (permanent). ${aquaAmount} AQUA ` +
+              `remains in admin wallet ${this.adminKeypair.publicKey()}. ` +
+              `Next 4h cron's Step 0b will retry. Result codes: ` +
+              `${JSON.stringify(resultCodes)}\n` +
+              '==================================================================',
+          );
+          throw error;
+        }
+
+        // Timeout / unknown — before retrying, check whether the previous
+        // attempt actually landed by reading the admin AQUA balance. If it
+        // dropped by ~aquaAmount, the claimable balance was created; stop.
+        await this.sleep(5000);
+        const currentAqua = await this.getAdminAquaBalance();
+        if (currentAqua + 0.01 < lastAttemptAqua) {
+          this.logger.log(
+            `Admin AQUA dropped ${lastAttemptAqua} → ${currentAqua}; ` +
+              `prior attempt landed despite timeout. Stopping retry.`,
+          );
+          return;
+        }
+        lastAttemptAqua = currentAqua;
+
+        if (attempt === maxRetries) {
+          this.logger.error(
+            '==================================================================\n' +
+              `❌ ICE CLAIMABLE BALANCE FAILED after ${maxRetries} attempts. ` +
+              `${aquaAmount} AQUA remains in admin wallet ` +
+              `${this.adminKeypair.publicKey()}. ` +
+              `Next 4h cron's Step 0b will retry automatically.\n` +
+              '==================================================================',
+          );
+          throw error;
+        }
+
+        // Exponential-ish backoff: 3s, 6s, 12s...
+        const backoffMs = 3000 * Math.pow(2, attempt - 1);
+        this.logger.log(`Backing off ${backoffMs}ms before retry...`);
+        await this.sleep(backoffMs);
+      }
     }
   }
 
