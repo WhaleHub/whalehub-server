@@ -31,6 +31,7 @@ import { IceLockingService } from './modules/cron/ice-locking.service';
 import { VaultCompoundService } from './modules/cron/vault-compound.service';
 import { StakingRewardService } from './modules/cron/staking-reward.service';
 import { StakingApyIndexerService } from './modules/cron/staking-apy-indexer.service';
+import { BribeRewardService } from './modules/cron/bribe-reward.service';
 
 // Test controller for manual trigger of cron services
 @Controller('test')
@@ -39,6 +40,7 @@ class TestController {
     private readonly iceLockingService: IceLockingService,
     private readonly vaultCompoundService: VaultCompoundService,
     private readonly stakingRewardService: StakingRewardService,
+    private readonly bribeRewardService: BribeRewardService,
   ) {}
 
   @Post('ice-locking')
@@ -74,6 +76,22 @@ class TestController {
   @Get('staking-reward/status')
   async getStakingRewardStatus() {
     return await this.stakingRewardService.getRewardStatus();
+  }
+
+  @Post('bribe-reward')
+  async triggerBribeReward() {
+    console.log('[TestController] Manually triggering bribe reward distribution...');
+    return await this.bribeRewardService.manualTrigger();
+  }
+
+  @Get('bribe-reward/status')
+  async getBribeRewardStatus() {
+    return await this.bribeRewardService.getStatus();
+  }
+
+  @Post('bribe-reward/resolve')
+  async resolveBribeReward(@Query('committed') committed?: string) {
+    return await this.bribeRewardService.resolvePending(committed === 'true');
   }
 
   @Get('health')

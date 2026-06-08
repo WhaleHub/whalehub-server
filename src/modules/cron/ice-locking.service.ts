@@ -76,28 +76,35 @@ export class IceLockingService implements OnModuleInit {
   }
 
   /**
-   * Run once 10 minutes after startup to catch any pending AQUA
+   * AUTO ICE-LOCKING PAUSED 2026-06-08.
+   *
+   * Step 0b of handleDailyIceLocking() sweeps the ENTIRE manager-wallet classic
+   * AQUA balance into a 5-year ICE claimable balance. Since WhaleHub now earns
+   * ~50K AQUA/day in Aquarius bribes into that same wallet (see
+   * bribe-reward.service.ts), running this automatically would lock the bribe
+   * AQUA into ICE before the bribe cron can route it to stakers.
+   *
+   * The startup trigger is therefore disabled. handleDailyIceLocking() remains
+   * callable manually via POST /test/ice-locking if we ever want to lock a
+   * specific amount on purpose (ensure the wallet holds only ICE-destined AQUA
+   * at that time).
    */
-  private startupTimerDone = false;
   async onModuleInit() {
-    this.logger.log('ICE locking service initialized, scheduling startup trigger in 10 minutes...');
-    setTimeout(() => {
-      if (!this.startupTimerDone) {
-        this.startupTimerDone = true;
-        this.logger.log('10-minute startup timer fired, triggering ICE locking...');
-        this.handleDailyIceLocking();
-      }
-    }, 10 * 60 * 1000);
+    this.logger.log(
+      'ICE locking service initialized — AUTO locking is PAUSED (bribe income owns the wallet AQUA). ' +
+        'Use POST /test/ice-locking to lock manually.',
+    );
   }
 
   /**
-   * Runs every 4 hours
-   * Can be manually triggered via endpoint if needed
+   * Manual ICE locking. Auto schedule disabled 2026-06-08 (see onModuleInit).
+   * Re-enable by restoring the @Cron('0 *\/4 * * *') decorator below, but only
+   * after coordinating with the bribe cron so it does not sweep bribe AQUA.
    */
-  @Cron('0 */4 * * *', {
-    name: 'ice-locking-every-4h',
-    timeZone: 'UTC',
-  })
+  // @Cron('0 */4 * * *', {
+  //   name: 'ice-locking-every-4h',
+  //   timeZone: 'UTC',
+  // })
   async handleDailyIceLocking() {
     if (this.isRunning) {
       this.logger.log('ICE locking already in progress, skipping...');
