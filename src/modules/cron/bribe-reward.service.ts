@@ -89,6 +89,11 @@ export class BribeRewardService {
   // cursor and skip. 10 AQUA.
   private static readonly MIN_AQUA_THRESHOLD = 100_000_000n;
 
+  // Auto-cron threshold: wait for a real bribe (>= 5,000 AQUA) before the daily
+  // balance-based cron distributes, so dust / partial balances don't trigger a
+  // run. Bribes are ~50K AQUA.
+  private static readonly AUTO_MIN_AQUA = 50_000_000_000n;
+
   // State + lock file paths.
   private readonly stateFile: string;
   private readonly lockFile: string;
@@ -170,25 +175,81 @@ export class BribeRewardService {
   // ==========================================================================
 
   /**
-   * Runs hourly at minute 15. Offset from the staking-reward cron (:30) so the
-   * two don't submit adminKeypair transactions at the same instant (sequence
-   * races). Bribes arrive ~once/day, so most runs find nothing new and return
-   * immediately after a cheap Horizon read.
+   * Daily bribe distribution — runs every 6h (catches a bribe within 6h of it
+   * landing). BALANCE-BASED (not cursor-based) so it is safe across
+   * DigitalOcean's 2 instances: once one instance drains the wallet AQUA, the
+   * other and all later ticks read ~0 and skip. Layered defenses against a
+   * simultaneous cross-instance double-run:
+   *   1. random 0-60s startup jitter so the two instances desync — the leader
+   *      drains the wallet before the follower reads the balance;
+   *   2. per-instance file lock (same-instance overlap);
+   *   3. Stellar sequence-number collision (only one tx with a given seq lands).
+   * For 100% safety run the backend as a SINGLE instance — then the file lock is
+   * authoritative. A real daily bribe (>= AUTO_MIN_AQUA) is distributed; dust is
+   * ignored. 30% -> treasury (AQUA), 70% swapped AQUA->BLUB -> add_rewards.
    */
-  // AUTO CRON DISABLED 2026-06-09: DigitalOcean runs 2 instances with separate
-  // filesystems, so the file cursor/lock does NOT coordinate across them — both
-  // instances would process the same bribe and double add_rewards/treasury.
-  // Until the backend runs as a SINGLE instance, distribute manually via
-  // POST /test/bribe-reward (cursor-based) or POST /test/bribe-reward/swap-now
-  // (drain wallet balance). Re-enable the @Cron below once on one instance.
-  // @Cron('15 * * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
+  @Cron('0 */6 * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
   async handleBribeRewardDistribution(): Promise<void> {
+    // De-sync the two DO instances so the leader drains the wallet first.
+    await this.sleep(Math.floor(Math.random() * 60000));
+
     if (!this.acquireLock()) {
       this.logger.debug('Bribe distribution lock held by another run, skipping');
       return;
     }
     try {
-      await this.runDistribution();
+      const balance = await this.getManagerAquaBalance();
+      this.logger.log(`Bribe cron: manager AQUA balance ${balance}`);
+      if (balance < BribeRewardService.AUTO_MIN_AQUA) {
+        this.logger.log(
+          `Below auto threshold ${BribeRewardService.AUTO_MIN_AQUA}; nothing to distribute`,
+        );
+        return;
+      }
+
+      const treasuryAqua = (balance * BigInt(this.bribeTreasuryBps)) / 10000n;
+      let aquaToSwap = balance - treasuryAqua;
+      if (treasuryAqua > 0n) {
+        try {
+          await this.sendAquaToTreasury(treasuryAqua);
+          this.logger.log(
+            `Treasury cut: ${treasuryAqua} AQUA -> ${this.treasuryAddress} (${this.bribeTreasuryBps}/10000)`,
+          );
+        } catch (err) {
+          this.logger.error(
+            `Treasury transfer failed: ${err.message}; routing full amount to stakers this run`,
+          );
+          aquaToSwap = balance;
+        }
+      }
+
+      let blub = await this.swapAquaToBlub(aquaToSwap);
+      const sanityCap = aquaToSwap * 10n;
+      if (blub > sanityCap) {
+        this.logger.error(`BLUB out ${blub} exceeds sanity cap ${sanityCap}; capping`);
+        blub = sanityCap;
+      }
+      if (blub > this.maxBlubPerRun) {
+        this.logger.error(`BLUB out ${blub} exceeds hard cap ${this.maxBlubPerRun}; capping`);
+        blub = this.maxBlubPerRun;
+      }
+      if (blub <= 0n) {
+        this.logger.error('Swap produced 0 BLUB; not calling add_rewards');
+        return;
+      }
+
+      await this.addRewardsToStakingContract(blub);
+
+      const state = this.loadState();
+      state.lastDistributedAt = new Date().toISOString();
+      state.lastBlub = blub.toString();
+      state.lastAqua = balance.toString();
+      this.saveState(state);
+
+      this.logger.log(
+        `Bribe distribution complete: ${balance} AQUA ` +
+          `(treasury ${treasuryAqua}, swapped ${aquaToSwap}) -> ${blub} BLUB to stakers`,
+      );
     } catch (error) {
       this.logger.error(
         `Bribe reward distribution failed: ${error.message}`,
