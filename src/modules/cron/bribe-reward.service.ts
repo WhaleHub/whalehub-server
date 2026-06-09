@@ -50,6 +50,12 @@ const MAX_FEE = '1000000'; // 0.1 XLM
 export class BribeRewardService {
   private readonly logger = new Logger(BribeRewardService.name);
   private readonly server: StellarSdk.SorobanRpc.Server;
+  // Separate RPC for WRITES + their confirmation. sorobanrpc.com reliably TIMES
+  // OUT submitting complex txs (e.g. the Aquarius router swap) — it returns a
+  // hash but the tx is never included, so polling times out. The gateway.fm RPC
+  // handles write submission reliably (documented project pattern). Reads/sims
+  // stay on `server` (sorobanrpc.com).
+  private readonly sendServer: StellarSdk.SorobanRpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
@@ -93,6 +99,14 @@ export class BribeRewardService {
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+
+    // Writes go through the gateway.fm RPC (same as the working frontend/vault
+    // swap path). sorobanrpc.com hands back a tx hash but never includes complex
+    // router swaps -> polling times out. Configurable via SOROBAN_SEND_RPC_URL.
+    const sendRpcUrl =
+      this.configService.get<string>('SOROBAN_SEND_RPC_URL') ||
+      'https://soroban-rpc.mainnet.stellar.gateway.fm';
+    this.sendServer = new StellarSdk.SorobanRpc.Server(sendRpcUrl);
 
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
     this.horizonServer = new StellarSdk.Horizon.Server(horizonUrl);
@@ -403,7 +417,7 @@ export class BribeRewardService {
       StellarSdk.nativeToScVal(amount, { type: 'i128' }),
     );
     const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+    const response = await this.sendServer.sendTransaction(tx);
     await this.pollTransactionStatus(response.hash);
   }
 
@@ -461,7 +475,7 @@ export class BribeRewardService {
     );
 
     const tx = await this.buildAndSignTransaction(operation);
-    const response = await this.server.sendTransaction(tx);
+    const response = await this.sendServer.sendTransaction(tx);
     const confirmed = await this.pollTransactionStatus(response.hash);
 
     const parsed = this.parseSwapOutput(confirmed);
@@ -536,7 +550,7 @@ export class BribeRewardService {
       'approve-build',
     );
     const approveResponse = await withRetry(
-      () => this.server.sendTransaction(approveTx),
+      () => this.sendServer.sendTransaction(approveTx),
       'approve-send',
     );
     await this.pollTransactionStatus(approveResponse.hash);
@@ -549,7 +563,7 @@ export class BribeRewardService {
       StellarSdk.nativeToScVal(blubAmount, { type: 'i128' }),
     );
     const tx = await this.buildAndSignTransaction(addRewardsOp);
-    const response = await this.server.sendTransaction(tx);
+    const response = await this.sendServer.sendTransaction(tx);
     await this.pollTransactionStatus(response.hash);
     this.logger.log(`add_rewards submitted: ${blubAmount} BLUB tx=${response.hash}`);
   }
@@ -811,10 +825,11 @@ export class BribeRewardService {
     return tx;
   }
 
-  private async pollTransactionStatus(hash: string, maxAttempts = 30): Promise<any> {
+  private async pollTransactionStatus(hash: string, maxAttempts = 45): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
       try {
-        const status = await this.server.getTransaction(hash);
+        // Poll on the send server (gateway.fm) — it's the node that has the tx.
+        const status = await this.sendServer.getTransaction(hash);
         if (status.status === 'SUCCESS') return status;
         if (status.status === 'FAILED') throw new Error(`Transaction failed: ${hash}`);
         await this.sleep(2000);
