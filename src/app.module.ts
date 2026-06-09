@@ -94,6 +94,17 @@ class TestController {
     return await this.bribeRewardService.resolvePending(committed === 'true');
   }
 
+  // One-off: swap wallet AQUA (all, or ?amount=<AQUA>) -> BLUB -> stakers, no treasury cut.
+  @Post('bribe-reward/swap-now')
+  async swapBribeNow(@Query('amount') amount?: string) {
+    console.log('[TestController] Manual bribe swap-now...');
+    const stroops =
+      amount && Number.isFinite(parseFloat(amount))
+        ? BigInt(Math.round(parseFloat(amount) * 1e7))
+        : undefined;
+    return await this.bribeRewardService.distributeNow(stroops);
+  }
+
   @Get('health')
   health() {
     return { status: 'ok', time: new Date().toISOString() };

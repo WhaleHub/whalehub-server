@@ -161,7 +161,13 @@ export class BribeRewardService {
    * races). Bribes arrive ~once/day, so most runs find nothing new and return
    * immediately after a cheap Horizon read.
    */
-  @Cron('15 * * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
+  // AUTO CRON DISABLED 2026-06-09: DigitalOcean runs 2 instances with separate
+  // filesystems, so the file cursor/lock does NOT coordinate across them — both
+  // instances would process the same bribe and double add_rewards/treasury.
+  // Until the backend runs as a SINGLE instance, distribute manually via
+  // POST /test/bribe-reward (cursor-based) or POST /test/bribe-reward/swap-now
+  // (drain wallet balance). Re-enable the @Cron below once on one instance.
+  // @Cron('15 * * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
   async handleBribeRewardDistribution(): Promise<void> {
     if (!this.acquireLock()) {
       this.logger.debug('Bribe distribution lock held by another run, skipping');
@@ -263,7 +269,7 @@ export class BribeRewardService {
       }
     }
 
-    let blubOut = await this.swapAquaToBlubChunked(aquaToSwap);
+    let blubOut = await this.swapAquaToBlub(aquaToSwap);
 
     // Sanity cap: BLUB out should never exceed 10x AQUA in.
     const sanityCap = aquaToSwap * 10n;
@@ -399,32 +405,6 @@ export class BribeRewardService {
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.server.sendTransaction(tx);
     await this.pollTransactionStatus(response.hash);
-  }
-
-  /**
-   * Swap AQUA -> BLUB in chunks of `swapChunkAqua` to limit stableswap price
-   * impact. Returns total BLUB received (stroops).
-   */
-  private async swapAquaToBlubChunked(aquaAmount: bigint): Promise<bigint> {
-    let remaining = aquaAmount;
-    let totalBlub = 0n;
-    let chunkNo = 0;
-    while (remaining > 0n) {
-      const chunk = remaining > this.swapChunkAqua ? this.swapChunkAqua : remaining;
-      chunkNo++;
-      const blub = await this.swapAquaToBlub(chunk);
-      totalBlub += blub;
-      this.logger.log(`Swap chunk ${chunkNo}: ${chunk} AQUA -> ${blub} BLUB`);
-      remaining -= chunk;
-      if (blub === 0n) {
-        this.logger.error(
-          `Swap chunk ${chunkNo} returned 0 BLUB; stopping further chunks ` +
-            `(${remaining} AQUA left unswapped).`,
-        );
-        break;
-      }
-    }
-    return totalBlub;
   }
 
   /**
@@ -653,6 +633,97 @@ export class BribeRewardService {
       return { success: true, message: 'Bribe reward distribution completed' };
     } catch (error) {
       return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * One-off operational trigger: swap a chunk of AQUA sitting in the manager
+   * wallet straight to BLUB and add_rewards to stakers — NO treasury cut
+   * ("swap it all" to stakers). Used to drain leftover/backlog AQUA that the
+   * cursor-based cron won't pick up.
+   *
+   * `aquaStroops` omitted -> swaps the entire current wallet AQUA balance.
+   *
+   * Afterwards it resets the cursor to the latest paging_token so the auto-cron
+   * does NOT later reprocess any bribe whose AQUA we just drained from the wallet.
+   *
+   * NOTE: safe to call on a multi-instance deploy because it's a single request
+   * handled by one instance; the AUTO cron, however, needs a single instance to
+   * avoid double distribution (file state is not shared across instances).
+   */
+  async distributeNow(
+    aquaStroops?: bigint,
+  ): Promise<{ success: boolean; message: string; aqua?: string; blub?: string }> {
+    if (!this.acquireLock()) {
+      return { success: false, message: 'Another bribe run holds the lock; try again shortly' };
+    }
+    try {
+      let amount = aquaStroops ?? (await this.getManagerAquaBalance());
+      if (amount < BribeRewardService.MIN_AQUA_THRESHOLD) {
+        return { success: false, message: `Wallet AQUA ${amount} below threshold; nothing to swap` };
+      }
+
+      this.logger.log(
+        `distributeNow: swapping ${amount} AQUA (no treasury cut) -> BLUB -> stakers`,
+      );
+
+      let blub = await this.swapAquaToBlub(amount);
+      const sanityCap = amount * 10n;
+      if (blub > sanityCap) {
+        this.logger.error(`BLUB out ${blub} exceeds sanity cap ${sanityCap}; capping`);
+        blub = sanityCap;
+      }
+      if (blub > this.maxBlubPerRun) {
+        this.logger.error(`BLUB out ${blub} exceeds hard cap ${this.maxBlubPerRun}; capping`);
+        blub = this.maxBlubPerRun;
+      }
+      if (blub <= 0n) {
+        return { success: false, message: 'Swap produced 0 BLUB; nothing added to stakers' };
+      }
+
+      await this.addRewardsToStakingContract(blub);
+
+      // Reset cursor forward so the auto-cron starts fresh from now and won't
+      // reprocess any bribe whose AQUA we just drained.
+      const latest = await this.getLatestPagingToken();
+      const state = this.loadState();
+      state.cursor = latest;
+      state.pending = null;
+      state.pendingAmount = null;
+      state.pendingAt = null;
+      state.lastDistributedAt = new Date().toISOString();
+      state.lastBlub = blub.toString();
+      state.lastAqua = amount.toString();
+      this.saveState(state);
+
+      this.logger.log(`distributeNow complete: ${amount} AQUA -> ${blub} BLUB to stakers`);
+      return {
+        success: true,
+        message: `Swapped ${amount} AQUA -> ${blub} BLUB and added to stakers`,
+        aqua: amount.toString(),
+        blub: blub.toString(),
+      };
+    } catch (error) {
+      this.logger.error(`distributeNow failed: ${error.message}`, error.stack);
+      return { success: false, message: error.message };
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  /** AQUA SAC balance of the manager wallet (stroops). */
+  private async getManagerAquaBalance(): Promise<bigint> {
+    try {
+      const c = new StellarSdk.Contract(this.aquaTokenId);
+      const op = c.call(
+        'balance',
+        StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), { type: 'address' }),
+      );
+      const r = await this.simulateTransaction(op);
+      return BigInt(StellarSdk.scValToNative(r.result.retval) || 0);
+    } catch (e) {
+      this.logger.warn(`getManagerAquaBalance failed: ${e.message}`);
+      return 0n;
     }
   }
 
