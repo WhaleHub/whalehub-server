@@ -27,12 +27,21 @@ const BACKFILL_LEDGERS = Math.ceil((DEFAULT_WINDOW_SECONDS * 1.2) / LEDGER_SECON
 // "startLedger must be within the ledger range" (-32600), backfill explodes,
 // and polling stalls forever. 36k ≈ 2d of headroom inside retention.
 const MAX_BACKFILL_LEDGERS = 36_000;
-// Expected cadence of `add_rewards` calls from StakingRewardService
-// (every hour via `handleStakingRewardDistribution`; was 30 min until
-// 2026-05-10 — kept in sync with the cron schedule there).
-// Each event represents rewards accrued over the preceding interval, so we
-// use this as the divisor contribution for the most recent event.
-const TYPICAL_REWARD_INTERVAL_SECONDS = 60 * 60;
+// Expected cadence of `add_rewards` calls. Each event represents rewards
+// accrued over the preceding interval, so we use this as the divisor
+// contribution for the most recent event.
+//
+// 2026-06: the reward model is now DAILY. Pool-0 staker rewards come from
+// Aquarius bribes (BribeRewardService), which land ~once a day and produce a
+// single large `add_rewards` per day — NOT the old hourly/30-min cadence. The
+// interval must match reality: a daily event annualizes by ~365x, whereas the
+// stale 1h value would extrapolate one daily bribe by ~8,766x and blow up.
+const TYPICAL_REWARD_INTERVAL_SECONDS = 24 * 60 * 60;
+// Believable ceiling for the DISPLAYED APY. The daily bribe (~48K BLUB) on the
+// current stake (~10M BLUB) annualizes to triple digits, which reads as
+// unsustainable and swings hard day to day. We compute the honest rate but
+// clamp what we show. Override via STAKING_APY_DISPLAY_CAP (percent).
+const DEFAULT_APY_DISPLAY_CAP = 50;
 // Base64 of "rwd_add" as SCV_SYMBOL — copied from existing event polling pattern in staking-reward.service
 const RWD_ADD_TOPIC = 'AAAADwAAAAdyd2RfYWRkAA==';
 
@@ -60,6 +69,7 @@ export class StakingApyIndexerService implements OnModuleInit {
   private readonly logger = new Logger(StakingApyIndexerService.name);
   private readonly server: StellarSdk.SorobanRpc.Server;
   private readonly stakingContractId: string;
+  private readonly apyDisplayCap: number;
 
   private events: RewardEvent[] = [];
   private lastSeenLedger = 0;
@@ -70,6 +80,9 @@ export class StakingApyIndexerService implements OnModuleInit {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
     this.stakingContractId = this.configService.get<string>('STAKING_CONTRACT_ID');
+    const capRaw = Number(this.configService.get<string>('STAKING_APY_DISPLAY_CAP'));
+    this.apyDisplayCap =
+      Number.isFinite(capRaw) && capRaw > 0 ? capRaw : DEFAULT_APY_DISPLAY_CAP;
   }
 
   async onModuleInit() {
@@ -134,17 +147,14 @@ export class StakingApyIndexerService implements OnModuleInit {
     const latestTs = inWindow[inWindow.length - 1].timestamp;
     const observedSpan = latestTs - oldestTs;
     const isWindowFull = observedSpan >= windowSeconds * 0.9;
-    // Minimum observed span before we trust the rate enough to annualize.
-    // 6h covers ~12 reward distributions at the 30min cadence — enough to
-    // smooth single-event spikes that would otherwise project to >100% APY.
-    const MIN_OBSERVED_SPAN_SECONDS = 6 * 3600;
     // Two divisor candidates:
     //   spanDivisor — actual wall time covered by the events. Counts cron
     //     outages as zero-reward time, dragging APY down (May 2026: a 43h
     //     cron gap inside a 7d window pushed APY from ~19% to ~6%).
     //   activeDivisor — each event treated as covering one expected interval,
     //     so gaps don't count. Reflects the rate stakers earn when the cron
-    //     fires normally.
+    //     fires normally. With a single daily event this is exactly one day,
+    //     giving the honest "today's bribe annualized" rate.
     // Use min() so historical outages don't depress the displayed rate.
     const spanDivisor = observedSpan + TYPICAL_REWARD_INTERVAL_SECONDS;
     const activeDivisor = inWindow.length * TYPICAL_REWARD_INTERVAL_SECONDS;
@@ -152,14 +162,26 @@ export class StakingApyIndexerService implements OnModuleInit {
       ? windowSeconds
       : Math.min(spanDivisor, activeDivisor);
 
+    // We annualize from as little as ONE event. With the daily reward model a
+    // single event spans one interval (~24h), so the extrapolation is a sane
+    // ~365x rather than the ~17,500x that the old 30-min cadence produced —
+    // which is why the previous MIN_OBSERVED_SPAN guard is no longer needed.
+    // The display cap below is the backstop against an outlier day.
     let apy = '--';
-    const hasEnoughHistory = isWindowFull || observedSpan >= MIN_OBSERVED_SPAN_SECONDS;
-    if (hasEnoughHistory && avgStaked > 0n && divisorSeconds > 0) {
+    if (inWindow.length >= 1 && avgStaked > 0n && divisorSeconds > 0) {
       // Use floating point for the final ratio — precision loss here is fine for display.
       const rewardsF = Number(totalRewards);
       const stakedF = Number(avgStaked);
       const rate = (rewardsF / stakedF) * (YEAR_SECONDS / divisorSeconds);
-      apy = (rate * 100).toFixed(2);
+      const pct = rate * 100;
+      const capped = Math.min(pct, this.apyDisplayCap);
+      if (capped < pct) {
+        this.logger.debug(
+          `APY ${pct.toFixed(2)}% capped to ${this.apyDisplayCap}% ` +
+            `(events=${inWindow.length}, window=${windowDays}d)`,
+        );
+      }
+      apy = capped.toFixed(2);
     }
 
     return {
