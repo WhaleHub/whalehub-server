@@ -37,11 +37,13 @@ const MAX_BACKFILL_LEDGERS = 36_000;
 // interval must match reality: a daily event annualizes by ~365x, whereas the
 // stale 1h value would extrapolate one daily bribe by ~8,766x and blow up.
 const TYPICAL_REWARD_INTERVAL_SECONDS = 24 * 60 * 60;
-// Believable ceiling for the DISPLAYED APY. The daily bribe (~48K BLUB) on the
-// current stake (~10M BLUB) annualizes to triple digits, which reads as
-// unsustainable and swings hard day to day. We compute the honest rate but
-// clamp what we show. Override via STAKING_APY_DISPLAY_CAP (percent).
-const DEFAULT_APY_DISPLAY_CAP = 50;
+// Pure SANITY backstop on the displayed APY — NOT a display policy. We show the
+// real annualized rate (the daily bribe is large vs the ~10M BLUB staked, so it
+// legitimately runs triple digits and swings day to day). This ceiling only
+// catches an obviously-broken computation (e.g. a near-zero staked snapshot
+// blowing the ratio up). Set well above any plausible real rate. Override via
+// STAKING_APY_DISPLAY_CAP (percent).
+const DEFAULT_APY_DISPLAY_CAP = 1000;
 // Base64 of "rwd_add" as SCV_SYMBOL — copied from existing event polling pattern in staking-reward.service
 const RWD_ADD_TOPIC = 'AAAADwAAAAdyd2RfYWRkAA==';
 
