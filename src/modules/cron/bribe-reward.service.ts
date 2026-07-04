@@ -134,8 +134,13 @@ export class BribeRewardService {
       this.configService.get<string>('BRIBE_SENDER_ADDRESS') ||
       'GAORXNBAWRIOJ7HRMCTWW2MIB6PYWSC7OKHGIXWTJXYRTZRSHP356TW3';
 
+    // TEMPORARY (2026-07): treasury cut on bribes set to 0 — 100% of harvested
+    // bribes flow to stakers (swap AQUA->BLUB -> add_rewards). Revert to 3000
+    // (30%) via the BRIBE_TREASURY_BPS env or by restoring this default.
+    // NOTE: if BRIBE_TREASURY_BPS is set in the deploy env it OVERRIDES this —
+    // set it to 0 there too for the change to take effect in production.
     this.bribeTreasuryBps = Number(
-      this.configService.get<string>('BRIBE_TREASURY_BPS') || '3000',
+      this.configService.get<string>('BRIBE_TREASURY_BPS') || '0',
     );
 
     this.poolIndexHex =
