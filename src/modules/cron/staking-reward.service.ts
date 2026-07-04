@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Use max fee to avoid transaction failures during network congestion
 const MAX_FEE = '1000000'; // 0.1 XLM max fee
@@ -30,6 +32,12 @@ const POL_EXTRA_TREASURY_BPS = Math.round(
 
 // Event polling interval (check for new events every 30 seconds)
 const EVENT_POLL_INTERVAL_MS = 30000;
+
+// Never ask the RPC for a startLedger older than this many ledgers behind tip
+// (public Soroban RPC retains ~7 days of events; stay comfortably inside it).
+// If the persisted cursor is older than this (long downtime), we clamp to the
+// floor and log a warning that events in the gap may need manual recovery.
+const MAX_RETENTION_LOOKBACK_LEDGERS = 100000;
 
 /**
  * Staking Reward Distribution Service
@@ -71,9 +79,19 @@ export class StakingRewardService {
   private readonly vaultTreasuryAddress: string;
   private readonly pool0ShareTokenId: string;
 
-  // Track last processed event cursor to avoid duplicates
+  // Track last processed event cursor to avoid duplicates.
+  // Persisted to disk (see polStateFile) so a restart resumes from where it
+  // left off instead of jumping to `tip - 1000` and skipping events that
+  // closed while the backend was down.
   private lastEventLedger: number = 0;
   private processedTxHashes: Set<string> = new Set();
+
+  // Path to the durable POL state file ({ lastEventLedger, pendingPolAqua,
+  // processedEventIds }). Persisting these three across restarts is what
+  // prevents a missed pol_dep event from silently stranding a POL share.
+  private readonly polStateFile: string;
+  // Debounce disk writes triggered from the hot poll loop.
+  private lastStateSaveMs = 0;
 
   // Set to true by IceLockingService while an ICE lock is in progress.
   // POL deposit is paused during this window to prevent it from consuming
@@ -128,8 +146,69 @@ export class StakingRewardService {
       'GBYQWGLZ4X5ZRS7VXVSKSDM72MQ4KFF4EW3PFH6UPUP5INGHMJS7C2R3';
     this.pool0ShareTokenId = this.configService.get<string>('POOL0_SHARE_TOKEN_ID') || 'CDMRHKJCYYHZTRQVR7NY43PR7ISMRBYC2O57IMVAQ7B7P2I2XGIZLI5E';
 
+    // Durable POL state file. Override with POL_STATE_FILE; defaults next to cwd.
+    this.polStateFile =
+      this.configService.get<string>('POL_STATE_FILE') ||
+      path.join(process.cwd(), '.pol-state.json');
+    this.loadPersistedPolState();
+
     // Start event polling
     this.startEventPolling();
+  }
+
+  /**
+   * Load { lastEventLedger, pendingPolAqua, processedEventIds } from disk.
+   * Missing/corrupt file is non-fatal — we fall back to the SAFE cold-start
+   * (pendingPolAqua = 0, wide look-back that re-observes recent events).
+   */
+  private loadPersistedPolState(): void {
+    try {
+      if (!fs.existsSync(this.polStateFile)) {
+        this.logger.log(`No POL state file at ${this.polStateFile} (cold start)`);
+        return;
+      }
+      const raw = JSON.parse(fs.readFileSync(this.polStateFile, 'utf8'));
+      this.lastEventLedger = Number(raw.lastEventLedger) || 0;
+      this.pendingPolAqua = BigInt(raw.pendingPolAqua || 0);
+      if (Array.isArray(raw.processedEventIds)) {
+        this.processedTxHashes = new Set(raw.processedEventIds.slice(-5000));
+      }
+      this.logger.log(
+        `Loaded POL state: lastEventLedger=${this.lastEventLedger}, ` +
+          `pendingPolAqua=${this.pendingPolAqua}, ` +
+          `processedIds=${this.processedTxHashes.size}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to load POL state (${this.polStateFile}): ${error.message}. ` +
+          `Continuing with safe cold-start defaults.`,
+      );
+      this.lastEventLedger = 0;
+      this.pendingPolAqua = 0n;
+    }
+  }
+
+  /**
+   * Atomically persist POL state. Written via a temp file + rename so a crash
+   * mid-write can't corrupt the file. `force` bypasses the 5s debounce.
+   */
+  private savePersistedPolState(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastStateSaveMs < 5000) return;
+    this.lastStateSaveMs = now;
+    try {
+      const payload = JSON.stringify({
+        lastEventLedger: this.lastEventLedger,
+        pendingPolAqua: this.pendingPolAqua.toString(),
+        processedEventIds: Array.from(this.processedTxHashes).slice(-5000),
+        updatedAt: new Date().toISOString(),
+      });
+      const tmp = `${this.polStateFile}.tmp`;
+      fs.writeFileSync(tmp, payload);
+      fs.renameSync(tmp, this.polStateFile);
+    } catch (error) {
+      this.logger.error(`Failed to persist POL state: ${error.message}`);
+    }
   }
 
   /**
@@ -156,56 +235,103 @@ export class StakingRewardService {
    */
   private async pollAndProcessPolDepositEvents(): Promise<void> {
     try {
-      // Get recent events from the staking contract
-      const events = await this.server.getEvents({
-        startLedger:
-          this.lastEventLedger || (await this.getCurrentLedger()) - 1000,
-        filters: [
-          {
-            type: 'contract',
-            contractIds: [this.stakingContractId],
-            topics: [['AAAADwAAAAdwb2xfZGVwAA==']], // "pol_dep" as SCVal symbol (SCV_SYMBOL, XDR-padded)
-          },
-        ],
-        limit: 100,
-      });
+      const tip = await this.getCurrentLedger();
+      const retentionFloor = Math.max(1, tip - MAX_RETENTION_LOOKBACK_LEDGERS);
 
-      if (!events.events || events.events.length === 0) {
-        return;
+      // Resume from the persisted cursor (durable across restarts) rather than
+      // the old `tip - 1000` window that silently stranded a pol_dep event if
+      // the backend was down longer than ~1.4h. On a true cold start (no state
+      // file → lastEventLedger 0) we start forward-only at the tip, so we never
+      // re-deposit historical pol_dep events that were already handled.
+      let startLedger = this.lastEventLedger > 0 ? this.lastEventLedger + 1 : tip;
+
+      if (startLedger < retentionFloor) {
+        // Persisted cursor is older than RPC retention (long downtime). Events
+        // between the cursor and the floor are unreachable via getEvents and
+        // may need manual recovery — surface loudly, then clamp to the floor.
+        this.logger.warn(
+          `POL event cursor ${this.lastEventLedger} is older than RPC retention ` +
+            `floor ${retentionFloor} (tip ${tip}). Events in that gap may be missed — ` +
+            `check for undeposited POL shares. Clamping scan to the floor.`,
+        );
+        startLedger = retentionFloor;
       }
 
-      this.logger.debug(`Found ${events.events.length} pol_dep events`);
-
-      for (const event of events.events) {
-        // Skip if already processed
-        const eventId = `${event.ledger}-${event.id}`;
-        if (this.processedTxHashes.has(eventId)) {
-          continue;
-        }
-
-        try {
-          await this.processPolDepositEvent(event);
-        } catch (error) {
-          this.logger.error(
-            `Failed to process event ${eventId}: ${error.message}`,
+      let events;
+      try {
+        events = await this.server.getEvents({
+          startLedger,
+          filters: [
+            {
+              type: 'contract',
+              contractIds: [this.stakingContractId],
+              topics: [['AAAADwAAAAdwb2xfZGVwAA==']], // "pol_dep" SCVal symbol (SCV_SYMBOL, XDR-padded)
+            },
+          ],
+          limit: 100,
+        });
+      } catch (error) {
+        // Public RPC is load-balanced across nodes with different retention
+        // depths; a node may reject a startLedger just below its own floor.
+        // Parse the reported floor and retry once from there.
+        const m = /ledger range:\s*(\d+)/.exec(error.message || '');
+        if (m) {
+          const floor = parseInt(m[1], 10) + 1;
+          this.logger.warn(
+            `getEvents rejected startLedger ${startLedger}; retrying from node floor ${floor}`,
           );
-        }
-
-        // Mark as processed regardless of success/failure to prevent infinite retries
-        // (e.g. admin has 0 AQUA — retrying won't help)
-        this.processedTxHashes.add(eventId);
-
-        // Keep set size manageable
-        if (this.processedTxHashes.size > 10000) {
-          const entries = Array.from(this.processedTxHashes);
-          this.processedTxHashes = new Set(entries.slice(-5000));
+          events = await this.server.getEvents({
+            startLedger: floor,
+            filters: [
+              {
+                type: 'contract',
+                contractIds: [this.stakingContractId],
+                topics: [['AAAADwAAAAdwb2xfZGVwAA==']],
+              },
+            ],
+            limit: 100,
+          });
+        } else {
+          throw error;
         }
       }
 
-      // Update last processed ledger
-      if (events.latestLedger) {
+      if (events.events && events.events.length > 0) {
+        this.logger.debug(`Found ${events.events.length} pol_dep events`);
+
+        for (const event of events.events) {
+          // Skip if already processed (dedupe survives restart via persisted set)
+          const eventId = `${event.ledger}-${event.id}`;
+          if (this.processedTxHashes.has(eventId)) {
+            continue;
+          }
+
+          try {
+            await this.processPolDepositEvent(event);
+          } catch (error) {
+            this.logger.error(
+              `Failed to process event ${eventId}: ${error.message}`,
+            );
+          }
+
+          // Mark processed regardless of success/failure to prevent infinite
+          // retries. The undeposited amount is preserved in `pendingPolAqua`
+          // (also persisted), so the 5-min fallback still recovers it later.
+          this.processedTxHashes.add(eventId);
+
+          if (this.processedTxHashes.size > 10000) {
+            const entries = Array.from(this.processedTxHashes);
+            this.processedTxHashes = new Set(entries.slice(-5000));
+          }
+        }
+      }
+
+      // Advance and persist the cursor even when no events were returned, so we
+      // don't re-scan the same window forever.
+      if (events.latestLedger && events.latestLedger > this.lastEventLedger) {
         this.lastEventLedger = events.latestLedger;
       }
+      this.savePersistedPolState();
     } catch (error) {
       // Silently handle if getEvents not supported
       if (!error.message?.includes('not supported')) {
@@ -238,7 +364,10 @@ export class StakingRewardService {
       // Record that this AQUA amount is legitimately POL-destined. Even if the
       // deposit below fails, the fallback can pick up the remainder later
       // — bounded by this tracker, so the fallback won't touch ICE AQUA.
+      // Persist immediately (force) so a crash before the deposit still leaves
+      // a durable record that this share is owed to POL.
       this.pendingPolAqua += aquaAmount;
+      this.savePersistedPolState(true);
 
       // Check admin AQUA balance before attempting deposit
       const aquaTokenId = this.configService.get<string>('AQUA_TOKEN_ID');
@@ -263,6 +392,7 @@ export class StakingRewardService {
       // Successful deposit — drain the matched amount from the pending tracker.
       this.pendingPolAqua =
         this.pendingPolAqua > aquaAmount ? this.pendingPolAqua - aquaAmount : 0n;
+      this.savePersistedPolState(true);
 
       this.logger.log(
         `POL deposit completed: ${aquaAmount} AQUA + ${blubAmount} BLUB deposited to pool ` +
@@ -460,6 +590,7 @@ export class StakingRewardService {
       // Drain the consumed amount.
       this.pendingPolAqua =
         this.pendingPolAqua > depositAqua ? this.pendingPolAqua - depositAqua : 0n;
+      this.savePersistedPolState(true);
 
       this.logger.log(
         `Pending POL deposit completed (pendingPolAqua now: ${this.pendingPolAqua})`,
@@ -498,6 +629,63 @@ export class StakingRewardService {
     try {
       await this.checkAndDepositPendingPol();
       return { success: true, message: 'POL deposit check completed' };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Operator recovery: deposit an EXPLICIT AQUA + BLUB amount (in stroops) as
+   * POL, via the same tested 3-tx path as the event handler.
+   *
+   * Use when a `pol_dep` event was missed (e.g. backend down > RPC retention,
+   * so the persisted cursor couldn't reach it) and the share is stranded in the
+   * manager wallet. The amount is explicit and bounded — this is NOT a balance
+   * sweep, so it can never grab ICE- or bribe-destined AQUA (the 2026-05-16
+   * failure mode). Caller must pass the exact `pol_dep` amount from the lock.
+   */
+  async manualPolDepositExact(
+    aquaStroops: bigint,
+    blubStroops: bigint,
+  ): Promise<{ success: boolean; message: string }> {
+    // Bound a single manual deposit to the largest plausible one-lock POL share.
+    const MAX_MANUAL_POL_AQUA = 200_000_000_000n; // 20,000 AQUA
+    try {
+      if (aquaStroops <= 0n || blubStroops <= 0n) {
+        return { success: false, message: 'aqua and blub must be > 0' };
+      }
+      if (aquaStroops > MAX_MANUAL_POL_AQUA || blubStroops > MAX_MANUAL_POL_AQUA) {
+        return {
+          success: false,
+          message: `amount exceeds per-call cap ${MAX_MANUAL_POL_AQUA} stroops (20,000). ` +
+            `Split into multiple calls if this is intentional.`,
+        };
+      }
+      if (this.isIceLockingActive || this.isDistributing) {
+        return {
+          success: false,
+          message: 'ICE locking or reward distribution in progress; retry shortly.',
+        };
+      }
+      // Guard: manager must actually hold the AQUA (so we never move funds that
+      // belong to another flow). BLUB is minted by the issuer transfer, so it
+      // is not balance-checked (issuer balance() returns the i64::MAX sentinel).
+      const aquaBalance = await this.getTokenBalance(this.aquaTokenId);
+      if (aquaBalance < aquaStroops) {
+        return {
+          success: false,
+          message: `manager AQUA balance ${aquaBalance} < requested ${aquaStroops}`,
+        };
+      }
+
+      this.logger.log(
+        `Manual explicit POL deposit: ${aquaStroops} AQUA + ${blubStroops} BLUB`,
+      );
+      await this.depositToPool(aquaStroops, blubStroops);
+      return {
+        success: true,
+        message: `Deposited ${aquaStroops} AQUA + ${blubStroops} BLUB to POL`,
+      };
     } catch (error) {
       return { success: false, message: error.message };
     }

@@ -73,6 +73,31 @@ class TestController {
     return result;
   }
 
+  // Operator recovery: deposit an EXPLICIT amount (in AQUA, not stroops) as POL.
+  // Use to recover a stranded pol_dep share the poller missed, e.g.:
+  //   POST /test/pol-deposit/exact?aqua=2000&blub=2000
+  // Bounded + explicit (never a balance sweep). aqua defaults blub if omitted.
+  @Post('pol-deposit/exact')
+  async triggerPolDepositExact(
+    @Query('aqua') aqua?: string,
+    @Query('blub') blub?: string,
+  ) {
+    const aquaNum = parseFloat(aqua);
+    if (!Number.isFinite(aquaNum) || aquaNum <= 0) {
+      return { success: false, message: 'pass ?aqua=<AQUA amount> (e.g. 2000)' };
+    }
+    const blubNum = blub && Number.isFinite(parseFloat(blub)) ? parseFloat(blub) : aquaNum;
+    const aquaStroops = BigInt(Math.round(aquaNum * 1e7));
+    const blubStroops = BigInt(Math.round(blubNum * 1e7));
+    console.log(
+      `[TestController] Manual explicit POL deposit: ${aquaNum} AQUA + ${blubNum} BLUB...`,
+    );
+    return await this.stakingRewardService.manualPolDepositExact(
+      aquaStroops,
+      blubStroops,
+    );
+  }
+
   @Get('staking-reward/status')
   async getStakingRewardStatus() {
     return await this.stakingRewardService.getRewardStatus();
