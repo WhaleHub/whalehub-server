@@ -56,3 +56,6 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .pol-state.json
+
+# Runtime cron coordination state (bribe cursor, ICE reservation marker, locks)
+.whalehub-state/

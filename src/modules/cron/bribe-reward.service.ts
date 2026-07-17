@@ -5,6 +5,11 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  acquireWalletLock,
+  releaseWalletLock,
+  iceReservedStroops,
+} from './wallet-coordination';
 
 // Use max fee to avoid transaction failures during network congestion.
 const MAX_FEE = '1000000'; // 0.1 XLM
@@ -202,12 +207,30 @@ export class BribeRewardService {
       this.logger.debug('Bribe distribution lock held by another run, skipping');
       return;
     }
+
+    // Cross-cron mutex: do not touch wallet AQUA while the ICE cron is moving it.
+    if (!acquireWalletLock('bribe-reward')) {
+      this.logger.log(
+        'Wallet lock held by the ICE cron; skipping this bribe tick.',
+      );
+      this.releaseLock();
+      return;
+    }
+
     try {
-      const balance = await this.getManagerAquaBalance();
-      this.logger.log(`Bribe cron: manager AQUA balance ${balance}`);
+      const walletBalance = await this.getManagerAquaBalance();
+      // Subtract any AQUA reserved for an in-flight (or halted) ICE lock so we never
+      // swap ICE-destined AQUA to stakers. See wallet-coordination.ts.
+      const iceReserved = iceReservedStroops();
+      const balance =
+        walletBalance > iceReserved ? walletBalance - iceReserved : 0n;
+      this.logger.log(
+        `Bribe cron: wallet AQUA ${walletBalance}, ICE-reserved ${iceReserved}, ` +
+          `distributable ${balance}`,
+      );
       if (balance < BribeRewardService.AUTO_MIN_AQUA) {
         this.logger.log(
-          `Below auto threshold ${BribeRewardService.AUTO_MIN_AQUA}; nothing to distribute`,
+          `Distributable ${balance} below auto threshold ${BribeRewardService.AUTO_MIN_AQUA}; nothing to distribute`,
         );
         return;
       }
@@ -261,6 +284,7 @@ export class BribeRewardService {
         error.stack,
       );
     } finally {
+      releaseWalletLock();
       this.releaseLock();
     }
   }

@@ -10,6 +10,13 @@ import {
   Networks,
 } from '@stellar/stellar-sdk';
 import { StakingRewardService } from './staking-reward.service';
+import {
+  acquireWalletLock,
+  releaseWalletLock,
+  writeIceMarker,
+  clearIceMarker,
+  readIceMarker,
+} from './wallet-coordination';
 
 // Max fee for transactions (1 XLM in stroops for reliability)
 const MAX_FEE = '1000000';
@@ -76,40 +83,54 @@ export class IceLockingService implements OnModuleInit {
   }
 
   /**
-   * AUTO ICE-LOCKING PAUSED 2026-06-08.
+   * AUTO ICE-LOCKING re-enabled 2026-07-18 (was paused 2026-06-08).
    *
-   * Step 0b of handleDailyIceLocking() sweeps the ENTIRE manager-wallet classic
-   * AQUA balance into a 5-year ICE claimable balance. Since WhaleHub now earns
-   * ~50K AQUA/day in Aquarius bribes into that same wallet (see
-   * bribe-reward.service.ts), running this automatically would lock the bribe
-   * AQUA into ICE before the bribe cron can route it to stakers.
+   * The pause existed because the old Step 0b swept the ENTIRE manager-wallet
+   * classic AQUA balance into a 5-year ICE claimable balance — which would lock
+   * the ~50K AQUA/day of Aquarius bribes (that land in the same wallet, see
+   * bribe-reward.service.ts) before the bribe cron could route them to stakers.
    *
-   * The startup trigger is therefore disabled. handleDailyIceLocking() remains
-   * callable manually via POST /test/ice-locking if we ever want to lock a
-   * specific amount on purpose (ensure the wallet holds only ICE-destined AQUA
-   * at that time).
+   * Two coordination primitives now make concurrent auto-runs safe
+   * (see wallet-coordination.ts):
+   *   - a shared wallet lock: only one of {ICE, bribe} touches wallet AQUA at a
+   *     time; the other skips its tick.
+   *   - an ICE reservation marker: Step 0b no longer sweeps loose wallet AQUA. It
+   *     only re-locks the exact amount a prior authorize+transfer moved (recorded
+   *     in the marker). The bribe cron subtracts that reserved amount from what it
+   *     distributes, so it never swaps ICE-destined AQUA.
    */
   async onModuleInit() {
     this.logger.log(
-      'ICE locking service initialized — AUTO locking is PAUSED (bribe income owns the wallet AQUA). ' +
-        'Use POST /test/ice-locking to lock manually.',
+      'ICE locking service initialized — AUTO locking ENABLED (every 4h) with ' +
+        'wallet-lock + reservation-marker coordination against the bribe cron. ' +
+        'Manual trigger: POST /test/ice-locking.',
     );
   }
 
   /**
-   * Manual ICE locking. Auto schedule disabled 2026-06-08 (see onModuleInit).
-   * Re-enable by restoring the @Cron('0 *\/4 * * *') decorator below, but only
-   * after coordinating with the bribe cron so it does not sweep bribe AQUA.
+   * Auto ICE locking, every 4h. Re-enabled 2026-07-18 with bribe-cron
+   * coordination (see onModuleInit). Also callable manually via POST
+   * /test/ice-locking.
    */
-  // @Cron('0 */4 * * *', {
-  //   name: 'ice-locking-every-4h',
-  //   timeZone: 'UTC',
-  // })
+  @Cron('0 */4 * * *', {
+    name: 'ice-locking-every-4h',
+    timeZone: 'UTC',
+  })
   async handleDailyIceLocking() {
     if (this.isRunning) {
       this.logger.log('ICE locking already in progress, skipping...');
       return;
     }
+
+    // Cross-cron mutex: do not touch wallet AQUA while the bribe cron is draining
+    // it (or another ICE run is mid-flight). Skip this tick; the 4h cadence retries.
+    if (!acquireWalletLock('ice-locking')) {
+      this.logger.log(
+        'Wallet lock held by another run (bribe/ICE); skipping this ICE tick.',
+      );
+      return;
+    }
+
     this.isRunning = true;
     this.logger.log('Starting daily ICE locking process...');
 
@@ -117,7 +138,6 @@ export class IceLockingService implements OnModuleInit {
       // STEP 0a: Deposit any pending POL (AQUA+BLUB) to pool FIRST.
       // This ensures that AQUA sitting in admin wallet from recent pol_dep events
       // gets deposited to the AQUA/BLUB pool before ICE locking reads the wallet state.
-      // Without this, Step 0b could mistake POL-destined AQUA for a previous ICE lock attempt.
       this.logger.log('Running POL deposit check before ICE locking...');
       try {
         await this.stakingRewardService.manualPolDeposit();
@@ -131,19 +151,24 @@ export class IceLockingService implements OnModuleInit {
       // transferred from the contract is not consumed by the POL cron.
       this.stakingRewardService.isIceLockingActive = true;
 
-      // STEP 0b: Check if admin wallet already has AQUA from a previous transfer
-      // (e.g. transfer_authorized_aqua ran but createClaimableBalance never completed)
-      const adminAquaBalance = await this.getAdminAquaBalance();
-      if (adminAquaBalance > 0) {
+      // STEP 0b (recovery): a reservation marker means a PRIOR run transferred AQUA
+      // out of the contract but did not finish creating the claimable balance. Lock
+      // exactly that reserved amount — NOT any loose wallet AQUA (that could be
+      // bribe income). The bribe cron leaves the reserved amount untouched, so it is
+      // still sitting in the wallet.
+      const marker = readIceMarker();
+      if (marker) {
+        const reservedAqua = Number(BigInt(marker.amountStroops)) / 1e7;
         this.logger.log(
-          `Admin wallet has ${adminAquaBalance} AQUA from previous transfer. Creating claimable balance directly...`,
+          `Recovery: ICE reservation marker for ${reservedAqua} AQUA (at ${marker.at}). ` +
+            `Re-creating claimable balance...`,
         );
-        await this.createClaimableBalance(adminAquaBalance, 5);
+        await this.createClaimableBalance(reservedAqua, 5);
+        clearIceMarker();
         this.logger.log(
-          `Claimable balance created for ${adminAquaBalance} AQUA already in admin wallet`,
+          `Recovery complete: claimable balance created for ${reservedAqua} reserved AQUA`,
         );
         await this.waitForIceTokens();
-        this.logger.log('ICE locking completed for admin AQUA balance, continuing to check pending...');
       }
 
       // STEP 1: Get pending AQUA amount from staking contract
@@ -155,17 +180,24 @@ export class IceLockingService implements OnModuleInit {
       }
 
       this.logger.log(`Pending AQUA for ICE: ${pendingAqua}`);
+      const pendingStroops = BigInt(Math.round(pendingAqua * 1e7));
 
       // STEP 2: Authorize ICE lock (5 years for maximum ICE; Aquarius caps multiplier at its own protocol max)
       const lockId = await this.authorizeIceLock(pendingAqua, 5);
       this.logger.log(`ICE lock authorized with ID: ${lockId}`);
 
-      // STEP 3: Transfer AQUA from contract to admin
+      // STEP 3: Transfer AQUA from contract to admin, then immediately RESERVE it.
+      // The marker tells the bribe cron "this much wallet AQUA is ICE-destined,
+      // don't sweep it" and lets Step 0b recover if createClaimableBalance fails.
       await this.transferAuthorizedAqua(lockId);
-      this.logger.log(`AQUA transferred to admin wallet`);
+      writeIceMarker(pendingStroops);
+      this.logger.log(
+        `AQUA transferred to admin wallet and reserved (${pendingAqua} AQUA)`,
+      );
 
-      // STEP 4: Create claimable balance on Stellar Classic
+      // STEP 4: Create claimable balance on Stellar Classic, then release the reservation.
       await this.createClaimableBalance(pendingAqua, 5);
+      clearIceMarker();
       this.logger.log(`Claimable balance created for Aquarius`);
 
       // STEP 5: Wait for Aquarius to process and mint ICE tokens (polling)
@@ -180,10 +212,13 @@ export class IceLockingService implements OnModuleInit {
       this.logger.log('ICE tokens are now in admin wallet for voting');
     } catch (error) {
       this.logger.error(`ICE locking failed: ${error.message}`, error.stack);
-      // TODO: Send alert/notification to admin
+      // A reservation marker may still be set if createClaimableBalance failed; it
+      // is intentionally left in place so the next run's Step 0b retries the lock
+      // and the bribe cron keeps the reserved AQUA untouched in the meantime.
     } finally {
       this.stakingRewardService.isIceLockingActive = false;
       this.isRunning = false;
+      releaseWalletLock();
     }
   }
 
