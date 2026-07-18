@@ -122,6 +122,13 @@ export class IceLockingService implements OnModuleInit {
       return;
     }
 
+    // De-sync DigitalOcean's 2 instances (0-60s jitter, same as the bribe cron).
+    // On dual-instance the leader authorizes+transfers first, which decrements the
+    // contract's pending_aqua_for_ice; by the time the follower reads it, pending is
+    // ~0 so the follower skips at STEP 1. (The contract's transfer guard is the hard
+    // backstop — a second transfer_authorized_aqua reverts with InsufficientPendingAqua.)
+    await this.sleep(Math.floor(Math.random() * 60000));
+
     // Cross-cron mutex: do not touch wallet AQUA while the bribe cron is draining
     // it (or another ICE run is mid-flight). Skip this tick; the 4h cadence retries.
     if (!acquireWalletLock('ice-locking')) {
