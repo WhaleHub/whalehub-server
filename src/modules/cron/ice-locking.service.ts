@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+// Kept while the @Cron decorator below is commented out (auto locking paused).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import {
@@ -83,9 +85,15 @@ export class IceLockingService implements OnModuleInit {
   }
 
   /**
-   * AUTO ICE-LOCKING re-enabled 2026-07-18 (was paused 2026-06-08).
+   * AUTO ICE-LOCKING PAUSED AGAIN 2026-07-27 (was re-enabled 2026-07-18,
+   * originally paused 2026-06-08). The @Cron decorator below is commented out;
+   * handleDailyIceLocking() stays callable via POST /test/ice-locking.
    *
-   * The pause existed because the old Step 0b swept the ENTIRE manager-wallet
+   * Nothing is known to be broken — this is a deliberate hold. The coordination
+   * primitives described below remain in place, so re-enabling is just a matter
+   * of uncommenting the decorator.
+   *
+   * The original pause existed because the old Step 0b swept the ENTIRE manager-wallet
    * classic AQUA balance into a 5-year ICE claimable balance — which would lock
    * the ~50K AQUA/day of Aquarius bribes (that land in the same wallet, see
    * bribe-reward.service.ts) before the bribe cron could route them to stakers.
@@ -101,21 +109,21 @@ export class IceLockingService implements OnModuleInit {
    */
   async onModuleInit() {
     this.logger.log(
-      'ICE locking service initialized — AUTO locking ENABLED (every 4h) with ' +
-        'wallet-lock + reservation-marker coordination against the bribe cron. ' +
-        'Manual trigger: POST /test/ice-locking.',
+      'ICE locking service initialized — AUTO locking is PAUSED (2026-07-27). ' +
+        'Wallet-lock + reservation-marker coordination against the bribe cron ' +
+        'remains in place. Manual trigger: POST /test/ice-locking.',
     );
   }
 
   /**
-   * Auto ICE locking, every 4h. Re-enabled 2026-07-18 with bribe-cron
-   * coordination (see onModuleInit). Also callable manually via POST
-   * /test/ice-locking.
+   * ICE locking. Auto schedule PAUSED 2026-07-27 (see onModuleInit) — re-enable
+   * by uncommenting the @Cron decorator below. Currently only runs when
+   * triggered manually via POST /test/ice-locking.
    */
-  @Cron('0 */4 * * *', {
-    name: 'ice-locking-every-4h',
-    timeZone: 'UTC',
-  })
+  // @Cron('0 */4 * * *', {
+  //   name: 'ice-locking-every-4h',
+  //   timeZone: 'UTC',
+  // })
   async handleDailyIceLocking() {
     if (this.isRunning) {
       this.logger.log('ICE locking already in progress, skipping...');
