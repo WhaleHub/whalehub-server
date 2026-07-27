@@ -40,6 +40,26 @@ const EVENT_POLL_INTERVAL_MS = 30000;
 const MAX_RETENTION_LOOKBACK_LEDGERS = 100000;
 
 /**
+ * AUTOMATIC POL DEPOSITS PAUSED 2026-07-27 (alongside the ICE-locking cron).
+ *
+ * Flip to `false` to resume. While true, no POL deposit happens on its own:
+ *   - the 5-min `pol-deposit-check` cron returns immediately;
+ *   - the `pol_dep` event poller still RUNS — it advances the persisted ledger
+ *     cursor and accrues each observed share into `pendingPolAqua` — but stops
+ *     short of depositing.
+ *
+ * Keeping the poller alive is deliberate. If it were disabled, the cursor would
+ * freeze and any `pol_dep` event older than RPC retention (~7 days) would become
+ * unreachable, silently stranding that POL share. This way the obligation is
+ * only deferred: whatever accrues in `pendingPolAqua` (persisted to disk) is
+ * deposited by the fallback once this is flipped back to false.
+ *
+ * The manual paths are intentionally NOT gated — POST /test/pol-deposit and
+ * POST /test/pol-deposit/exact still work as operator escape hatches.
+ */
+const POL_AUTO_DEPOSITS_PAUSED = true;
+
+/**
  * Staking Reward Distribution Service
  *
  * Three main responsibilities:
@@ -369,6 +389,16 @@ export class StakingRewardService {
       this.pendingPolAqua += aquaAmount;
       this.savePersistedPolState(true);
 
+      // Deposits paused: the share is now recorded (and persisted) as owed to
+      // POL, so nothing is lost — the fallback deposits it once deposits resume.
+      if (POL_AUTO_DEPOSITS_PAUSED) {
+        this.logger.log(
+          `Automatic POL deposits are paused — recorded ${aquaAmount} AQUA as owed ` +
+            `(pendingPolAqua now ${this.pendingPolAqua}) without depositing.`,
+        );
+        return;
+      }
+
       // Check admin AQUA balance before attempting deposit
       const aquaTokenId = this.configService.get<string>('AQUA_TOKEN_ID');
       const aquaContract = new StellarSdk.Contract(aquaTokenId);
@@ -497,6 +527,13 @@ export class StakingRewardService {
     timeZone: 'UTC',
   })
   async handlePolDepositCheck() {
+    if (POL_AUTO_DEPOSITS_PAUSED) {
+      this.logger.debug(
+        `Automatic POL deposits are paused; skipping fallback check ` +
+          `(pendingPolAqua=${this.pendingPolAqua}).`,
+      );
+      return;
+    }
     if (this.isIceLockingActive) {
       this.logger.debug('ICE locking in progress, skipping POL deposit check');
       return;
