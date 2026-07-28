@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+// Kept while the @Cron decorator(s) below are commented out (crons paused).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import {
@@ -115,10 +117,13 @@ export class VotingService {
    * Weekly voting cron (Every Sunday at 3:00 AM UTC)
    * Can be overridden via VOTING_CRON_SCHEDULE env var
    */
-  @Cron(process.env.VOTING_CRON_SCHEDULE || '0 3 * * 0', {
-    name: 'pool-voting',
-    timeZone: 'UTC',
-  })
+  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
+  // Weekly upvoteICE votes (which create on-chain claimable balances) no longer
+  // happen automatically. VOTING_CRON_SCHEDULE has no effect while commented out.
+  // @Cron(process.env.VOTING_CRON_SCHEDULE || '0 3 * * 0', {
+  //   name: 'pool-voting',
+  //   timeZone: 'UTC',
+  // })
   async handleVoting() {
     this.logger.log('Starting pool voting process...');
 

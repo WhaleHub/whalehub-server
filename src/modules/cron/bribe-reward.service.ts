@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+// Kept while the @Cron decorator(s) below are commented out (crons paused).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
@@ -198,7 +200,10 @@ export class BribeRewardService {
    * authoritative. A real daily bribe (>= AUTO_MIN_AQUA) is distributed; dust is
    * ignored. 30% -> treasury (AQUA), 70% swapped AQUA->BLUB -> add_rewards.
    */
-  @Cron('0 */6 * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
+  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
+  // Bribe AQUA now accumulates in the manager wallet until this is uncommented
+  // or POST /test/bribe-reward is called manually.
+  // @Cron('0 */6 * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
   async handleBribeRewardDistribution(): Promise<void> {
     // De-sync the two DO instances so the leader drains the wallet first.
     await this.sleep(Math.floor(Math.random() * 60000));

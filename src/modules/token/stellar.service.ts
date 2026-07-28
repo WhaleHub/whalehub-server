@@ -22,6 +22,8 @@ import { SorobanService } from './soroban.service';
 import { CreateAddLiquidityDto } from './dto/create-add-lp.dto';
 import { ClaimableRecordsEntity } from '@/utils/typeorm/entities/claimableRecords.entity';
 import { UnlockAquaDto } from './dto/create-remove-lp.dto';
+// Kept while the @Cron decorators below are commented out (crons paused).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { CLAIMS, DepositType } from '@/utils/models/enums';
@@ -1426,8 +1428,9 @@ export class StellarService {
     }
   }
 
+  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
   // @Cron('0 7 */7 * *')
-  @Cron(CronExpression.EVERY_WEEK)
+  // @Cron(CronExpression.EVERY_WEEK)
   async redeemLPRewards() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolsRepository.find({
@@ -1607,8 +1610,10 @@ export class StellarService {
     this.logger.log('All transactions have been processed successfully');
   }
 
+  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
+  // ICE-related: this one claims AQUA rewards destined for ICE locking.
   // @Cron('*/2 * * * *')
-  @Cron(CronExpression.EVERY_WEEK)
+  // @Cron(CronExpression.EVERY_WEEK)
   async redeemAquaRewardsForICE() {
     // Fetch all staked whlaqua and aqua records
     const poolRecords = await this.poolsRepository.find({

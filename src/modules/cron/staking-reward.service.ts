@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+// Kept while the @Cron decorator(s) below are commented out (crons paused).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
@@ -522,10 +524,13 @@ export class StakingRewardService {
    * Runs every 5 minutes to check for pending POL deposits
    * This is a fallback in case event polling misses something
    */
-  @Cron(CronExpression.EVERY_5_MINUTES, {
-    name: 'pol-deposit-check',
-    timeZone: 'UTC',
-  })
+  // PAUSED 2026-07-27 — decorator removed in addition to the
+  // POL_AUTO_DEPOSITS_PAUSED flag below, so this cannot fire even if the flag
+  // is flipped back without re-reading this block. Re-enable BOTH to resume.
+  // @Cron(CronExpression.EVERY_5_MINUTES, {
+  //   name: 'pol-deposit-check',
+  //   timeZone: 'UTC',
+  // })
   async handlePolDepositCheck() {
     if (POL_AUTO_DEPOSITS_PAUSED) {
       this.logger.debug(
@@ -747,10 +752,13 @@ export class StakingRewardService {
    * its AQUA balance; running them concurrently produces sequence-number
    * races and lets the pre-flight POL sweep miss in-flight claim AQUA.
    */
-  @Cron('30 * * * *', {
-    name: 'staking-reward-distribution',
-    timeZone: 'UTC',
-  })
+  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
+  // Stakers stop accruing distributed rewards until this is uncommented or
+  // POST /test/staking-reward is called manually.
+  // @Cron('30 * * * *', {
+  //   name: 'staking-reward-distribution',
+  //   timeZone: 'UTC',
+  // })
   async handleStakingRewardDistribution() {
     // Belt-and-braces guard. Schedule is already offset 30 min from the
     // ICE-locking cron, but if that cron runs long, manual triggers fire

@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+// Kept while the @Cron decorator(s) below are commented out (crons paused).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
@@ -38,10 +40,13 @@ export class VaultCompoundService {
   /**
    * Runs at 00:00, 06:00, 12:00, 18:00 UTC
    */
-  @Cron(CronExpression.EVERY_2_HOURS, {
-    name: 'vault-compound-every-2h',
-    timeZone: 'UTC',
-  })
+  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
+  // Vault positions stop auto-compounding until this is uncommented or
+  // POST /test/vault-compound is called manually.
+  // @Cron(CronExpression.EVERY_2_HOURS, {
+  //   name: 'vault-compound-every-2h',
+  //   timeZone: 'UTC',
+  // })
   async handleVaultCompound() {
     this.logger.log('Starting vault compound process...');
 
