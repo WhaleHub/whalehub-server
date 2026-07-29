@@ -43,10 +43,10 @@ export class VaultCompoundService {
   // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
   // Vault positions stop auto-compounding until this is uncommented or
   // POST /test/vault-compound is called manually.
-  // @Cron(CronExpression.EVERY_2_HOURS, {
-  //   name: 'vault-compound-every-2h',
-  //   timeZone: 'UTC',
-  // })
+  @Cron(CronExpression.EVERY_2_HOURS, {
+    name: 'vault-compound-every-2h',
+    timeZone: 'UTC',
+  })
   async handleVaultCompound() {
     this.logger.log('Starting vault compound process...');
 

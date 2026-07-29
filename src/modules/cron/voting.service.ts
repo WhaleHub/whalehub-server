@@ -120,10 +120,10 @@ export class VotingService {
   // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
   // Weekly upvoteICE votes (which create on-chain claimable balances) no longer
   // happen automatically. VOTING_CRON_SCHEDULE has no effect while commented out.
-  // @Cron(process.env.VOTING_CRON_SCHEDULE || '0 3 * * 0', {
-  //   name: 'pool-voting',
-  //   timeZone: 'UTC',
-  // })
+  @Cron(process.env.VOTING_CRON_SCHEDULE || '0 3 * * 0', {
+    name: 'pool-voting',
+    timeZone: 'UTC',
+  })
   async handleVoting() {
     this.logger.log('Starting pool voting process...');
 

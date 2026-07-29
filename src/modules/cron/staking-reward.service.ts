@@ -59,7 +59,7 @@ const MAX_RETENTION_LOOKBACK_LEDGERS = 100000;
  * The manual paths are intentionally NOT gated — POST /test/pol-deposit and
  * POST /test/pol-deposit/exact still work as operator escape hatches.
  */
-const POL_AUTO_DEPOSITS_PAUSED = true;
+const POL_AUTO_DEPOSITS_PAUSED = false;
 
 /**
  * Staking Reward Distribution Service
@@ -527,10 +527,10 @@ export class StakingRewardService {
   // PAUSED 2026-07-27 — decorator removed in addition to the
   // POL_AUTO_DEPOSITS_PAUSED flag below, so this cannot fire even if the flag
   // is flipped back without re-reading this block. Re-enable BOTH to resume.
-  // @Cron(CronExpression.EVERY_5_MINUTES, {
-  //   name: 'pol-deposit-check',
-  //   timeZone: 'UTC',
-  // })
+  @Cron(CronExpression.EVERY_5_MINUTES, {
+    name: 'pol-deposit-check',
+    timeZone: 'UTC',
+  })
   async handlePolDepositCheck() {
     if (POL_AUTO_DEPOSITS_PAUSED) {
       this.logger.debug(
@@ -755,10 +755,10 @@ export class StakingRewardService {
   // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
   // Stakers stop accruing distributed rewards until this is uncommented or
   // POST /test/staking-reward is called manually.
-  // @Cron('30 * * * *', {
-  //   name: 'staking-reward-distribution',
-  //   timeZone: 'UTC',
-  // })
+  @Cron('30 * * * *', {
+    name: 'staking-reward-distribution',
+    timeZone: 'UTC',
+  })
   async handleStakingRewardDistribution() {
     // Belt-and-braces guard. Schedule is already offset 30 min from the
     // ICE-locking cron, but if that cron runs long, manual triggers fire

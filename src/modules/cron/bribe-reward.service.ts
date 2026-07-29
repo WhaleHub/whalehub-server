@@ -203,7 +203,7 @@ export class BribeRewardService {
   // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
   // Bribe AQUA now accumulates in the manager wallet until this is uncommented
   // or POST /test/bribe-reward is called manually.
-  // @Cron('0 */6 * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
+  @Cron('0 */6 * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
   async handleBribeRewardDistribution(): Promise<void> {
     // De-sync the two DO instances so the leader drains the wallet first.
     await this.sleep(Math.floor(Math.random() * 60000));

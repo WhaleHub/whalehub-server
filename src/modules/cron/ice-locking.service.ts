@@ -120,10 +120,10 @@ export class IceLockingService implements OnModuleInit {
    * by uncommenting the @Cron decorator below. Currently only runs when
    * triggered manually via POST /test/ice-locking.
    */
-  // @Cron('0 */4 * * *', {
-  //   name: 'ice-locking-every-4h',
-  //   timeZone: 'UTC',
-  // })
+  @Cron('0 */4 * * *', {
+    name: 'ice-locking-every-4h',
+    timeZone: 'UTC',
+  })
   async handleDailyIceLocking() {
     if (this.isRunning) {
       this.logger.log('ICE locking already in progress, skipping...');
