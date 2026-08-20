@@ -84,9 +84,13 @@ class TestController {
   ) {
     const aquaNum = parseFloat(aqua);
     if (!Number.isFinite(aquaNum) || aquaNum <= 0) {
-      return { success: false, message: 'pass ?aqua=<AQUA amount> (e.g. 2000)' };
+      return {
+        success: false,
+        message: 'pass ?aqua=<AQUA amount> (e.g. 2000)',
+      };
     }
-    const blubNum = blub && Number.isFinite(parseFloat(blub)) ? parseFloat(blub) : aquaNum;
+    const blubNum =
+      blub && Number.isFinite(parseFloat(blub)) ? parseFloat(blub) : aquaNum;
     const aquaStroops = BigInt(Math.round(aquaNum * 1e7));
     const blubStroops = BigInt(Math.round(blubNum * 1e7));
     console.log(
@@ -105,7 +109,9 @@ class TestController {
 
   @Post('bribe-reward')
   async triggerBribeReward() {
-    console.log('[TestController] Manually triggering bribe reward distribution...');
+    console.log(
+      '[TestController] Manually triggering bribe reward distribution...',
+    );
     return await this.bribeRewardService.manualTrigger();
   }
 
@@ -121,13 +127,17 @@ class TestController {
 
   // One-off: swap wallet AQUA (all, or ?amount=<AQUA>) -> BLUB -> stakers, no treasury cut.
   @Post('bribe-reward/swap-now')
-  async swapBribeNow(@Query('amount') amount?: string) {
+  async swapBribeNow(
+    @Query('amount') amount?: string,
+    @Query('stakersOnly') stakersOnly?: string,
+  ) {
     console.log('[TestController] Manual bribe swap-now...');
     const stroops =
       amount && Number.isFinite(parseFloat(amount))
         ? BigInt(Math.round(parseFloat(amount) * 1e7))
         : undefined;
-    return await this.bribeRewardService.distributeNow(stroops);
+    const onlyStakers = stakersOnly === 'true';
+    return await this.bribeRewardService.distributeNow(stroops, onlyStakers);
   }
 
   @Get('health')
@@ -142,9 +152,7 @@ class TestController {
  */
 @Controller('public')
 class PublicController {
-  constructor(
-    private readonly stakingApyIndexer: StakingApyIndexerService,
-  ) {}
+  constructor(private readonly stakingApyIndexer: StakingApyIndexerService) {}
 
   @Get('staking-apy')
   getStakingApy(@Query('window_days') windowDaysRaw?: string) {
@@ -192,9 +200,7 @@ class PublicController {
     CronModule,
   ],
   controllers: [AppController, TestController, PublicController],
-  providers: [
-    AppService,
-  ],
+  providers: [AppService],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
