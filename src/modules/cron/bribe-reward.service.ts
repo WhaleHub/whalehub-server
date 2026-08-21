@@ -154,6 +154,10 @@ export class BribeRewardService {
   // tranche folds back into the staker stream.
   private static readonly MIN_STREAM_AQUA = 200_000_000n;
 
+  // Contract-side cap inside add_rewards: 100,000 BLUB (7 dp) per call. Anything
+  // larger reverts with InvalidInput (#4), so the staker stream is chunked.
+  private static readonly MAX_BLUB_PER_ADD_REWARDS = 1_000_000_000_000n;
+
   // State + lock file paths.
   private readonly stateFile: string;
   private readonly lockFile: string;
@@ -517,12 +521,19 @@ export class BribeRewardService {
           throw new Error('swap produced 0 BLUB; not calling add_rewards');
         }
 
-        await this.addRewardsToStakingContract(blub);
-        outcome.blubToStakers = blub;
+        const { distributed, error } =
+          await this.addRewardsToStakingContract(blub);
+        outcome.blubToStakers = distributed;
+        if (error) {
+          // Report the partial that DID land before failing the stream.
+          throw new Error(
+            `${error} (distributed ${distributed} of ${blub} BLUB)`,
+          );
+        }
         progress.stakers = true;
         onProgress?.({ ...progress });
         this.logger.log(
-          `[${label}] Stream A done: ${stakerAqua} AQUA -> ${blub} BLUB to stakers`,
+          `[${label}] Stream A done: ${stakerAqua} AQUA -> ${distributed} BLUB to stakers`,
         );
       } catch (err) {
         this.logger.error(
@@ -603,11 +614,32 @@ export class BribeRewardService {
     }
 
     // Pool 0: token_a = BLUB, token_b = AQUA.
-    const lpMinted = await this.adminCompoundDeposit(
-      BribeRewardService.POOL0_ID,
-      blubLeg,
-      aquaLeg,
-    );
+    let lpMinted: bigint;
+    try {
+      lpMinted = await this.adminCompoundDeposit(
+        BribeRewardService.POOL0_ID,
+        blubLeg,
+        aquaLeg,
+      );
+    } catch (err: any) {
+      // "Bad union switch: 1" = the RPC returned SorobanTransactionData ext v1
+      // (Protocol 23 auto-restore of an ARCHIVED entry) and stellar-sdk 12 cannot
+      // parse that union. The archived entry is PoolCompoundStats(pool_id), which
+      // only admin_compound_deposit touches — it expired while pool 0 emitted
+      // nothing. Restoring it makes the simulation plain again.
+      if (err?.message?.includes('Bad union switch')) {
+        throw new Error(
+          'admin_compound_deposit blocked: an archived ledger entry ' +
+            `(PoolCompoundStats(${BribeRewardService.POOL0_ID})) forces a Protocol 23 ` +
+            'restore that stellar-sdk 12 cannot parse. Restore it once with: ' +
+            'stellar contract restore --id <staking> --key-xdr ' +
+            'AAAAEAAAAAEAAAACAAAADwAAABFQb29sQ29tcG91bmRTdGF0cwAAAAAAAAMAAAAA ' +
+            '--durability persistent (see docs). Original: ' +
+            err.message,
+        );
+      }
+      throw err;
+    }
     this.logger.log(
       `[${label}] Stream B done: ${blubLeg} BLUB + ${aquaLeg} AQUA -> ${lpMinted} LP ` +
         `into the vault (pool ${BribeRewardService.POOL0_ID})`,
@@ -917,8 +949,48 @@ export class BribeRewardService {
     return 0n;
   }
 
-  /** Approve + add_rewards on the staking contract (Synthetix-style payout). */
-  private async addRewardsToStakingContract(blubAmount: bigint): Promise<void> {
+  /**
+   * Distribute BLUB to stakers in calls the contract will actually accept.
+   *
+   * `add_rewards` rejects anything above 100,000 BLUB with InvalidInput (#4), so
+   * a large harvest MUST be chunked — a 155K AQUA day swaps to ~200K BLUB and was
+   * silently failing the whole staker stream. Returns how much was distributed;
+   * on a failed chunk it stops and reports the partial rather than retrying
+   * blindly, leaving the remaining BLUB in the manager wallet.
+   */
+  private async addRewardsToStakingContract(
+    blubAmount: bigint,
+  ): Promise<{ distributed: bigint; error?: string }> {
+    const cap = BribeRewardService.MAX_BLUB_PER_ADD_REWARDS;
+    let remaining = blubAmount;
+    let distributed = 0n;
+    let chunkNo = 0;
+
+    while (remaining > 0n) {
+      const chunk = remaining > cap ? cap : remaining;
+      chunkNo++;
+      if (blubAmount > cap) {
+        this.logger.log(
+          `add_rewards chunk ${chunkNo}: ${chunk} BLUB (${remaining} of ${blubAmount} left)`,
+        );
+      }
+      try {
+        await this.addRewardsChunk(chunk);
+      } catch (err: any) {
+        this.logger.error(
+          `add_rewards chunk ${chunkNo} failed after ${distributed} BLUB distributed: ${err.message}`,
+        );
+        return { distributed, error: err.message };
+      }
+      distributed += chunk;
+      remaining -= chunk;
+      if (remaining > 0n) await this.sleep(3000);
+    }
+    return { distributed };
+  }
+
+  /** Approve + add_rewards for a single chunk (<= the contract's per-call cap). */
+  private async addRewardsChunk(blubAmount: bigint): Promise<void> {
     const stakingContract = new StellarSdk.Contract(this.stakingContractId);
     const blubContract = new StellarSdk.Contract(this.blubTokenId);
 
@@ -1139,7 +1211,16 @@ export class BribeRewardService {
           };
         }
 
-        await this.addRewardsToStakingContract(blub);
+        const res = await this.addRewardsToStakingContract(blub);
+        blub = res.distributed;
+        if (res.error) {
+          return {
+            success: false,
+            message: `add_rewards failed after ${res.distributed} BLUB: ${res.error}`,
+            aqua: amount.toString(),
+            blub: res.distributed.toString(),
+          };
+        }
       } else {
         const outcome = await this.runSplit(amount, 'distributeNow');
         blub = outcome.blubToStakers;
@@ -1303,9 +1384,37 @@ export class BribeRewardService {
     return tx;
   }
 
+  /**
+   * Last-resort check when RPC polling runs out: ask Horizon whether the
+   * transaction actually made it into a ledger. A slow RPC must not be reported
+   * as a failed stream — that is how a landed POL deposit gets counted as a loss.
+   */
+  private async verifyOnHorizon(
+    hash: string,
+  ): Promise<'success' | 'failed' | 'unknown'> {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const tx: any = await this.horizonServer
+          .transactions()
+          .transaction(hash)
+          .call();
+        return tx.successful ? 'success' : 'failed';
+      } catch (err: any) {
+        const notFound =
+          err?.response?.status === 404 || err?.message?.includes('not found');
+        if (!notFound) {
+          this.logger.warn(`Horizon lookup for ${hash} failed: ${err.message}`);
+          return 'unknown';
+        }
+        await this.sleep(5000);
+      }
+    }
+    return 'unknown';
+  }
+
   private async pollTransactionStatus(
     hash: string,
-    maxAttempts = 45,
+    maxAttempts = 90,
   ): Promise<any> {
     for (let i = 0; i < maxAttempts; i++) {
       try {
@@ -1332,7 +1441,19 @@ export class BribeRewardService {
         throw error;
       }
     }
-    throw new Error(`Transaction timeout: ${hash}`);
+    // RPC never showed it. Before calling this a failure, ask Horizon — the tx
+    // may well have been included while the RPC lagged.
+    const onChain = await this.verifyOnHorizon(hash);
+    if (onChain === 'success') {
+      this.logger.warn(
+        `RPC polling timed out for ${hash}, but Horizon shows it SUCCEEDED; continuing`,
+      );
+      return { status: 'SUCCESS', hash };
+    }
+    if (onChain === 'failed') {
+      throw new Error(`Transaction failed (per Horizon): ${hash}`);
+    }
+    throw new Error(`Transaction timeout, not found on Horizon: ${hash}`);
   }
 
   private sleep(ms: number): Promise<void> {
