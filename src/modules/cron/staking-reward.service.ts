@@ -11,26 +11,34 @@ import * as path from 'path';
 // Use max fee to avoid transaction failures during network congestion
 const MAX_FEE = '1000000'; // 0.1 XLM max fee
 
-// Treasury fee split is asymmetric (decided 2026-05-16):
-//   - Vaults (pools 1+): 15% to treasury (on-chain `vault_fee_bps = 1500`)
-//   - POL/staking (pool 0 POL share): 30% to treasury
+// Treasury fee on reward income — REMOVED 2026-08-25 (user directive: "not needed
+// now"). Rewards are recycled in full instead of part-funding the treasury.
 //
-// The contract has a single `vault_fee_bps`, so we set it to the lower of the
-// two (1500) for vault-only pools, and the backend applies an additional cut
-// on the POL share of pool 0 below in `handleStakingRewardDistribution`.
+// There are two cuts, and only the second one lives here:
 //
-// To go from 15% effective to 30% effective on POL, we need to send an extra
-// (30 - 15) / (100 - 15) = 17.647...% of the POL share AQUA to treasury before
-// swapping to BLUB. This brings the total cut on POL rewards to 30%.
-const ON_CHAIN_FEE_BPS = 1500;   // 15% — what the contract already deducted
-const POL_TARGET_FEE_BPS = 3000; // 30% — what we want POL to effectively pay
-// Extra basis points to take from the POL share AQUA after the contract's cut.
-// `extra_bps = (target - on_chain) / (10000 - on_chain) * 10000`
-//            = (3000 - 1500) / 8500 * 10000 ≈ 1765
-const POL_EXTRA_TREASURY_BPS = Math.round(
-  ((POL_TARGET_FEE_BPS - ON_CHAIN_FEE_BPS) * 10000) /
-    (10000 - ON_CHAIN_FEE_BPS),
-); // ≈ 1765
+//   1. On-chain `vault_fee_bps` — deducted inside `claim_and_compound` BEFORE
+//      anything reaches this backend, on pool 0 and on vaults alike. No backend
+//      change can avoid it; it is cleared with `update_vault_fee_bps(admin, 0)`,
+//      which requires the 2-of-3 multisig admin.
+//   2. This extra cut on the POL share of pool 0, which used to top POL up from
+//      the on-chain rate to a 30% effective rate.
+//
+// Setting the target to 0 makes (2) zero, so the backend now sends nothing to
+// treasury. It is written as a formula rather than a literal so the two stay
+// consistent: raise POL_TARGET_FEE_BPS above the on-chain rate to bring the
+// extra cut back.
+const ON_CHAIN_FEE_BPS = 1500; // 15% — what the contract still deducts today
+const POL_TARGET_FEE_BPS = 0;  // was 3000 (30%); 0 = no treasury cut on POL
+// Extra basis points to take from the POL share AQUA after the contract's cut:
+// `extra_bps = (target - on_chain) / (10000 - on_chain) * 10000`, floored at 0
+// so a target below the on-chain rate can never produce a negative transfer.
+const POL_EXTRA_TREASURY_BPS = Math.max(
+  0,
+  Math.round(
+    ((POL_TARGET_FEE_BPS - ON_CHAIN_FEE_BPS) * 10000) /
+      (10000 - ON_CHAIN_FEE_BPS),
+  ),
+); // 0 while POL_TARGET_FEE_BPS <= ON_CHAIN_FEE_BPS
 
 // Event polling interval (check for new events every 30 seconds)
 const EVENT_POLL_INTERVAL_MS = 30000;
@@ -817,11 +825,11 @@ export class StakingRewardService {
       const vaultAqua = receivedAqua - polAquaGross;
       this.logger.log(`Split — POL (gross): ${polAquaGross} AQUA, Vault: ${vaultAqua} AQUA`);
 
-      // Step 4b: Apply extra POL-side treasury cut. Contract already deducted
-      // 15% (vault_fee_bps=1500) before sending us anything. POL is supposed to
-      // pay 30% effective, so we route an additional `POL_EXTRA_TREASURY_BPS`
-      // (~17.65%) of `polAquaGross` straight to the vault treasury before the
-      // BLUB swap. Vault share is untouched — it keeps the 85% it should.
+      // Step 4b: Extra POL-side treasury cut — DISABLED 2026-08-25
+      // (`POL_TARGET_FEE_BPS = 0`, so `POL_EXTRA_TREASURY_BPS` is 0 and this
+      // block is a no-op). Kept rather than deleted so restoring the cut is a
+      // one-constant change. Note the contract's own `vault_fee_bps` cut still
+      // applies upstream until the multisig clears it.
       let polAqua = polAquaGross;
       if (polAquaGross > 0n) {
         const polExtraTreasury =
