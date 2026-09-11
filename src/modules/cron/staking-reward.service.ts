@@ -475,6 +475,10 @@ export class StakingRewardService {
       managerScVal,
       StellarSdk.nativeToScVal(aquaAmount, { type: 'i128' }),
       StellarSdk.nativeToScVal(blubAmount, { type: 'i128' }),
+      // min_lp_out — added to the contract 2026-09-08. This POL path deposits
+      // both legs (balanced), so 0 carries the same risk it always did. A
+      // single-sided deposit here would need a `calc_token_amount` floor.
+      StellarSdk.nativeToScVal(0n, { type: 'u128' }),
     );
 
     const tx = await this.buildAndSignTransaction(operation);
@@ -1068,6 +1072,12 @@ export class StakingRewardService {
       StellarSdk.nativeToScVal(poolId, { type: 'u32' }),
       StellarSdk.nativeToScVal(amountA, { type: 'i128' }),
       StellarSdk.nativeToScVal(amountB, { type: 'i128' }),
+      // min_lp_out — added to the contract 2026-09-08. 0 is acceptable ONLY for
+      // a BALANCED deposit (both legs funded), which is all this path does: a
+      // balanced add to a stable pool barely moves the invariant, so there is
+      // nothing meaningful to sandwich. Any single-sided deposit MUST pass a
+      // real floor (see bribe-reward.service `quoteSingleSidedAquaLp`).
+      StellarSdk.nativeToScVal(0n, { type: 'u128' }),
     );
 
     const tx = await this.buildAndSignTransaction(operation);

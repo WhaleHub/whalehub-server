@@ -12,7 +12,7 @@ const MAX_FEE = '1000000'; // 0.1 XLM max fee
 /**
  * Vault Compound Cron Service
  *
- * Runs 4 times daily (0:00, 6:00, 12:00, 18:00 UTC) to:
+ * Runs 6 times daily (every 4 hours, on the hour, UTC) to:
  * 1. Claim boosted rewards from each active vault pool
  * 2. Split rewards: 15% to treasury, 85% auto-compound (driven by on-chain `vault_fee_bps=1500`)
  * 3. Handle token swaps if needed (for non-AQUA pairs)
@@ -38,13 +38,15 @@ export class VaultCompoundService {
   }
 
   /**
-   * Runs at 00:00, 06:00, 12:00, 18:00 UTC
+   * Runs every 4 hours: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC.
+   *
+   * Cadence was EVERY_2_HOURS (12x/day) until 2026-09-08. Cut to 6x/day on
+   * request: continuous-compounding math is flat above ~4x/day (the gap between
+   * 6x and 12x is well under 0.1% APY at any realistic APR), so halving the rate
+   * halves Soroban gas spend for no measurable depositor cost.
    */
-  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
-  // Vault positions stop auto-compounding until this is uncommented or
-  // POST /test/vault-compound is called manually.
-  @Cron(CronExpression.EVERY_2_HOURS, {
-    name: 'vault-compound-every-2h',
+  @Cron('0 */4 * * *', {
+    name: 'vault-compound-every-4h',
     timeZone: 'UTC',
   })
   async handleVaultCompound() {
@@ -89,6 +91,22 @@ export class VaultCompoundService {
   }
 
   /**
+   * Vault shares outstanding for a pool. 0 means the bucket has no depositors,
+   * so any LP credited to it would be ownerless — see `compoundPool`.
+   */
+  private async getVaultTotalShares(poolId: number): Promise<bigint> {
+    const contract = new StellarSdk.Contract(this.stakingContractId);
+    const operation = contract.call(
+      'get_vault_total_shares',
+      StellarSdk.nativeToScVal(poolId, { type: 'u32' }),
+    );
+
+    const result = await this.simulateTransaction(operation);
+
+    return BigInt(StellarSdk.scValToNative(result.result.retval) || 0);
+  }
+
+  /**
    * Get total number of vault pools
    */
   private async getPoolCount(): Promise<number> {
@@ -109,6 +127,22 @@ export class VaultCompoundService {
    */
   private async compoundPool(poolId: number, maxRetries = 3): Promise<void> {
     this.logger.log(`Compounding pool ${poolId}...`);
+
+    // Pre-flight: never compound into a bucket with no depositors.
+    //
+    // `admin_compound_deposit` raises `total_lp_tokens` without minting shares,
+    // so with `total_shares == 0` the credited LP has no owner and the first
+    // depositor redeems the whole accumulated tranche for a dust deposit. The
+    // contract rejects this outright (2026-09-11), but checking BEFORE the claim
+    // matters: otherwise `claim_and_compound` pulls AQUA into the manager wallet
+    // and the refused deposit strands it there every run.
+    const totalShares = await this.getVaultTotalShares(poolId);
+    if (totalShares <= 0n) {
+      this.logger.log(
+        `Pool ${poolId}: no vault depositors (total_shares=0) — skipping compound`,
+      );
+      return;
+    }
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -321,6 +355,12 @@ export class VaultCompoundService {
       StellarSdk.nativeToScVal(poolId, { type: 'u32' }),
       StellarSdk.nativeToScVal(amountA, { type: 'i128' }),
       StellarSdk.nativeToScVal(amountB, { type: 'i128' }),
+      // min_lp_out — added to the contract 2026-09-08. 0 is acceptable ONLY for
+      // a BALANCED deposit (both legs funded), which is all this path does: a
+      // balanced add to a stable pool barely moves the invariant, so there is
+      // nothing meaningful to sandwich. Any single-sided deposit MUST pass a
+      // real floor (see bribe-reward.service `quoteSingleSidedAquaLp`).
+      StellarSdk.nativeToScVal(0n, { type: 'u128' }),
     );
 
     const tx = await this.buildAndSignTransaction(operation);

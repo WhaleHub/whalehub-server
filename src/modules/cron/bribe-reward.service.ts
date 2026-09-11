@@ -54,15 +54,17 @@ interface StreamProgress {
  *       contract (Synthetix-style payout). Open-market buy pressure, half throttle.
  *
  *   Stream B — AQUA/BLUB vault LPs, 30%  (BRIBE_VAULT_BPS)
- *       Half the tranche is swapped to BLUB, then admin_compound_deposit(pool 0)
- *       mints LP into the vault. That call raises `pool_info.total_lp_tokens`
- *       WITHOUT minting vault shares, so every existing depositor's position
- *       (shares x total_lp / total_shares) grows pro-rata. No claims, no sell
- *       pressure — the reward becomes depth.
+ *       Deposited single-sided as AQUA (no half-swap since 2026-09-08) and split
+ *       across two vault buckets over the same Aquarius pool:
+ *       BRIBE_VAULT_SINGLE_AQUA_BPS (default 70%) to the single-sided-AQUA
+ *       reward class, the rest to the balanced class (pool 0).
+ *       admin_compound_deposit raises that bucket's `pool_info.total_lp_tokens`
+ *       WITHOUT minting vault shares, so every existing depositor in it grows
+ *       pro-rata. No claims, no sell pressure — the reward becomes depth.
  *
  *   Stream C — protocol-owned liquidity, 20%  (BRIBE_POL_BPS)
- *       Half swapped to BLUB, both legs transferred to the staking contract,
- *       then manual_deposit_pol(). POL LP is tracked in
+ *       Transferred to the staking contract and deposited single-sided as AQUA
+ *       via manual_deposit_pol() (no half-swap since 2026-09-08). POL LP is tracked in
  *       `ProtocolOwnedLiquidity.aqua_blub_lp_position`, which is NOT part of
  *       `total_lp_tokens`, so POL earns nothing from Stream B. The
  *       "POL is excluded from LP rewards" rule is enforced by architecture.
@@ -118,8 +120,9 @@ export class BribeRewardService {
   // Three-way split of the FULL harvest (basis points, must sum to 10000).
   // There is no treasury cut on bribe income — 100% is recycled:
   //   staker -> AQUA swapped to BLUB -> add_rewards
-  //   vault  -> half swapped to BLUB -> admin_compound_deposit(pool 0)
-  //   pol    -> half swapped to BLUB -> manual_deposit_pol
+  //   vault  -> single-sided AQUA -> admin_compound_deposit, split 70/30 across
+  //             the single-AQUA bucket and pool 0
+  //   pol    -> single-sided AQUA -> manual_deposit_pol
   private readonly bribeStakerBps: number;
   private readonly bribeVaultBps: number;
   private readonly bribePolBps: number;
@@ -128,9 +131,27 @@ export class BribeRewardService {
   // In PoolInfo(0), token_a = BLUB and token_b = AQUA.
   private static readonly POOL0_ID = 0;
 
+  // Second vault bucket over the SAME Aquarius pool, holding the single-sided
+  // AQUA reward class (see `compoundIntoVault`). Unset until `add_pool` has been
+  // called on-chain; while unset the whole Stream B tranche goes to pool 0, so
+  // deploying this backend before the bucket exists is safe.
+  private readonly singleAquaPoolId: number | null;
+
+  // Share of Stream B routed to the single-sided-AQUA bucket.
+  private readonly vaultSingleAquaBps: number;
+
+  // Slippage floor applied to every deposit quote, in bps. A single-sided
+  // deposit into an off-ratio stable pool is sandwichable, so `min_lp_out` is
+  // always a real number derived from `calc_token_amount`, never 0.
+  private readonly depositSlippageBps: number;
+
   // BLUB-AQUA pool index for the Aquarius router swap (same pool the staking
   // reward service uses). Hex bytes from pool creation.
   private readonly poolIndexHex: string;
+
+  // BLUB-AQUA Aquarius pool contract, read directly for deposit quotes
+  // (`calc_token_amount`). Same address the staking reward service uses.
+  private readonly aquaBlubPoolId: string;
 
   // Per-swap chunk size (AQUA stroops). Large single swaps move the stableswap
   // and incur slippage; we split into chunks to limit price impact.
@@ -195,6 +216,34 @@ export class BribeRewardService {
     this.bribeSender =
       this.configService.get<string>('BRIBE_SENDER_ADDRESS') ||
       'GAORXNBAWRIOJ7HRMCTWW2MIB6PYWSC7OKHGIXWTJXYRTZRSHP356TW3';
+
+    this.aquaBlubPoolId = this.configService.get<string>('AQUA_BLUB_POOL_ID');
+
+    const singleAquaPool = this.configService.get<string>(
+      'VAULT_POOL_SINGLE_AQUA_ID',
+    );
+    const parsedSingleAquaPool = Number(singleAquaPool);
+    this.singleAquaPoolId =
+      singleAquaPool != null &&
+      singleAquaPool !== '' &&
+      Number.isInteger(parsedSingleAquaPool) &&
+      parsedSingleAquaPool > 0
+        ? parsedSingleAquaPool
+        : null;
+
+    const singleAquaBps = Number(
+      this.configService.get<string>('BRIBE_VAULT_SINGLE_AQUA_BPS') ?? '7000',
+    );
+    this.vaultSingleAquaBps =
+      Number.isFinite(singleAquaBps) && singleAquaBps >= 0 && singleAquaBps <= 10000
+        ? singleAquaBps
+        : 7000;
+
+    const slipBps = Number(
+      this.configService.get<string>('DEPOSIT_SLIPPAGE_BPS') ?? '100',
+    );
+    this.depositSlippageBps =
+      Number.isFinite(slipBps) && slipBps >= 0 && slipBps < 10000 ? slipBps : 100;
 
     // Three-way split of the FULL harvest. Defaults are the Self-Powered Reward
     // Engine ratios: 50% stakers / 30% vault LPs / 20% POL. No treasury cut is
@@ -577,123 +626,187 @@ export class BribeRewardService {
   }
 
   /**
-   * Stream B — grow the AQUA/BLUB vault position.
+   * Stream B — grow the AQUA/BLUB vault position, as AQUA only.
    *
-   * Swaps half the tranche to BLUB (swapping half is the correct pool-ratio
-   * pairing: at the margin the router rate equals the reserve ratio), then calls
-   * `admin_compound_deposit(pool 0, BLUB, AQUA)`.
+   * The tranche is NO LONGER half-swapped to BLUB (changed 2026-09-08). It is
+   * deposited single-sided as AQUA, for two reasons:
+   *   - BLUB-AQUA is far off ratio (AQUA is the scarce leg), so the StableSwap
+   *     imbalance term REWARDS adding AQUA: at current reserves 100,000 AQUA
+   *     single-sided mints ~137,357 LP versus ~118,108 for the same value added
+   *     balanced. Buying BLUB first threw that away.
+   *   - It pushes the pool back toward par instead of deeper off it.
    *
-   * That contract call adds the minted LP to `pool_info.total_lp_tokens` WITHOUT
-   * minting vault shares, so each depositor's LP (shares x total_lp / total_shares)
-   * grows pro-rata. Protocol-owned LP is tracked separately in
-   * `aqua_blub_lp_position` and is NOT part of `total_lp_tokens`, so POL earns
-   * nothing here — the POL-exclusion rule is structural, not a filter.
+   * The tranche is then split across two vault buckets, both pointing at the
+   * SAME Aquarius pool:
+   *   - `singleAquaPoolId` — the single-sided-AQUA reward class, `vaultSingleAquaBps`
+   *     (default 70%).
+   *   - pool 0 — the balanced class, the remainder.
    *
-   * Returns the LP shares minted.
+   * `admin_compound_deposit` adds minted LP to that bucket's `total_lp_tokens`
+   * WITHOUT minting vault shares, so each depositor in that bucket grows
+   * pro-rata. Protocol-owned LP is tracked in `aqua_blub_lp_position`, outside
+   * every bucket's `total_lp_tokens`, so POL still earns nothing from Stream B —
+   * POL is funded by Stream C.
+   *
+   * Returns total LP shares minted across both buckets.
    */
   private async compoundIntoVault(
     aquaTranche: bigint,
     label: string,
   ): Promise<bigint> {
-    const aquaLeg = aquaTranche / 2n;
-    const aquaToSwap = aquaTranche - aquaLeg;
-    if (aquaLeg <= 0n || aquaToSwap <= 0n) {
-      throw new Error(`tranche ${aquaTranche} too small to pair`);
+    if (aquaTranche <= 0n) {
+      throw new Error(`tranche ${aquaTranche} too small to deposit`);
     }
 
-    const blubLeg = await this.swapAquaToBlub(aquaToSwap);
-    if (blubLeg <= 0n) {
-      throw new Error('swap produced 0 BLUB; nothing deposited');
+    // Split. With no second bucket configured yet, everything goes to pool 0.
+    const singleAquaPart =
+      this.singleAquaPoolId == null
+        ? 0n
+        : (aquaTranche * BigInt(this.vaultSingleAquaBps)) / 10000n;
+    const balancedPart = aquaTranche - singleAquaPart;
+
+    const targets: { poolId: number; aqua: bigint; kind: string }[] = [];
+    if (singleAquaPart > 0n) {
+      targets.push({
+        poolId: this.singleAquaPoolId as number,
+        aqua: singleAquaPart,
+        kind: 'single-AQUA class',
+      });
     }
-    // Do not cap-and-continue here: the BLUB is a deposit leg, so capping would
-    // strand it in the manager wallet. An implausible rate aborts the stream.
-    if (blubLeg > aquaToSwap * 10n) {
-      throw new Error(
-        `BLUB out ${blubLeg} exceeds sanity cap (10x ${aquaToSwap}); aborting vault deposit`,
-      );
+    if (balancedPart > 0n) {
+      targets.push({
+        poolId: BribeRewardService.POOL0_ID,
+        aqua: balancedPart,
+        kind: 'balanced class',
+      });
     }
 
-    // Pool 0: token_a = BLUB, token_b = AQUA.
-    let lpMinted: bigint;
-    try {
-      lpMinted = await this.adminCompoundDeposit(
-        BribeRewardService.POOL0_ID,
-        blubLeg,
-        aquaLeg,
-      );
-    } catch (err: any) {
-      // "Bad union switch: 1" = the RPC returned SorobanTransactionData ext v1
-      // (Protocol 23 auto-restore of an ARCHIVED entry) and stellar-sdk 12 cannot
-      // parse that union. The archived entry is PoolCompoundStats(pool_id), which
-      // only admin_compound_deposit touches — it expired while pool 0 emitted
-      // nothing. Restoring it makes the simulation plain again.
-      if (err?.message?.includes('Bad union switch')) {
-        throw new Error(
-          'admin_compound_deposit blocked: an archived ledger entry ' +
-            `(PoolCompoundStats(${BribeRewardService.POOL0_ID})) forces a Protocol 23 ` +
-            'restore that stellar-sdk 12 cannot parse. Restore it once with: ' +
-            'stellar contract restore --id <staking> --key-xdr ' +
-            'AAAAEAAAAAEAAAACAAAADwAAABFQb29sQ29tcG91bmRTdGF0cwAAAAAAAAMAAAAA ' +
-            '--durability persistent (see docs). Original: ' +
-            err.message,
+    let totalLp = 0n;
+    const failures: string[] = [];
+
+    for (const t of targets) {
+      try {
+        const minLpOut = await this.quoteSingleSidedAquaLp(t.aqua);
+        // Pool 0 PoolInfo order: token_a = BLUB (0 here), token_b = AQUA.
+        const lpMinted = await this.adminCompoundDeposit(
+          t.poolId,
+          0n,
+          t.aqua,
+          minLpOut,
+        );
+        totalLp += lpMinted;
+        this.logger.log(
+          `[${label}] Stream B -> pool ${t.poolId} (${t.kind}): ` +
+            `${t.aqua} AQUA -> ${lpMinted} LP (min ${minLpOut})`,
+        );
+      } catch (err: any) {
+        // "Bad union switch: 1" = the RPC returned SorobanTransactionData ext v1
+        // (Protocol 23 auto-restore of an ARCHIVED entry) and stellar-sdk 12 cannot
+        // parse that union. The archived entry is PoolCompoundStats(pool_id), which
+        // only admin_compound_deposit touches — it expired while pool 0 emitted
+        // nothing. Restoring it makes the simulation plain again.
+        if (err?.message?.includes('Bad union switch')) {
+          failures.push(
+            `pool ${t.poolId}: admin_compound_deposit blocked by an archived ledger ` +
+              `entry (PoolCompoundStats(${t.poolId})) forcing a Protocol 23 restore ` +
+              'that stellar-sdk 12 cannot parse. Restore it once with: ' +
+              'stellar contract restore --id <staking> --key-xdr <PoolCompoundStats key> ' +
+              `--durability persistent. Original: ${err.message}`,
+          );
+        } else {
+          failures.push(`pool ${t.poolId}: ${err.message}`);
+        }
+        this.logger.error(
+          `[${label}] Stream B leg to pool ${t.poolId} failed: ${err.message}`,
         );
       }
-      throw err;
     }
+
+    // One bucket failing must not discard the other's success.
+    if (totalLp === 0n && failures.length > 0) {
+      throw new Error(failures.join(' | '));
+    }
+    if (failures.length > 0) {
+      this.logger.warn(
+        `[${label}] Stream B partially applied; failed legs: ${failures.join(' | ')}`,
+      );
+    }
+
     this.logger.log(
-      `[${label}] Stream B done: ${blubLeg} BLUB + ${aquaLeg} AQUA -> ${lpMinted} LP ` +
-        `into the vault (pool ${BribeRewardService.POOL0_ID})`,
+      `[${label}] Stream B done: ${aquaTranche} AQUA -> ${totalLp} LP across ` +
+        `${targets.length} bucket(s)`,
     );
-    return lpMinted;
+    return totalLp;
   }
 
   /**
-   * Stream C — add protocol-owned liquidity from the harvest.
+   * Minimum LP to accept for a single-sided AQUA deposit of `aquaAmount`,
+   * quoted live from the pool's own `calc_token_amount` and cut by
+   * `depositSlippageBps`. Never returns 0 for a positive amount — a 0 floor is
+   * what makes an off-ratio single-sided deposit sandwichable.
+   */
+  private async quoteSingleSidedAquaLp(aquaAmount: bigint): Promise<bigint> {
+    const pool = new StellarSdk.Contract(this.aquaBlubPoolId);
+    // calc_token_amount takes amounts in the POOL's token order: [AQUA, BLUB].
+    const operation = pool.call(
+      'calc_token_amount',
+      StellarSdk.xdr.ScVal.scvVec([
+        StellarSdk.nativeToScVal(aquaAmount, { type: 'u128' }),
+        StellarSdk.nativeToScVal(0n, { type: 'u128' }),
+      ]),
+      StellarSdk.nativeToScVal(true, { type: 'bool' }),
+    );
+
+    const sim = await this.simulateTransaction(operation);
+    const quoted = BigInt(StellarSdk.scValToNative(sim.result.retval));
+    if (quoted <= 0n) {
+      throw new Error(
+        `calc_token_amount quoted ${quoted} LP for ${aquaAmount} AQUA; refusing to deposit blind`,
+      );
+    }
+    return (quoted * BigInt(10000 - this.depositSlippageBps)) / 10000n;
+  }
+
+  /**
+   * Stream C — add protocol-owned liquidity from the harvest, as AQUA only.
    *
-   * Same half-and-half pairing as Stream B, but the LP lands on the POL side:
-   * both legs are transferred to the staking contract (which is what
-   * `manual_deposit_pol` spends — it reads the CONTRACT's balances, not the
-   * manager's), then deposited. The contract credits
+   * The tranche is NO LONGER half-swapped to BLUB (changed 2026-09-08): it is
+   * transferred to the staking contract and deposited single-sided as AQUA.
+   * `manual_deposit_pol` spends the CONTRACT's balances, not the manager's, so
+   * the transfer has to happen first (Soroban allows one InvokeHostFunction per
+   * transaction, hence two txs). The contract credits
    * `ProtocolOwnedLiquidity.aqua_blub_lp_position`, leaving vault accounting
    * untouched.
+   *
+   * Depositing the scarce leg is both cheaper in LP terms and moves the pool
+   * toward par — see `compoundIntoVault` for the numbers.
    */
   private async depositPolFromAqua(
     aquaTranche: bigint,
     label: string,
   ): Promise<{ aqua: bigint; blub: bigint }> {
-    const aquaLeg = aquaTranche / 2n;
-    const aquaToSwap = aquaTranche - aquaLeg;
-    if (aquaLeg <= 0n || aquaToSwap <= 0n) {
-      throw new Error(`tranche ${aquaTranche} too small to pair`);
+    if (aquaTranche <= 0n) {
+      throw new Error(`tranche ${aquaTranche} too small to deposit`);
     }
 
-    const blubLeg = await this.swapAquaToBlub(aquaToSwap);
-    if (blubLeg <= 0n) {
-      throw new Error('swap produced 0 BLUB; nothing deposited');
-    }
-    if (blubLeg > aquaToSwap * 10n) {
-      throw new Error(
-        `BLUB out ${blubLeg} exceeds sanity cap (10x ${aquaToSwap}); aborting POL deposit`,
-      );
-    }
+    const minLpOut = await this.quoteSingleSidedAquaLp(aquaTranche);
 
-    // Stage both legs inside the contract, then deposit. Three txs: Soroban
-    // allows one InvokeHostFunction per transaction.
-    await this.transferFromManagerToContract(this.aquaTokenId, aquaLeg);
-    await this.transferFromManagerToContract(this.blubTokenId, blubLeg);
-    await this.manualDepositPol(aquaLeg, blubLeg);
+    await this.transferFromManagerToContract(this.aquaTokenId, aquaTranche);
+    await this.manualDepositPol(aquaTranche, 0n, minLpOut);
 
     this.logger.log(
-      `[${label}] Stream C done: ${aquaLeg} AQUA + ${blubLeg} BLUB deposited as POL`,
+      `[${label}] Stream C done: ${aquaTranche} AQUA deposited single-sided as POL ` +
+        `(min ${minLpOut} LP)`,
     );
-    return { aqua: aquaLeg, blub: blubLeg };
+    return { aqua: aquaTranche, blub: 0n };
   }
 
-  /** `admin_compound_deposit(manager, pool_id, amount_a, amount_b)` -> LP minted. */
+  /** `admin_compound_deposit(manager, pool_id, amount_a, amount_b, min_lp_out)` -> LP minted. */
   private async adminCompoundDeposit(
     poolId: number,
     amountA: bigint,
     amountB: bigint,
+    minLpOut: bigint,
   ): Promise<bigint> {
     const stakingContract = new StellarSdk.Contract(this.stakingContractId);
     const operation = stakingContract.call(
@@ -704,6 +817,7 @@ export class BribeRewardService {
       StellarSdk.nativeToScVal(poolId, { type: 'u32' }),
       StellarSdk.nativeToScVal(amountA, { type: 'i128' }),
       StellarSdk.nativeToScVal(amountB, { type: 'i128' }),
+      StellarSdk.nativeToScVal(minLpOut, { type: 'u128' }),
     );
 
     const tx = await this.buildAndSignTransaction(operation);
@@ -722,10 +836,11 @@ export class BribeRewardService {
     return 0n;
   }
 
-  /** `manual_deposit_pol(manager, aqua, blub)` — legs must already be in the contract. */
+  /** `manual_deposit_pol(manager, aqua, blub, min_lp_out)` — legs must already be in the contract. */
   private async manualDepositPol(
     aquaAmount: bigint,
     blubAmount: bigint,
+    minLpOut: bigint,
   ): Promise<void> {
     const stakingContract = new StellarSdk.Contract(this.stakingContractId);
     const operation = stakingContract.call(
@@ -735,6 +850,7 @@ export class BribeRewardService {
       }),
       StellarSdk.nativeToScVal(aquaAmount, { type: 'i128' }),
       StellarSdk.nativeToScVal(blubAmount, { type: 'i128' }),
+      StellarSdk.nativeToScVal(minLpOut, { type: 'u128' }),
     );
     const tx = await this.buildAndSignTransaction(operation);
     const response = await this.sendServer.sendTransaction(tx);
