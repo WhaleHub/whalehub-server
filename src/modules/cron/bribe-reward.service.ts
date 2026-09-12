@@ -22,6 +22,10 @@ interface SplitOutcome {
   stakerAqua: bigint;
   vaultAqua: bigint;
   polAqua: bigint;
+  /** Stream D (v3). Zero while BRIBE_TREASURY_BPS is 0 or unrouted. */
+  treasuryAqua: bigint;
+  treasuryPaid: bigint;
+  /** Paid to stakers, in the policy's token — AQUA since v3, BLUB under v2. */
   blubToStakers: bigint;
   vaultLpMinted: bigint;
   polAquaDeposited: bigint;
@@ -35,6 +39,7 @@ interface StreamProgress {
   stakers: boolean;
   vault: boolean;
   pol: boolean;
+  treasury: boolean;
 }
 
 /**
@@ -126,6 +131,8 @@ export class BribeRewardService {
   private readonly bribeStakerBps: number;
   private readonly bribeVaultBps: number;
   private readonly bribePolBps: number;
+  private readonly bribeTreasuryBps: number;
+  private readonly bribeTreasuryAddress: string | null;
 
   // Vault pool that receives Stream B and Stream C: pool 0 = BLUB-AQUA.
   // In PoolInfo(0), token_a = BLUB and token_b = AQUA.
@@ -245,10 +252,14 @@ export class BribeRewardService {
     this.depositSlippageBps =
       Number.isFinite(slipBps) && slipBps >= 0 && slipBps < 10000 ? slipBps : 100;
 
-    // Three-way split of the FULL harvest. Defaults are the Self-Powered Reward
-    // Engine ratios: 50% stakers / 30% vault LPs / 20% POL. No treasury cut is
-    // taken on bribe income (since 2026-07), and BRIBE_TREASURY_BPS is no longer
-    // read — a treasury line would have to be reintroduced in code.
+    // Four-way split of the FULL harvest (v3, Sep 2026 — "Version A"):
+    // 50% stakers / 30% vault LPs / 10% POL / 10% treasury. v2 was 50/30/20
+    // with no treasury cut; POL's share is halved to fund the treasury line.
+    //
+    // These MUST match the on-chain `get_reward_policy` values, which are what
+    // the docs quote and what the multisig controls. The contract does not
+    // route these streams itself — it only records the split — so a mismatch
+    // between here and on-chain is silent. Change both together.
     let stakerBps = Number(
       this.configService.get<string>('BRIBE_STAKER_BPS') ?? '5000',
     );
@@ -256,26 +267,47 @@ export class BribeRewardService {
       this.configService.get<string>('BRIBE_VAULT_BPS') ?? '3000',
     );
     let polBps = Number(
-      this.configService.get<string>('BRIBE_POL_BPS') ?? '2000',
+      this.configService.get<string>('BRIBE_POL_BPS') ?? '1000',
+    );
+    let treasuryBps = Number(
+      this.configService.get<string>('BRIBE_TREASURY_BPS') ?? '1000',
     );
     const bpsValid =
-      [stakerBps, vaultBps, polBps].every(
+      [stakerBps, vaultBps, polBps, treasuryBps].every(
         (v) => Number.isFinite(v) && v >= 0 && v <= 10000,
-      ) && stakerBps + vaultBps + polBps === 10000;
+      ) && stakerBps + vaultBps + polBps + treasuryBps === 10000;
     if (!bpsValid) {
       // Never guess at a split. Fall back to the previous behaviour (everything
       // to stakers), which is safe and reversible, and say so loudly.
       this.logger.error(
-        `Invalid bribe split (staker=${stakerBps} vault=${vaultBps} pol=${polBps}); ` +
-          `must be 0..10000 and sum to 10000. Falling back to 100% stakers.`,
+        `Invalid bribe split (staker=${stakerBps} vault=${vaultBps} pol=${polBps} ` +
+          `treasury=${treasuryBps}); must be 0..10000 and sum to 10000. ` +
+          `Falling back to 100% stakers.`,
       );
       stakerBps = 10000;
       vaultBps = 0;
       polBps = 0;
+      treasuryBps = 0;
     }
+
+    this.bribeTreasuryAddress =
+      this.configService.get<string>('BRIBE_TREASURY_ADDRESS') || null;
+    if (treasuryBps > 0 && !this.bribeTreasuryAddress) {
+      // No destination means the tranche would sit in the manager wallet and be
+      // swept into the next run's harvest. Fold it into POL instead, which is
+      // the v2 behaviour and at least keeps it working for depositors.
+      this.logger.error(
+        `BRIBE_TREASURY_BPS=${treasuryBps} but BRIBE_TREASURY_ADDRESS is unset; ` +
+          `folding the treasury share into POL until an address is configured.`,
+      );
+      polBps += treasuryBps;
+      treasuryBps = 0;
+    }
+
     this.bribeStakerBps = stakerBps;
     this.bribeVaultBps = vaultBps;
     this.bribePolBps = polBps;
+    this.bribeTreasuryBps = treasuryBps;
 
     this.poolIndexHex =
       this.configService.get<string>('AQUA_BLUB_POOL_INDEX_HEX') ||
@@ -499,6 +531,8 @@ export class BribeRewardService {
       stakerAqua: 0n,
       vaultAqua: 0n,
       polAqua: 0n,
+      treasuryAqua: 0n,
+      treasuryPaid: 0n,
       blubToStakers: 0n,
       vaultLpMinted: 0n,
       polAquaDeposited: 0n,
@@ -509,17 +543,20 @@ export class BribeRewardService {
       stakers: false,
       vault: false,
       pol: false,
+      treasury: false,
     };
 
-    // ---- Step 1: no treasury cut ------------------------------------------
-    // The harvest is recycled in full: 100% of every bribe batch is split across
-    // the three streams. There is deliberately no treasury line here, and no env
-    // var that can introduce one — reinstating a cut is a code change.
+    // ---- Step 1: the full batch is distributable ---------------------------
+    // Nothing is withheld before the split. The treasury share is Stream D, an
+    // explicit line in the split itself (v3) rather than a cut taken off the
+    // top — so the four percentages always describe the whole batch.
     const distributable = totalAqua;
 
-    // ---- Step 2: compute the three tranches -------------------------------
+    // ---- Step 2: compute the four tranches --------------------------------
     let vaultAqua = (distributable * BigInt(this.bribeVaultBps)) / 10000n;
     let polAqua = (distributable * BigInt(this.bribePolBps)) / 10000n;
+    let treasuryAqua =
+      (distributable * BigInt(this.bribeTreasuryBps)) / 10000n;
 
     // A tranche too small to split-and-pair is not worth two transactions and
     // a pool deposit; fold it into the staker stream instead of dusting.
@@ -535,54 +572,93 @@ export class BribeRewardService {
       );
       polAqua = 0n;
     }
+    // A treasury tranche is a single payment, so the minimum that justifies it
+    // is just "more than the fee" — but fold dust in with the rest anyway.
+    if (
+      treasuryAqua > 0n &&
+      treasuryAqua < BribeRewardService.MIN_STREAM_AQUA
+    ) {
+      this.logger.log(
+        `[${label}] Treasury tranche ${treasuryAqua} below ${BribeRewardService.MIN_STREAM_AQUA}; folding into stakers`,
+      );
+      treasuryAqua = 0n;
+    }
     // Stakers take the remainder, so integer-division dust is never stranded.
-    const stakerAqua = distributable - vaultAqua - polAqua;
+    const stakerAqua = distributable - vaultAqua - polAqua - treasuryAqua;
 
     outcome.stakerAqua = stakerAqua;
     outcome.vaultAqua = vaultAqua;
     outcome.polAqua = polAqua;
+    outcome.treasuryAqua = treasuryAqua;
 
     this.logger.log(
       `[${label}] Split ${distributable} AQUA -> stakers ${stakerAqua} ` +
         `(${this.bribeStakerBps}bps), vault ${vaultAqua} (${this.bribeVaultBps}bps), ` +
-        `POL ${polAqua} (${this.bribePolBps}bps)`,
+        `POL ${polAqua} (${this.bribePolBps}bps), ` +
+        `treasury ${treasuryAqua} (${this.bribeTreasuryBps}bps)`,
     );
 
-    // ---- Stream A: stakers — AQUA -> BLUB -> add_rewards ------------------
+    // ---- Stream A: stakers -------------------------------------------------
+    //
+    // v3 pays stakers the AQUA the voting revenue already arrived in. v2 bought
+    // BLUB with it first, which made every reward a buy order into a thin pool
+    // that recipients mostly sold straight back.
+    //
+    // Which one runs is decided by the CONTRACT's reward policy, not by a flag
+    // here, so reverting on-chain via `set_reward_policy` reverts the backend
+    // too without a redeploy. A staker who specifically wants BLUB elects it
+    // themselves and the contract swaps at claim time, at their own cost.
     if (stakerAqua > 0n) {
       try {
-        let blub = await this.swapAquaToBlub(stakerAqua);
+        const payoutToken = await this.getPayoutToken();
+        let rewardAmount: bigint;
+        let tokenId: string;
 
-        const sanityCap = stakerAqua * 10n;
-        if (blub > sanityCap) {
-          this.logger.error(
-            `[${label}] BLUB out ${blub} exceeds sanity cap ${sanityCap}; capping`,
-          );
-          blub = sanityCap;
-        }
-        if (blub > this.maxBlubPerRun) {
-          this.logger.error(
-            `[${label}] BLUB out ${blub} exceeds hard cap ${this.maxBlubPerRun}; capping`,
-          );
-          blub = this.maxBlubPerRun;
-        }
-        if (blub <= 0n) {
-          throw new Error('swap produced 0 BLUB; not calling add_rewards');
+        if (payoutToken === 'Blub') {
+          let blub = await this.swapAquaToBlub(stakerAqua);
+
+          const sanityCap = stakerAqua * 10n;
+          if (blub > sanityCap) {
+            this.logger.error(
+              `[${label}] BLUB out ${blub} exceeds sanity cap ${sanityCap}; capping`,
+            );
+            blub = sanityCap;
+          }
+          if (blub > this.maxBlubPerRun) {
+            this.logger.error(
+              `[${label}] BLUB out ${blub} exceeds hard cap ${this.maxBlubPerRun}; capping`,
+            );
+            blub = this.maxBlubPerRun;
+          }
+          if (blub <= 0n) {
+            throw new Error('swap produced 0 BLUB; not calling add_rewards');
+          }
+          rewardAmount = blub;
+          tokenId = this.blubTokenId;
+        } else {
+          // No swap, no cap: the AQUA is passed through exactly as received.
+          // The v2 caps guarded a swap that could return an absurd amount from
+          // a manipulated pool; there is no swap here to manipulate.
+          rewardAmount = stakerAqua;
+          tokenId = this.aquaTokenId;
         }
 
-        const { distributed, error } =
-          await this.addRewardsToStakingContract(blub);
+        const { distributed, error } = await this.addRewardsToStakingContract(
+          rewardAmount,
+          tokenId,
+          payoutToken,
+        );
         outcome.blubToStakers = distributed;
         if (error) {
           // Report the partial that DID land before failing the stream.
           throw new Error(
-            `${error} (distributed ${distributed} of ${blub} BLUB)`,
+            `${error} (distributed ${distributed} of ${rewardAmount} ${payoutToken})`,
           );
         }
         progress.stakers = true;
         onProgress?.({ ...progress });
         this.logger.log(
-          `[${label}] Stream A done: ${stakerAqua} AQUA -> ${distributed} BLUB to stakers`,
+          `[${label}] Stream A done: ${stakerAqua} AQUA -> ${distributed} ${payoutToken} to stakers`,
         );
       } catch (err) {
         this.logger.error(
@@ -616,6 +692,29 @@ export class BribeRewardService {
       } catch (err) {
         this.logger.error(`[${label}] Stream C (POL) failed: ${err.message}`);
         outcome.errors.push(`pol: ${err.message}`);
+      }
+    }
+
+    // ---- Stream D: treasury — plain AQUA transfer --------------------------
+    // New in v3. v2 took no cut of reward income; this funds runway, audits and
+    // ops. A plain payment, no swap and no pool interaction.
+    if (treasuryAqua > 0n && this.bribeTreasuryAddress) {
+      try {
+        const hash = await this.transferAquaTo(
+          this.bribeTreasuryAddress,
+          treasuryAqua,
+        );
+        outcome.treasuryPaid = treasuryAqua;
+        progress.treasury = true;
+        onProgress?.({ ...progress });
+        this.logger.log(
+          `[${label}] Stream D done: ${treasuryAqua} AQUA -> treasury tx=${hash}`,
+        );
+      } catch (err) {
+        this.logger.error(
+          `[${label}] Stream D (treasury) failed: ${err.message}`,
+        );
+        outcome.errors.push(`treasury: ${err.message}`);
       }
     }
 
@@ -1074,9 +1173,65 @@ export class BribeRewardService {
    * on a failed chunk it stops and reports the partial rather than retrying
    * blindly, leaving the remaining BLUB in the manager wallet.
    */
+  /**
+   * The token the staking contract currently pays stakers in.
+   *
+   * Read from the contract rather than configured here so that reverting the
+   * policy on-chain reverts this service too, with no redeploy. Falls back to
+   * 'Blub' (v2 behaviour) if the call fails — a pre-v3 contract has no
+   * `get_reward_policy`, and guessing 'Aqua' against one would send AQUA into a
+   * BLUB-denominated accumulator.
+   */
+  private async getPayoutToken(): Promise<'Aqua' | 'Blub'> {
+    try {
+      const contract = new StellarSdk.Contract(this.stakingContractId);
+      const result = await this.simulateTransaction(
+        contract.call('get_reward_policy'),
+      );
+      const policy: any = StellarSdk.scValToNative(result.result.retval);
+      // A soroban unit-variant enum comes back as a single-element array.
+      const raw = policy?.payout_token;
+      const name = Array.isArray(raw) ? raw[0] : raw;
+      if (name === 'Aqua' || name === 'Blub') return name;
+      this.logger.warn(
+        `Unrecognised payout_token ${JSON.stringify(raw)}; assuming Blub`,
+      );
+      return 'Blub';
+    } catch (err: any) {
+      this.logger.warn(
+        `get_reward_policy failed (${err.message}); assuming v2 behaviour (Blub)`,
+      );
+      return 'Blub';
+    }
+  }
+
+  /** Plain SAC transfer of AQUA from the manager wallet to `destination`. */
+  private async transferAquaTo(
+    destination: string,
+    amount: bigint,
+  ): Promise<string> {
+    const aqua = new StellarSdk.Contract(this.aquaTokenId);
+    const op = aqua.call(
+      'transfer',
+      StellarSdk.nativeToScVal(this.adminKeypair.publicKey(), {
+        type: 'address',
+      }),
+      StellarSdk.nativeToScVal(destination, { type: 'address' }),
+      StellarSdk.nativeToScVal(amount, { type: 'i128' }),
+    );
+    const tx = await this.buildAndSignTransaction(op);
+    const response = await this.sendServer.sendTransaction(tx);
+    await this.pollTransactionStatus(response.hash);
+    return response.hash;
+  }
+
   private async addRewardsToStakingContract(
     blubAmount: bigint,
+    tokenId: string = this.blubTokenId,
+    tokenLabel: 'Aqua' | 'Blub' = 'Blub',
   ): Promise<{ distributed: bigint; error?: string }> {
+    // The contract's per-call cap was removed in v3, but chunking is retained:
+    // it bounds how much a single failed transaction can strand mid-stream.
     const cap = BribeRewardService.MAX_BLUB_PER_ADD_REWARDS;
     let remaining = blubAmount;
     let distributed = 0n;
@@ -1087,14 +1242,14 @@ export class BribeRewardService {
       chunkNo++;
       if (blubAmount > cap) {
         this.logger.log(
-          `add_rewards chunk ${chunkNo}: ${chunk} BLUB (${remaining} of ${blubAmount} left)`,
+          `add_rewards chunk ${chunkNo}: ${chunk} ${tokenLabel} (${remaining} of ${blubAmount} left)`,
         );
       }
       try {
-        await this.addRewardsChunk(chunk);
+        await this.addRewardsChunk(chunk, tokenId, tokenLabel);
       } catch (err: any) {
         this.logger.error(
-          `add_rewards chunk ${chunkNo} failed after ${distributed} BLUB distributed: ${err.message}`,
+          `add_rewards chunk ${chunkNo} failed after ${distributed} ${tokenLabel} distributed: ${err.message}`,
         );
         return { distributed, error: err.message };
       }
@@ -1105,10 +1260,14 @@ export class BribeRewardService {
     return { distributed };
   }
 
-  /** Approve + add_rewards for a single chunk (<= the contract's per-call cap). */
-  private async addRewardsChunk(blubAmount: bigint): Promise<void> {
+  /** Approve + add_rewards for a single chunk, in whatever token the policy pays. */
+  private async addRewardsChunk(
+    blubAmount: bigint,
+    tokenId: string = this.blubTokenId,
+    tokenLabel: 'Aqua' | 'Blub' = 'Blub',
+  ): Promise<void> {
     const stakingContract = new StellarSdk.Contract(this.stakingContractId);
-    const blubContract = new StellarSdk.Contract(this.blubTokenId);
+    const blubContract = new StellarSdk.Contract(tokenId);
 
     const withRetry = async <T>(
       fn: () => Promise<T>,
@@ -1170,7 +1329,7 @@ export class BribeRewardService {
     const response = await this.sendServer.sendTransaction(tx);
     await this.pollTransactionStatus(response.hash);
     this.logger.log(
-      `add_rewards submitted: ${blubAmount} BLUB tx=${response.hash}`,
+      `add_rewards submitted: ${blubAmount} ${tokenLabel} tx=${response.hash}`,
     );
   }
 
