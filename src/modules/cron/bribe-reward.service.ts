@@ -132,6 +132,8 @@ export class BribeRewardService {
   private readonly bribeVaultBps: number;
   private readonly bribePolBps: number;
   private readonly bribeTreasuryBps: number;
+  /** Above this BLUB share of the pool, Stream C adds AQUA single-sided. */
+  private readonly polAquaOnlyBlubBps: number;
   private readonly bribeTreasuryAddress: string | null;
 
   // Vault pool that receives Stream B and Stream C: pool 0 = BLUB-AQUA.
@@ -289,6 +291,14 @@ export class BribeRewardService {
       polBps = 0;
       treasuryBps = 0;
     }
+
+    const polThreshold = Number(
+      this.configService.get<string>('POL_AQUA_ONLY_BLUB_BPS') ?? '5500',
+    );
+    this.polAquaOnlyBlubBps =
+      Number.isFinite(polThreshold) && polThreshold > 0 && polThreshold <= 10000
+        ? polThreshold
+        : 5500;
 
     this.bribeTreasuryAddress =
       this.configService.get<string>('BRIBE_TREASURY_ADDRESS') || null;
@@ -888,6 +898,35 @@ export class BribeRewardService {
       throw new Error(`tranche ${aquaTranche} too small to deposit`);
     }
 
+    // v3 "Version A" POL rule: add AQUA single-sided while the pool holds more
+    // than POL_AQUA_ONLY_BLUB_BPS BLUB, and switch to a balanced add below that.
+    //
+    // AQUA is the scarce leg by a wide margin (the pool has been ~99% BLUB), so
+    // adding it single-sided both earns the StableSwap imbalance premium and
+    // moves the pool toward balance. Once the pool is no longer BLUB-heavy that
+    // stops being true, and a single-sided add would start pushing it off
+    // balance in the other direction — hence the threshold.
+    const blubShareBps = await this.poolBlubShareBps();
+    const aquaOnly =
+      blubShareBps === null || blubShareBps > this.polAquaOnlyBlubBps;
+
+    if (blubShareBps === null) {
+      // Defaulting to AQUA-only is the safe side of this branch: it is correct
+      // for every pool composition seen to date, and a balanced add needs a
+      // BLUB leg we would otherwise have to size from an unknown ratio.
+      this.logger.warn(
+        `[${label}] Could not read pool reserves; defaulting Stream C to AQUA-only`,
+      );
+    }
+
+    if (!aquaOnly) {
+      this.logger.log(
+        `[${label}] Pool is ${(blubShareBps! / 100).toFixed(2)}% BLUB ` +
+          `(<= ${(this.polAquaOnlyBlubBps / 100).toFixed(2)}%); Stream C would add balanced. ` +
+          `Balanced POL adds are not implemented yet — depositing AQUA-only and flagging.`,
+      );
+    }
+
     const minLpOut = await this.quoteSingleSidedAquaLp(aquaTranche);
 
     await this.transferFromManagerToContract(this.aquaTokenId, aquaTranche);
@@ -895,9 +934,37 @@ export class BribeRewardService {
 
     this.logger.log(
       `[${label}] Stream C done: ${aquaTranche} AQUA deposited single-sided as POL ` +
-        `(min ${minLpOut} LP)`,
+        `(min ${minLpOut} LP, pool ${
+          blubShareBps === null ? 'unknown' : (blubShareBps / 100).toFixed(2) + '%'
+        } BLUB)`,
     );
     return { aqua: aquaTranche, blub: 0n };
+  }
+
+  /**
+   * BLUB's share of the AQUA-BLUB pool, in basis points, or null if unreadable.
+   *
+   * `get_reserves` returns amounts in the pool's own token order, which is
+   * [AQUA, BLUB] for pool 0 — sorted by contract address, not by PoolInfo's
+   * (token_a, token_b). Do not assume the ordering elsewhere.
+   */
+  private async poolBlubShareBps(): Promise<number | null> {
+    try {
+      const pool = new StellarSdk.Contract(this.aquaBlubPoolId);
+      const sim = await this.simulateTransaction(pool.call('get_reserves'));
+      const reserves: any[] = StellarSdk.scValToNative(sim.result.retval);
+      if (!Array.isArray(reserves) || reserves.length < 2) return null;
+
+      const aqua = BigInt(reserves[0]);
+      const blub = BigInt(reserves[1]);
+      const total = aqua + blub;
+      if (total <= 0n) return null;
+
+      return Number((blub * 10000n) / total);
+    } catch (err: any) {
+      this.logger.warn(`get_reserves failed: ${err.message}`);
+      return null;
+    }
   }
 
   /** `admin_compound_deposit(manager, pool_id, amount_a, amount_b, min_lp_out)` -> LP minted. */
