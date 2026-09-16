@@ -274,22 +274,48 @@ export class BribeRewardService {
     let treasuryBps = Number(
       this.configService.get<string>('BRIBE_TREASURY_BPS') ?? '1000',
     );
-    const bpsValid =
-      [stakerBps, vaultBps, polBps, treasuryBps].every(
-        (v) => Number.isFinite(v) && v >= 0 && v <= 10000,
-      ) && stakerBps + vaultBps + polBps + treasuryBps === 10000;
-    if (!bpsValid) {
-      // Never guess at a split. Fall back to the previous behaviour (everything
-      // to stakers), which is safe and reversible, and say so loudly.
-      this.logger.error(
-        `Invalid bribe split (staker=${stakerBps} vault=${vaultBps} pol=${polBps} ` +
-          `treasury=${treasuryBps}); must be 0..10000 and sum to 10000. ` +
-          `Falling back to 100% stakers.`,
-      );
-      stakerBps = 10000;
-      vaultBps = 0;
-      polBps = 0;
-      treasuryBps = 0;
+    const inRange = [stakerBps, vaultBps, polBps, treasuryBps].every(
+      (v) => Number.isFinite(v) && v >= 0 && v <= 10000,
+    );
+    const total = stakerBps + vaultBps + polBps + treasuryBps;
+
+    if (!inRange || total !== 10000) {
+      // A v2-era deployment sets BRIBE_STAKER/VAULT/POL_BPS only (50/30/20) and
+      // has never heard of a treasury line. Adding a non-zero treasury default
+      // on top pushes the total to 11000, and a naive "reject and fall back"
+      // then silently routes EVERYTHING to stakers — which is what happened
+      // between 2026-09-14 and 2026-09-16: Streams B, C and D stopped dead and
+      // no vault depositor earned anything for two days. It was not loud, it
+      // was not safe, and nothing alerted.
+      //
+      // So: recognise the legacy three-way config explicitly and honour it,
+      // rather than treating it as garbage.
+      if (
+        inRange &&
+        stakerBps + vaultBps + polBps === 10000 &&
+        treasuryBps > 0
+      ) {
+        this.logger.warn(
+          `Bribe split names no treasury share (staker=${stakerBps} vault=${vaultBps} ` +
+            `pol=${polBps} already total 10000). Treating this as a pre-v3 config and ` +
+            `running with treasury=0. Set BRIBE_POL_BPS=1000 and BRIBE_TREASURY_BPS=1000 ` +
+            `to enable Stream D.`,
+        );
+        treasuryBps = 0;
+      } else {
+        // Genuinely unusable. Fall back to the v3 DEFAULTS, not to 100%
+        // stakers: an unroutable config should degrade to the intended split,
+        // never to one that quietly starves three of the four streams.
+        this.logger.error(
+          `Invalid bribe split (staker=${stakerBps} vault=${vaultBps} pol=${polBps} ` +
+            `treasury=${treasuryBps}, total=${total}); must each be 0..10000 and sum to ` +
+            `10000. Falling back to v3 defaults 5000/3000/1000/1000.`,
+        );
+        stakerBps = 5000;
+        vaultBps = 3000;
+        polBps = 1000;
+        treasuryBps = 1000;
+      }
     }
 
     const polThreshold = Number(
