@@ -1697,12 +1697,24 @@ export class BribeRewardService {
     return {
       manager: this.adminKeypair.publicKey(),
       bribeSender: this.bribeSender,
-      treasury: 'none — 100% of the harvest is recycled',
+      // Report what is actually configured. This previously hardcoded
+      // "none — 100% recycled" and omitted treasuryBps, so the split it printed
+      // could never total 10000 — which made a live misconfiguration look normal
+      // while every vault depositor earned nothing for six days.
+      treasury: this.bribeTreasuryAddress
+        ? `${this.bribeTreasuryBps / 100}% -> ${this.bribeTreasuryAddress}`
+        : this.bribeTreasuryBps > 0
+        ? `${this.bribeTreasuryBps / 100}% configured but NO BRIBE_TREASURY_ADDRESS — folding into POL`
+        : 'none — 100% of the harvest is recycled',
       split: {
         stakerBps: this.bribeStakerBps,
         vaultBps: this.bribeVaultBps,
         polBps: this.bribePolBps,
+        treasuryBps: this.bribeTreasuryBps,
+        total: this.bribeStakerBps + this.bribeVaultBps + this.bribePolBps + this.bribeTreasuryBps,
       },
+      vaultSingleAquaBps: this.vaultSingleAquaBps,
+      singleAquaPoolId: this.singleAquaPoolId,
       cursor: state.cursor,
       pending: state.pending,
       pendingAmount: state.pendingAmount,
