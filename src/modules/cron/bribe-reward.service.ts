@@ -61,13 +61,17 @@ interface StreamProgress {
  *   Stream B — AQUA/BLUB vault LPs, 30%  (BRIBE_VAULT_BPS)
  *       Deposited single-sided as AQUA (no half-swap since 2026-09-08) and split
  *       across two vault buckets over the same Aquarius pool:
- *       BRIBE_VAULT_SINGLE_AQUA_BPS (default 70%) to the single-sided-AQUA
- *       reward class, the rest to the balanced class (pool 0).
+ *       BRIBE_VAULT_SINGLE_AQUA_BPS (default 100%) to the single-sided-AQUA
+ *       reward class, the rest to the balanced class (pool 0). At the default,
+ *       pair depositors earn swap fees only and no share of Stream B.
+ *       INTERLOCK: while VAULT_POOL_SINGLE_AQUA_ID is unset there is no second
+ *       bucket, so the whole tranche goes to pool 0 regardless of this ratio.
+ *       Nothing changes for anyone until that bucket exists and is seeded.
  *       admin_compound_deposit raises that bucket's `pool_info.total_lp_tokens`
  *       WITHOUT minting vault shares, so every existing depositor in it grows
  *       pro-rata. No claims, no sell pressure — the reward becomes depth.
  *
- *   Stream C — protocol-owned liquidity, 20%  (BRIBE_POL_BPS)
+ *   Stream C — protocol-owned liquidity, 10%  (BRIBE_POL_BPS)
  *       Transferred to the staking contract and deposited single-sided as AQUA
  *       via manual_deposit_pol() (no half-swap since 2026-09-08). POL LP is tracked in
  *       `ProtocolOwnedLiquidity.aqua_blub_lp_position`, which is NOT part of
@@ -241,7 +245,7 @@ export class BribeRewardService {
         : null;
 
     const singleAquaBps = Number(
-      this.configService.get<string>('BRIBE_VAULT_SINGLE_AQUA_BPS') ?? '7000',
+      this.configService.get<string>('BRIBE_VAULT_SINGLE_AQUA_BPS') ?? '10000',
     );
     this.vaultSingleAquaBps =
       Number.isFinite(singleAquaBps) && singleAquaBps >= 0 && singleAquaBps <= 10000
