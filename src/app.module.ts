@@ -32,6 +32,7 @@ import { VaultCompoundService } from './modules/cron/vault-compound.service';
 import { StakingRewardService } from './modules/cron/staking-reward.service';
 import { StakingApyIndexerService } from './modules/cron/staking-apy-indexer.service';
 import { BribeRewardService } from './modules/cron/bribe-reward.service';
+import { AutoCompoundService } from './modules/cron/auto-compound.service';
 
 // Test controller for manual trigger of cron services
 @Controller('test')
@@ -41,7 +42,21 @@ class TestController {
     private readonly vaultCompoundService: VaultCompoundService,
     private readonly stakingRewardService: StakingRewardService,
     private readonly bribeRewardService: BribeRewardService,
+    private readonly autoCompoundService: AutoCompoundService,
   ) {}
+
+  // Auto-compound keeper: sweep every opted-in user, or ?user=G... for one wallet.
+  // Read-only checks happen in the contract; a not-due user returns (0, 0, 0).
+  @Post('auto-compound')
+  async triggerAutoCompound(@Query('user') user?: string) {
+    console.log('[TestController] Manually triggering auto-compound...');
+    return await this.autoCompoundService.manualTrigger(user);
+  }
+
+  @Get('auto-compound/status')
+  getAutoCompoundStatus() {
+    return this.autoCompoundService.getStatus();
+  }
 
   @Post('ice-locking')
   async triggerIceLocking() {
@@ -152,7 +167,15 @@ class TestController {
  */
 @Controller('public')
 class PublicController {
-  constructor(private readonly stakingApyIndexer: StakingApyIndexerService) {}
+  constructor(
+    private readonly stakingApyIndexer: StakingApyIndexerService,
+    private readonly autoCompoundService: AutoCompoundService,
+  ) {}
+
+  @Get('auto-compound/stats')
+  getAutoCompoundStats() {
+    return this.autoCompoundService.getPublicStats();
+  }
 
   @Get('staking-apy')
   getStakingApy(@Query('window_days') windowDaysRaw?: string) {

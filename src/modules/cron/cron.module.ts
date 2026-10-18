@@ -4,6 +4,7 @@ import { VaultCompoundService } from './vault-compound.service';
 import { StakingRewardService } from './staking-reward.service';
 import { StakingApyIndexerService } from './staking-apy-indexer.service';
 import { BribeRewardService } from './bribe-reward.service';
+import { AutoCompoundService } from './auto-compound.service';
 
 @Module({
   providers: [
@@ -12,6 +13,7 @@ import { BribeRewardService } from './bribe-reward.service';
     StakingRewardService,
     StakingApyIndexerService,
     BribeRewardService,
+    AutoCompoundService,
   ],
   exports: [
     IceLockingService,
@@ -19,6 +21,7 @@ import { BribeRewardService } from './bribe-reward.service';
     StakingRewardService,
     StakingApyIndexerService,
     BribeRewardService,
+    AutoCompoundService,
   ],
 })
 export class CronModule {}
