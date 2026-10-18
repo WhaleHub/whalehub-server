@@ -33,6 +33,7 @@ import { StakingRewardService } from './modules/cron/staking-reward.service';
 import { StakingApyIndexerService } from './modules/cron/staking-apy-indexer.service';
 import { BribeRewardService } from './modules/cron/bribe-reward.service';
 import { AutoCompoundService } from './modules/cron/auto-compound.service';
+import { VaultApyService } from './modules/cron/vault-apy.service';
 
 // Test controller for manual trigger of cron services
 @Controller('test')
@@ -170,7 +171,14 @@ class PublicController {
   constructor(
     private readonly stakingApyIndexer: StakingApyIndexerService,
     private readonly autoCompoundService: AutoCompoundService,
+    private readonly vaultApyService: VaultApyService,
   ) {}
+
+  /** Stream B income per vault bucket over the window (raw token units). */
+  @Get('vault-income')
+  getVaultIncome() {
+    return this.vaultApyService.getIncomeWindow(7);
+  }
 
   @Get('auto-compound/stats')
   getAutoCompoundStats() {
