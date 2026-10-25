@@ -69,7 +69,7 @@ export interface ApyWindowResult {
 @Injectable()
 export class StakingApyIndexerService implements OnModuleInit {
   private readonly logger = new Logger(StakingApyIndexerService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly stakingContractId: string;
   private readonly apyDisplayCap: number;
 
@@ -80,7 +80,7 @@ export class StakingApyIndexerService implements OnModuleInit {
 
   constructor(private readonly configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+    this.server = new StellarSdk.rpc.Server(rpcUrl);
     this.stakingContractId = this.configService.get<string>('STAKING_CONTRACT_ID');
     const capRaw = Number(this.configService.get<string>('STAKING_APY_DISPLAY_CAP'));
     this.apyDisplayCap =

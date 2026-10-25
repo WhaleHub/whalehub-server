@@ -92,7 +92,7 @@ const POL_AUTO_DEPOSITS_PAUSED = false;
 @Injectable()
 export class StakingRewardService {
   private readonly logger = new Logger(StakingRewardService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
@@ -157,7 +157,7 @@ export class StakingRewardService {
 
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+    this.server = new StellarSdk.rpc.Server(rpcUrl);
 
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
     this.horizonServer = new StellarSdk.Horizon.Server(horizonUrl);
@@ -1383,7 +1383,7 @@ export class StakingRewardService {
 
     const simulated = await this.server.simulateTransaction(tx);
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
 
@@ -1405,11 +1405,11 @@ export class StakingRewardService {
 
     const simulated = await this.server.simulateTransaction(tx);
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
 
-    tx = StellarSdk.SorobanRpc.assembleTransaction(tx, simulated).build();
+    tx = StellarSdk.rpc.assembleTransaction(tx, simulated).build();
     tx.sign(this.adminKeypair);
 
     return tx;

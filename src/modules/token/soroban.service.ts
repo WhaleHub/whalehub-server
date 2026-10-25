@@ -5,7 +5,7 @@ import { Asset, Keypair, xdr } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from 'js-sha256';
 import * as binascii from 'binascii';
-import SimulateTransactionSuccessResponse = StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse;
+import SimulateTransactionSuccessResponse = StellarSdk.rpc.Api.SimulateTransactionSuccessResponse;
 import BigNumber from 'bignumber.js';
 import { PoolsEntity } from '@/utils/typeorm/entities/pools.entity';
 import { UserEntity } from '@/utils/typeorm/entities/user.entity';
@@ -71,7 +71,7 @@ export enum POOL_TYPE {
 
 @Injectable()
 export class SorobanService {
-  server: StellarSdk.SorobanRpc.Server | null = null;
+  server: StellarSdk.rpc.Server | null = null;
   private issuingSecret: string;
   private signerSecret: string;
   private issuerKeypair: Keypair;
@@ -97,7 +97,7 @@ export class SorobanService {
     );
 
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_ENDPOINT');
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl, { allowHttp: true });
+    this.server = new StellarSdk.rpc.Server(rpcUrl, { allowHttp: true });
 
     this.issuerKeypair = Keypair.fromSecret(
       this.configService.get('ISSUER_SECRET_KEY'),
@@ -955,7 +955,7 @@ export class SorobanService {
   }
 
   async checkTransactionStatus(
-    server: StellarSdk.SorobanRpc.Server,
+    server: StellarSdk.rpc.Server,
     hash: string,
   ): Promise<{
     successful: boolean;

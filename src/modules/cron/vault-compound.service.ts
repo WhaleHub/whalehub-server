@@ -21,13 +21,13 @@ const MAX_FEE = '1000000'; // 0.1 XLM max fee
 @Injectable()
 export class VaultCompoundService {
   private readonly logger = new Logger(VaultCompoundService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
 
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+    this.server = new StellarSdk.rpc.Server(rpcUrl);
 
     const adminSecret = this.configService.get<string>('ADMIN_SECRET_KEY');
     this.adminKeypair = Keypair.fromSecret(adminSecret);
@@ -411,7 +411,7 @@ export class VaultCompoundService {
 
     const simulated = await this.server.simulateTransaction(tx);
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
 
@@ -433,11 +433,11 @@ export class VaultCompoundService {
 
     const simulated = await this.server.simulateTransaction(tx);
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
 
-    tx = StellarSdk.SorobanRpc.assembleTransaction(tx, simulated).build();
+    tx = StellarSdk.rpc.assembleTransaction(tx, simulated).build();
     tx.sign(this.adminKeypair);
 
     return tx;

@@ -103,7 +103,7 @@ interface Formatted {
 @Injectable()
 export class ProtocolActivityService implements OnModuleInit {
   private readonly logger = new Logger(ProtocolActivityService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly contractId: string;
   private readonly horizonUrl: string;
   private readonly blubIssuer: string;
@@ -123,7 +123,7 @@ export class ProtocolActivityService implements OnModuleInit {
   private stats = { eventsSeen: 0, posted: 0, lastPollAt: 0, lastError: '' };
 
   constructor(private readonly configService: ConfigService) {
-    this.server = new StellarSdk.SorobanRpc.Server(
+    this.server = new StellarSdk.rpc.Server(
       this.configService.get<string>('SOROBAN_RPC_URL'),
     );
     this.contractId = this.configService.get<string>('STAKING_CONTRACT_ID');

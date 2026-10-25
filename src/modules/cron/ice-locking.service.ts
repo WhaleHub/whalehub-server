@@ -37,7 +37,7 @@ const MAX_FEE = '1000000';
 @Injectable()
 export class IceLockingService implements OnModuleInit {
   private readonly logger = new Logger(IceLockingService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
@@ -57,7 +57,7 @@ export class IceLockingService implements OnModuleInit {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
 
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+    this.server = new StellarSdk.rpc.Server(rpcUrl);
     this.horizonServer = new StellarSdk.Horizon.Server(horizonUrl);
 
     const adminSecret = this.configService.get<string>('ADMIN_SECRET_KEY');
@@ -632,7 +632,7 @@ export class IceLockingService implements OnModuleInit {
 
     const simulated = await this.server.simulateTransaction(tx);
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
 
@@ -655,11 +655,11 @@ export class IceLockingService implements OnModuleInit {
     // Simulate to get auth and resource fees
     const simulated = await this.server.simulateTransaction(tx);
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
 
-    tx = StellarSdk.SorobanRpc.assembleTransaction(tx, simulated).build();
+    tx = StellarSdk.rpc.assembleTransaction(tx, simulated).build();
     tx.sign(this.adminKeypair);
 
     return tx;

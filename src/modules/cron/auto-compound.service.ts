@@ -50,8 +50,8 @@ interface RunResult {
 @Injectable()
 export class AutoCompoundService {
   private readonly logger = new Logger(AutoCompoundService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
-  private readonly sendServer: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
+  private readonly sendServer: StellarSdk.rpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
@@ -70,10 +70,10 @@ export class AutoCompoundService {
   private readonly failures = new Map<string, number>();
 
   constructor(private configService: ConfigService) {
-    this.server = new StellarSdk.SorobanRpc.Server(
+    this.server = new StellarSdk.rpc.Server(
       this.configService.get<string>('SOROBAN_RPC_URL'),
     );
-    this.sendServer = new StellarSdk.SorobanRpc.Server(
+    this.sendServer = new StellarSdk.rpc.Server(
       this.configService.get<string>('SOROBAN_SEND_RPC_URL') ||
         'https://soroban-rpc.mainnet.stellar.gateway.fm',
     );
@@ -122,12 +122,28 @@ export class AutoCompoundService {
     };
   }
 
-  /** GET /public/auto-compound/stats — totals from the last sweep. */
-  getPublicStats() {
+  private optedInCache: { at: number; count: number } | null = null;
+
+  /**
+   * GET /public/auto-compound/stats. `optedIn` is read from the contract, so it is
+   * right after a restart; the rest describes the last sweep run by this process
+   * (null/0 until the first sweep after a restart).
+   */
+  async getPublicStats() {
     const r = this.lastRun?.results ?? [];
     const sum = (k: 'total' | 'toLock' | 'toVault') =>
       r.reduce((acc, x) => acc + BigInt(x[k] ?? '0'), 0n).toString();
+    let optedIn: number | null = null;
+    try {
+      if (!this.optedInCache || Date.now() - this.optedInCache.at > 10 * 60_000) {
+        this.optedInCache = { at: Date.now(), count: (await this.allUsers()).length };
+      }
+      optedIn = this.optedInCache.count;
+    } catch (e) {
+      this.logger.warn(`auto-compound stats: opted-in read failed: ${e.message}`);
+    }
     return {
+      optedIn,
       lastRun: this.lastRun?.finishedAt ?? null,
       users: r.length,
       compounded: r.filter((x) => x.status === 'compounded').length,
@@ -352,7 +368,7 @@ export class AutoCompoundService {
       .setTimeout(180)
       .build();
     const simulated = await this.server.simulateTransaction(tx);
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
     return simulated;
@@ -370,10 +386,10 @@ export class AutoCompoundService {
       .setTimeout(180)
       .build();
     const simulated = await this.server.simulateTransaction(tx);
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
-    tx = StellarSdk.SorobanRpc.assembleTransaction(tx, simulated).build();
+    tx = StellarSdk.rpc.assembleTransaction(tx, simulated).build();
     tx.sign(this.adminKeypair);
     return tx;
   }

@@ -107,13 +107,13 @@ interface StreamProgress {
 @Injectable()
 export class BribeRewardService {
   private readonly logger = new Logger(BribeRewardService.name);
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   // Separate RPC for WRITES + their confirmation. sorobanrpc.com reliably TIMES
   // OUT submitting complex txs (e.g. the Aquarius router swap) — it returns a
   // hash but the tx is never included, so polling times out. The gateway.fm RPC
   // handles write submission reliably (documented project pattern). Reads/sims
   // stay on `server` (sorobanrpc.com).
-  private readonly sendServer: StellarSdk.SorobanRpc.Server;
+  private readonly sendServer: StellarSdk.rpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
   private readonly adminKeypair: Keypair;
   private readonly stakingContractId: string;
@@ -201,7 +201,7 @@ export class BribeRewardService {
 
   constructor(private configService: ConfigService) {
     const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+    this.server = new StellarSdk.rpc.Server(rpcUrl);
 
     // Writes go through the gateway.fm RPC (same as the working frontend/vault
     // swap path). sorobanrpc.com hands back a tx hash but never includes complex
@@ -209,7 +209,7 @@ export class BribeRewardService {
     const sendRpcUrl =
       this.configService.get<string>('SOROBAN_SEND_RPC_URL') ||
       'https://soroban-rpc.mainnet.stellar.gateway.fm';
-    this.sendServer = new StellarSdk.SorobanRpc.Server(sendRpcUrl);
+    this.sendServer = new StellarSdk.rpc.Server(sendRpcUrl);
 
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
     this.horizonServer = new StellarSdk.Horizon.Server(horizonUrl);
@@ -893,7 +893,7 @@ export class BribeRewardService {
         StellarSdk.nativeToScVal(aquaAmount, { type: 'u128' }),
         StellarSdk.nativeToScVal(0n, { type: 'u128' }),
       ]),
-      StellarSdk.nativeToScVal(true, { type: 'bool' }),
+      StellarSdk.xdr.ScVal.scvBool(true),
     );
 
     const sim = await this.simulateTransaction(operation);
@@ -1742,7 +1742,7 @@ export class BribeRewardService {
       .setTimeout(180)
       .build();
     const simulated = await this.server.simulateTransaction(tx);
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
     return simulated;
@@ -1760,10 +1760,10 @@ export class BribeRewardService {
       .setTimeout(180)
       .build();
     const simulated = await this.server.simulateTransaction(tx);
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulated)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
       throw new Error(`Simulation failed: ${simulated.error}`);
     }
-    tx = StellarSdk.SorobanRpc.assembleTransaction(tx, simulated).build();
+    tx = StellarSdk.rpc.assembleTransaction(tx, simulated).build();
     tx.sign(this.adminKeypair);
     return tx;
   }

@@ -42,7 +42,7 @@ const MAX_FEE = '1000000'; // 0.1 XLM max fee
 @Injectable()
 export class VotingService {
   private readonly logger = new Logger(VotingService.name);
-  private readonly sorobanServer: StellarSdk.SorobanRpc.Server;
+  private readonly sorobanServer: StellarSdk.rpc.Server;
   private readonly horizonServer: StellarSdk.Horizon.Server;
   private readonly adminKeypair: Keypair;
 
@@ -62,7 +62,7 @@ export class VotingService {
       this.configService.get<string>('STELLAR_HORIZON_URL') ||
       'https://horizon.stellar.org';
 
-    this.sorobanServer = new StellarSdk.SorobanRpc.Server(rpcUrl);
+    this.sorobanServer = new StellarSdk.rpc.Server(rpcUrl);
     this.horizonServer = new StellarSdk.Horizon.Server(horizonUrl);
 
     const adminSecret = this.configService.get<string>('ADMIN_SECRET_KEY');
