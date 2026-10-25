@@ -34,6 +34,7 @@ import { StakingApyIndexerService } from './modules/cron/staking-apy-indexer.ser
 import { BribeRewardService } from './modules/cron/bribe-reward.service';
 import { AutoCompoundService } from './modules/cron/auto-compound.service';
 import { VaultApyService } from './modules/cron/vault-apy.service';
+import { ProtocolActivityService } from './modules/cron/protocol-activity.service';
 
 // Test controller for manual trigger of cron services
 @Controller('test')
@@ -44,7 +45,19 @@ class TestController {
     private readonly stakingRewardService: StakingRewardService,
     private readonly bribeRewardService: BribeRewardService,
     private readonly autoCompoundService: AutoCompoundService,
+    private readonly protocolActivityService: ProtocolActivityService,
   ) {}
+
+  @Get('activity/status')
+  getActivityStatus() {
+    return this.protocolActivityService.getStatus();
+  }
+
+  // Posts one line to the Telegram channel to confirm the bot can write there.
+  @Post('telegram')
+  async triggerTelegramTest() {
+    return await this.protocolActivityService.sendTest();
+  }
 
   // Auto-compound keeper: sweep every opted-in user, or ?user=G... for one wallet.
   // Read-only checks happen in the contract; a not-due user returns (0, 0, 0).
@@ -172,7 +185,17 @@ class PublicController {
     private readonly stakingApyIndexer: StakingApyIndexerService,
     private readonly autoCompoundService: AutoCompoundService,
     private readonly vaultApyService: VaultApyService,
+    private readonly protocolActivityService: ProtocolActivityService,
   ) {}
+
+  /** Recent staking-contract activity, newest first. ?kind=user|protocol|admin */
+  @Get('activity')
+  getActivity(@Query('limit') limitRaw?: string, @Query('kind') kind?: string) {
+    const limit = Number(limitRaw) || 50;
+    return this.protocolActivityService
+      .getFeed(limit, kind)
+      .filter((i) => i.kind !== 'internal' || kind === 'internal');
+  }
 
   /** Stream B income per vault bucket over the window (raw token units). */
   @Get('vault-income')
