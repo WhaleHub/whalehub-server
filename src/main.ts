@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { ErrorInterceptor } from '@/middleware/error.interceptor';
+import { TelegramErrorLogger } from '@/modules/cron/telegram-error-logger';
 import { ValidationPipe, HttpException, HttpStatus } from '@nestjs/common';
 
 async function bootstrap() {
@@ -16,7 +17,10 @@ async function bootstrap() {
   //   };
   // }
 
-  const app = await NestFactory.create(AppModule);
+  // Every logged error is also posted to Telegram (see telegram-error-logger.ts).
+  const logger = new TelegramErrorLogger();
+  logger.captureConsoleErrors();
+  const app = await NestFactory.create(AppModule, { logger });
 
   const config = new DocumentBuilder()
     .setTitle('Whalehub Server')
