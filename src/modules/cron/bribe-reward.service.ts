@@ -401,9 +401,6 @@ export class BribeRewardService {
    * ignored. The batch is then split three ways — stakers / vault LPs / POL —
    * by `runSplit`.
    */
-  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
-  // Bribe AQUA now accumulates in the manager wallet until this is uncommented
-  // or POST /test/bribe-reward is called manually.
   @Cron('0 */6 * * *', { name: 'bribe-reward-distribution', timeZone: 'UTC' })
   async handleBribeRewardDistribution(): Promise<void> {
     // De-sync the two DO instances so the leader drains the wallet first.

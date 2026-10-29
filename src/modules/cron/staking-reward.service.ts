@@ -1,7 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-// Kept while the @Cron decorator(s) below are commented out (crons paused).
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
@@ -50,9 +48,9 @@ const EVENT_POLL_INTERVAL_MS = 30000;
 const MAX_RETENTION_LOOKBACK_LEDGERS = 100000;
 
 /**
- * AUTOMATIC POL DEPOSITS PAUSED 2026-07-27 (alongside the ICE-locking cron).
- *
- * Flip to `false` to resume. While true, no POL deposit happens on its own:
+ * Kill switch for automatic POL deposits (paused 2026-07-27, now `false` so
+ * deposits run). Set `true` to pause again. While true, no POL deposit happens
+ * on its own:
  *   - the 5-min `pol-deposit-check` cron returns immediately;
  *   - the `pol_dep` event poller still RUNS — it advances the persisted ledger
  *     cursor and accrues each observed share into `pendingPolAqua` — but stops
@@ -536,9 +534,6 @@ export class StakingRewardService {
    * Runs every 5 minutes to check for pending POL deposits
    * This is a fallback in case event polling misses something
    */
-  // PAUSED 2026-07-27 — decorator removed in addition to the
-  // POL_AUTO_DEPOSITS_PAUSED flag below, so this cannot fire even if the flag
-  // is flipped back without re-reading this block. Re-enable BOTH to resume.
   @Cron(CronExpression.EVERY_5_MINUTES, {
     name: 'pol-deposit-check',
     timeZone: 'UTC',
@@ -608,7 +603,9 @@ export class StakingRewardService {
       // to sweep — it likely belongs to ICE or reward distribution.
       if (this.pendingPolAqua < MIN_AQUA_THRESHOLD) {
         if (aquaBalance >= MAX_FALLBACK_AQUA) {
-          this.logger.error(
+          // warn, not error: this is the normal state for the few hours
+          // between daily bribe income landing and the 6-hourly bribe split.
+          this.logger.warn(
             `POL fallback: admin has ${aquaBalance} AQUA but pendingPolAqua=${this.pendingPolAqua}. ` +
               `This AQUA likely belongs to ICE locking (transfer_authorized_aqua) ` +
               `or reward distribution — NOT depositing as POL. Manual intervention may be required.`,
@@ -764,9 +761,6 @@ export class StakingRewardService {
    * its AQUA balance; running them concurrently produces sequence-number
    * races and lets the pre-flight POL sweep miss in-flight claim AQUA.
    */
-  // PAUSED 2026-07-27 — all transacting crons stopped (see ice-locking.service.ts).
-  // Stakers stop accruing distributed rewards until this is uncommented or
-  // POST /test/staking-reward is called manually.
   @Cron('30 * * * *', {
     name: 'staking-reward-distribution',
     timeZone: 'UTC',
