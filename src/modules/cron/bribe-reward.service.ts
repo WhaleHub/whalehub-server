@@ -1205,9 +1205,12 @@ export class BribeRewardService {
         );
       }
     } catch (simError) {
-      this.logger.warn(
-        `Swap simulation failed, using min=1: ${simError.message}`,
-      );
+      // Never swap without a price floor: min=1 accepts any price and can be
+      // sandwiched. If the simulation fails the real swap would fail too.
+      throw new Error(`Swap simulation failed; not swapping: ${simError.message}`);
+    }
+    if (minBlubOut <= 1n) {
+      throw new Error('Swap simulation returned 0 BLUB; not swapping');
     }
 
     const operation = routerContract.call(

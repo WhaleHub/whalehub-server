@@ -7,7 +7,11 @@ import {
   Post,
   Get,
   Query,
+  UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
+import { StrKey } from '@stellar/stellar-sdk';
+import { AdminKeyGuard, Public } from './guards/admin-key.guard';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -36,8 +40,10 @@ import { AutoCompoundService } from './modules/cron/auto-compound.service';
 import { VaultApyService } from './modules/cron/vault-apy.service';
 import { ProtocolActivityService } from './modules/cron/protocol-activity.service';
 
-// Test controller for manual trigger of cron services
+// Operator controller for manual triggers. Every route needs the x-admin-key
+// header (see AdminKeyGuard) except /test/health.
 @Controller('test')
+@UseGuards(AdminKeyGuard)
 class TestController {
   constructor(
     private readonly iceLockingService: IceLockingService,
@@ -63,6 +69,9 @@ class TestController {
   // Read-only checks happen in the contract; a not-due user returns (0, 0, 0).
   @Post('auto-compound')
   async triggerAutoCompound(@Query('user') user?: string) {
+    if (user && !StrKey.isValidEd25519PublicKey(user)) {
+      throw new BadRequestException('user must be a G... account address');
+    }
     console.log('[TestController] Manually triggering auto-compound...');
     return await this.autoCompoundService.manualTrigger(user);
   }
@@ -169,6 +178,7 @@ class TestController {
     return await this.bribeRewardService.distributeNow(stroops, onlyStakers);
   }
 
+  @Public()
   @Get('health')
   health() {
     return { status: 'ok', time: new Date().toISOString() };
